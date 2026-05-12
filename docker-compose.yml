@@ -1,0 +1,83 @@
+version: "3.9"
+
+# Bayaan F&B kiosk operating system: full local stack.
+#
+# Services:
+#   db       — Postgres 16 (Odoo's metadata/state store)
+#   odoo     — Odoo Community 19.0 + the Bayaan addon, mounted from this repo
+#   frontend — built React/Vite kiosk dashboard, served by nginx
+#
+# First-time bring-up:
+#   docker compose up -d db
+#   docker compose up odoo            # initialize the DB on first run; ctrl-C when "modules loaded"
+#   docker compose run --rm odoo \
+#       odoo -d bayaan -i bayaan_fnb_kiosk --stop-after-init
+#   docker compose up -d odoo frontend
+#
+# Useful URLs:
+#   http://localhost:8069   Odoo backend (admin / admin on first install)
+#   http://localhost:5174   Bayaan kiosk dashboard (frontend)
+#
+# Variance loop test:
+#   docker compose run --rm odoo \
+#       odoo -d bayaan -i bayaan_fnb_kiosk --test-enable --stop-after-init
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: postgres
+    volumes:
+      - bayaan_pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"  # local-only; remove for production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  odoo:
+    image: odoo:19
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      HOST: db
+      USER: odoo
+      PASSWORD: odoo
+    volumes:
+      - bayaan_odoo_data:/var/lib/odoo
+      - ./backend/bayaan_odoo_addons:/mnt/extra-addons
+      # If you have a customized odoo.conf, mount it here:
+      # - ./deploy/odoo.conf:/etc/odoo/odoo.conf:ro
+    ports:
+      - "8069:8069"  # Odoo HTTP
+      - "8072:8072"  # Long-polling (live chat / chatter notifications)
+    command: >-
+      odoo
+      --addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons
+      --db_host=db
+      --db_user=odoo
+      --db_password=odoo
+      --workers=2
+      --max-cron-threads=1
+    restart: unless-stopped
+
+  frontend:
+    image: nginx:1.27-alpine
+    depends_on:
+      - odoo
+    volumes:
+      - ./apps/kiosk-pos/dist:/usr/share/nginx/html:ro
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "5174:80"
+    restart: unless-stopped
+
+volumes:
+  bayaan_pgdata:
+  bayaan_odoo_data:

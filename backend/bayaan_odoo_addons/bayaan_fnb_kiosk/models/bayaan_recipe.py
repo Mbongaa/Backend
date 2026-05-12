@@ -49,7 +49,7 @@ class BayaanRecipe(models.Model):
         domain = [
             ("product_id", "=", product.id),
             ("company_id", "=", company.id),
-            ("state", "=", "active"),
+            ("state", "in", ("active", "archived") if at_date else ("active",)),
         ]
         if at_date:
             domain.append(("effective_from", "<=", at_date))

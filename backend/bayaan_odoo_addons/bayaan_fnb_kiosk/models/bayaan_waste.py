@@ -55,7 +55,7 @@ class BayaanWasteEntry(models.Model):
                         line.uom_id,
                     )
 
-            if mode in ("finished", "hybrid"):
+            if mode in ("finished", "hybrid") or (mode == "none" and entry.product_id.is_storable):
                 scraps |= entry._create_scrap(
                     entry.product_id,
                     entry.qty,

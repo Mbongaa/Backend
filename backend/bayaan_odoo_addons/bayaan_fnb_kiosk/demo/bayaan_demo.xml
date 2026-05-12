@@ -1,0 +1,278 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!--
+            Bayaan demo dataset.
+
+            Loads when the database is created with demo data (Odoo's default).
+            Provides 3 kiosks, 8 ingredients, 5 menu items with recipes, and
+            starting kiosk stock so the dashboard's variance loop has data
+            to show without manual setup.
+
+            For a fresh production install: run with the without_demo=all
+            option (see Odoo CLI flag) to skip this file.
+        -->
+
+        <!-- Ingredients (uom = unit unless noted) -->
+        <record id="prod_ing_orange" model="product.product">
+            <field name="name">Oranges</field>
+            <field name="default_code">ING-ORANGE</field>
+            <field name="type">consu</field>
+            <field name="is_storable">True</field>
+            <field name="uom_id" ref="uom.product_uom_kgm"/>
+            <field name="standard_price">1500.0</field>
+            <field name="bayaan_consumption_mode">none</field>
+        </record>
+        <record id="prod_ing_sugar" model="product.product">
+            <field name="name">Sugar</field>
+            <field name="default_code">ING-SUGAR</field>
+            <field name="type">consu</field>
+            <field name="is_storable">True</field>
+            <field name="uom_id" ref="uom.product_uom_kgm"/>
+            <field name="standard_price">800.0</field>
+            <field name="bayaan_consumption_mode">none</field>
+        </record>
+        <record id="prod_ing_milk" model="product.product">
+            <field name="name">Whole Milk 1L</field>
+            <field name="default_code">ING-MILK-1L</field>
+            <field name="type">consu</field>
+            <field name="is_storable">True</field>
+            <field name="standard_price">3500.0</field>
+            <field name="bayaan_consumption_mode">none</field>
+        </record>
+        <record id="prod_ing_coffee" model="product.product">
+            <field name="name">Espresso Beans (kg)</field>
+            <field name="default_code">ING-COFFEE-KG</field>
+            <field name="type">consu</field>
+            <field name="is_storable">True</field>
+            <field name="uom_id" ref="uom.product_uom_kgm"/>
+            <field name="standard_price">42000.0</field>
+            <field name="bayaan_consumption_mode">none</field>
+        </record>
+        <record id="prod_ing_ice" model="product.product">
+            <field name="name">Ice (kg)</field>
+            <field name="default_code">ING-ICE</field>
+            <field name="type">consu</field>
+            <field name="is_storable">True</field>
+            <field name="uom_id" ref="uom.product_uom_kgm"/>
+            <field name="standard_price">200.0</field>
+            <field name="bayaan_consumption_mode">none</field>
+        </record>
+        <record id="prod_ing_cup12" model="product.product">
+            <field name="name">Cup 12oz</field>
+            <field name="default_code">ING-CUP-12</field>
+            <field name="type">consu</field>
+            <field name="is_storable">True</field>
+            <field name="standard_price">180.0</field>
+            <field name="bayaan_consumption_mode">none</field>
+        </record>
+        <record id="prod_ing_cup16" model="product.product">
+            <field name="name">Cup 16oz</field>
+            <field name="default_code">ING-CUP-16</field>
+            <field name="type">consu</field>
+            <field name="is_storable">True</field>
+            <field name="standard_price">240.0</field>
+            <field name="bayaan_consumption_mode">none</field>
+        </record>
+        <record id="prod_ing_croissant" model="product.product">
+            <field name="name">Croissant (frozen)</field>
+            <field name="default_code">ING-CROISSANT</field>
+            <field name="type">consu</field>
+            <field name="is_storable">True</field>
+            <field name="standard_price">1500.0</field>
+            <field name="bayaan_consumption_mode">none</field>
+        </record>
+
+        <!-- Sellable menu items -->
+        <record id="prod_menu_espresso" model="product.product">
+            <field name="name">Espresso</field>
+            <field name="default_code">MENU-ESPRESSO</field>
+            <field name="type">consu</field>
+            <field name="list_price">3000.0</field>
+            <field name="available_in_pos">True</field>
+            <field name="bayaan_consumption_mode">recipe</field>
+        </record>
+        <record id="prod_menu_latte" model="product.product">
+            <field name="name">Latte</field>
+            <field name="default_code">MENU-LATTE</field>
+            <field name="type">consu</field>
+            <field name="list_price">4500.0</field>
+            <field name="available_in_pos">True</field>
+            <field name="bayaan_consumption_mode">recipe</field>
+        </record>
+        <record id="prod_menu_iced_coffee" model="product.product">
+            <field name="name">Iced Coffee</field>
+            <field name="default_code">MENU-ICED-COFFEE</field>
+            <field name="type">consu</field>
+            <field name="list_price">5000.0</field>
+            <field name="available_in_pos">True</field>
+            <field name="bayaan_consumption_mode">recipe</field>
+        </record>
+        <record id="prod_menu_oj" model="product.product">
+            <field name="name">Orange Juice</field>
+            <field name="default_code">MENU-OJ</field>
+            <field name="type">consu</field>
+            <field name="list_price">5500.0</field>
+            <field name="available_in_pos">True</field>
+            <field name="bayaan_consumption_mode">recipe</field>
+        </record>
+        <record id="prod_menu_croissant" model="product.product">
+            <field name="name">Croissant Plain</field>
+            <field name="default_code">MENU-CROISSANT</field>
+            <field name="type">consu</field>
+            <field name="list_price">4000.0</field>
+            <field name="available_in_pos">True</field>
+            <field name="bayaan_consumption_mode">finished</field>
+        </record>
+
+        <!-- Recipes -->
+        <record id="recipe_espresso_v1" model="bayaan.recipe">
+            <field name="product_id" ref="prod_menu_espresso"/>
+            <field name="version_label">v1</field>
+            <field name="effective_from" eval="(DateTime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')"/>
+            <field name="line_ids" eval="[
+                (0, 0, {'ingredient_id': ref('prod_ing_coffee'), 'qty': 0.018, 'uom_id': ref('uom.product_uom_kgm')}),
+                (0, 0, {'ingredient_id': ref('prod_ing_cup12'), 'qty': 1.0, 'uom_id': ref('uom.product_uom_unit')}),
+            ]"/>
+            <field name="state">draft</field>
+        </record>
+        <record id="recipe_latte_v1" model="bayaan.recipe">
+            <field name="product_id" ref="prod_menu_latte"/>
+            <field name="version_label">v1</field>
+            <field name="effective_from" eval="(DateTime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')"/>
+            <field name="line_ids" eval="[
+                (0, 0, {'ingredient_id': ref('prod_ing_coffee'), 'qty': 0.018, 'uom_id': ref('uom.product_uom_kgm')}),
+                (0, 0, {'ingredient_id': ref('prod_ing_milk'), 'qty': 1.0, 'uom_id': ref('uom.product_uom_unit')}),
+                (0, 0, {'ingredient_id': ref('prod_ing_cup12'), 'qty': 1.0, 'uom_id': ref('uom.product_uom_unit')}),
+            ]"/>
+            <field name="state">draft</field>
+        </record>
+        <record id="recipe_iced_coffee_v1" model="bayaan.recipe">
+            <field name="product_id" ref="prod_menu_iced_coffee"/>
+            <field name="version_label">v1</field>
+            <field name="effective_from" eval="(DateTime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')"/>
+            <field name="line_ids" eval="[
+                (0, 0, {'ingredient_id': ref('prod_ing_coffee'), 'qty': 0.022, 'uom_id': ref('uom.product_uom_kgm')}),
+                (0, 0, {'ingredient_id': ref('prod_ing_milk'), 'qty': 1.0, 'uom_id': ref('uom.product_uom_unit')}),
+                (0, 0, {'ingredient_id': ref('prod_ing_ice'), 'qty': 0.15, 'uom_id': ref('uom.product_uom_kgm')}),
+                (0, 0, {'ingredient_id': ref('prod_ing_cup16'), 'qty': 1.0, 'uom_id': ref('uom.product_uom_unit')}),
+            ]"/>
+            <field name="state">draft</field>
+        </record>
+        <record id="recipe_oj_v1" model="bayaan.recipe">
+            <field name="product_id" ref="prod_menu_oj"/>
+            <field name="version_label">v1</field>
+            <field name="effective_from" eval="(DateTime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')"/>
+            <field name="line_ids" eval="[
+                (0, 0, {'ingredient_id': ref('prod_ing_orange'), 'qty': 0.3, 'uom_id': ref('uom.product_uom_kgm')}),
+                (0, 0, {'ingredient_id': ref('prod_ing_sugar'), 'qty': 0.02, 'uom_id': ref('uom.product_uom_kgm')}),
+                (0, 0, {'ingredient_id': ref('prod_ing_cup16'), 'qty': 1.0, 'uom_id': ref('uom.product_uom_unit')}),
+            ]"/>
+            <field name="state">draft</field>
+        </record>
+
+        <!-- Activate the recipes (sets state=active and flips product mode to 'recipe') -->
+        <function model="bayaan.recipe" name="action_activate">
+            <value model="bayaan.recipe" eval="[
+                ref('recipe_espresso_v1'),
+                ref('recipe_latte_v1'),
+                ref('recipe_iced_coffee_v1'),
+                ref('recipe_oj_v1'),
+            ]"/>
+        </function>
+
+        <!-- Kiosk POS configurations & stock locations -->
+        <record id="loc_kiosk_k01" model="stock.location">
+            <field name="name">K-01 Karrada</field>
+            <field name="usage">internal</field>
+            <field name="location_id" ref="stock.stock_location_locations"/>
+        </record>
+        <record id="loc_kiosk_k02" model="stock.location">
+            <field name="name">K-02 Mansour</field>
+            <field name="usage">internal</field>
+            <field name="location_id" ref="stock.stock_location_locations"/>
+        </record>
+        <record id="loc_kiosk_k03" model="stock.location">
+            <field name="name">K-03 Erbil Mall</field>
+            <field name="usage">internal</field>
+            <field name="location_id" ref="stock.stock_location_locations"/>
+        </record>
+
+        <record id="pos_config_k01" model="pos.config">
+            <field name="name">K-01 Karrada POS</field>
+        </record>
+        <record id="pos_config_k02" model="pos.config">
+            <field name="name">K-02 Mansour POS</field>
+        </record>
+        <record id="pos_config_k03" model="pos.config">
+            <field name="name">K-03 Erbil Mall POS</field>
+        </record>
+
+        <record id="kiosk_k01" model="bayaan.kiosk">
+            <field name="name">Karrada Center</field>
+            <field name="kiosk_code">K-01</field>
+            <field name="city">Baghdad</field>
+            <field name="area">Karrada</field>
+            <field name="pos_config_id" ref="pos_config_k01"/>
+            <field name="stock_location_id" ref="loc_kiosk_k01"/>
+            <field name="stock_deduction_policy">warning</field>
+            <field name="opening_date" eval="(DateTime.now() - timedelta(days=120)).strftime('%Y-%m-%d')"/>
+        </record>
+        <record id="kiosk_k02" model="bayaan.kiosk">
+            <field name="name">Mansour District</field>
+            <field name="kiosk_code">K-02</field>
+            <field name="city">Baghdad</field>
+            <field name="area">Mansour</field>
+            <field name="pos_config_id" ref="pos_config_k02"/>
+            <field name="stock_location_id" ref="loc_kiosk_k02"/>
+            <field name="stock_deduction_policy">warning</field>
+            <field name="opening_date" eval="(DateTime.now() - timedelta(days=90)).strftime('%Y-%m-%d')"/>
+        </record>
+        <record id="kiosk_k03" model="bayaan.kiosk">
+            <field name="name">Erbil Mall</field>
+            <field name="kiosk_code">K-03</field>
+            <field name="city">Erbil</field>
+            <field name="area">Family Mall</field>
+            <field name="pos_config_id" ref="pos_config_k03"/>
+            <field name="stock_location_id" ref="loc_kiosk_k03"/>
+            <field name="stock_deduction_policy">warning</field>
+            <field name="opening_date" eval="(DateTime.now() - timedelta(days=60)).strftime('%Y-%m-%d')"/>
+        </record>
+
+        <!-- Demo opening stock at each kiosk (uses sudo to bypass perms during install) -->
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_orange'), ref('loc_kiosk_k01'), 60.0]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_sugar'), ref('loc_kiosk_k01'), 8.0]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_milk'), ref('loc_kiosk_k01'), 30.0]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_coffee'), ref('loc_kiosk_k01'), 4.0]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_ice'), ref('loc_kiosk_k01'), 25.0]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_cup12'), ref('loc_kiosk_k01'), 800.0]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_cup16'), ref('loc_kiosk_k01'), 600.0]"/>
+
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_orange'), ref('loc_kiosk_k02'), 45.0]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_milk'), ref('loc_kiosk_k02'), 24.0]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_coffee'), ref('loc_kiosk_k02'), 3.5]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_cup12'), ref('loc_kiosk_k02'), 600.0]"/>
+
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_orange'), ref('loc_kiosk_k03'), 50.0]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_milk'), ref('loc_kiosk_k03'), 28.0]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_coffee'), ref('loc_kiosk_k03'), 3.0]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_cup12'), ref('loc_kiosk_k03'), 700.0]"/>
+        <function model="stock.quant" name="_update_available_quantity"
+            eval="[ref('prod_ing_cup16'), ref('loc_kiosk_k03'), 500.0]"/>
+    </data>
+</odoo>

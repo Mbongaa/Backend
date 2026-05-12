@@ -1,14 +1,16 @@
 # Odoo POS Engine Wiring
 
-Bayaan production cashier sales must go through Odoo POS.
+Bayaan production cashier sales must go through Odoo POS records.
 
-The React/Vite POS is the exact UI demo and design reference. It is not the Phase 1 live transaction engine.
+The Bayaan React/Vite cashier UI can be the live operator surface, but Odoo remains the transaction engine and source of truth. The UI may submit to Bayaan's Odoo controller; it must not maintain a parallel sales, payment, stock, or accounting ledger.
 
 ## Runtime Flow
 
 ```text
-Cashier uses customized Odoo POS
--> Odoo validates order, session, payment, receipt, and stock flow
+Cashier uses Bayaan POS UI
+-> Bayaan Odoo controller opens/uses a real pos.session
+-> Odoo validates order, payment method, paid total, and POS catalog product
+-> Odoo writes pos.order and pos.payment
 -> Bayaan resolves bayaan.kiosk from pos.config
 -> Bayaan reads product.template.bayaan_consumption_mode
 -> Bayaan resolves active bayaan.recipe at sale time

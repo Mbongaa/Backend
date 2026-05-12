@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { JuiceLottie } from "../components/JuiceLottie";
 import { SuccessLottie } from "../components/SuccessLottie";
 import { createSourceOfTruthGateway } from "../services/sourceOfTruth";
+import { BayaanProvider, useBayaan } from "../bayaan/BayaanProvider";
 import {
   clearCatalog,
   loadCatalog,
@@ -148,13 +149,13 @@ const MOCK = {
   ],
 
   suppliers: [
-    { name: "Baghdad Dairy", category: "Dairy", spend30: 13_447_000, ontime: 98, lastOrder: "2 days ago", status: "good" },
-    { name: "Mesopotamia Foods", category: "Bakery / Nuts", spend30: 9_835_000, ontime: 91, lastOrder: "Today", status: "good" },
-    { name: "Tigris Bakery", category: "Bakery", spend30: 7_469_000, ontime: 88, lastOrder: "Yesterday", status: "warn" },
-    { name: "Babel Roasters", category: "Coffee", spend30: 6_622_000, ontime: 100, lastOrder: "5 days ago", status: "good" },
-    { name: "Najaf Fresh", category: "Produce", spend30: 4_973_000, ontime: 82, lastOrder: "Today", status: "warn" },
-    { name: "Erbil Syrups", category: "Syrups", spend30: 2_247_000, ontime: 95, lastOrder: "8 days ago", status: "good" },
-    { name: "Iraq Pack", category: "Packaging", spend30: 3_213_000, ontime: 99, lastOrder: "12 days ago", status: "good" },
+    { name: "Baghdad Dairy", category: "Dairy", address: "Karrada, Baghdad", deliveryCategory: "Same day", spend30: 13_447_000, ontime: 98, lastOrder: "2 days ago", status: "good" },
+    { name: "Mesopotamia Foods", category: "Bakery / Nuts", address: "Mansour, Baghdad", deliveryCategory: "2-3 days", spend30: 9_835_000, ontime: 91, lastOrder: "Today", status: "good" },
+    { name: "Tigris Bakery", category: "Bakery", address: "Al Jadriya, Baghdad", deliveryCategory: "Next morning", spend30: 7_469_000, ontime: 88, lastOrder: "Yesterday", status: "warn" },
+    { name: "Babel Roasters", category: "Coffee", address: "Erbil industrial zone", deliveryCategory: "Weekly", spend30: 6_622_000, ontime: 100, lastOrder: "5 days ago", status: "good" },
+    { name: "Najaf Fresh", category: "Produce", address: "Najaf wholesale market", deliveryCategory: "Next morning", spend30: 4_973_000, ontime: 82, lastOrder: "Today", status: "warn" },
+    { name: "Erbil Syrups", category: "Syrups", address: "Erbil", deliveryCategory: "2-3 days", spend30: 2_247_000, ontime: 95, lastOrder: "8 days ago", status: "good" },
+    { name: "Iraq Pack", category: "Packaging", address: "Baghdad industrial area", deliveryCategory: "Weekly", spend30: 3_213_000, ontime: 99, lastOrder: "12 days ago", status: "good" },
   ],
 
   staff: [
@@ -481,6 +482,7 @@ const MOCK = {
   },
 
   pendingTransfers: [
+    { id: "TR-2040", from: "Main Warehouse", to: "K-01 Karrada Center", eta: "15:10", status: "dispatched", items: "Milk 12 ctn, cups 400 pc", value: 782_000 },
     { id: "TR-2041", from: "Main Warehouse", to: "K-04 Zayouna Plaza", eta: "17:30", status: "picked", items: "Oat milk 12 ctn, cups 400 pc", value: 612_000 },
     { id: "TR-2042", from: "Main Warehouse", to: "K-07 Majidi Mall", eta: "Tomorrow 07:00", status: "approved", items: "Pistachio paste 5 kg, cups 600 pc", value: 1_316_700 },
     { id: "TR-2043", from: "Baghdad Area Warehouse", to: "K-02 Mansour District", eta: "16:45", status: "draft", items: "Mint 4 kg, lemons 12 kg", value: 356_000 },
@@ -566,47 +568,53 @@ function CatalogProvider({ children }) {
     () => loadCatalog() ?? makeEmptyCatalog(flattenSeed()),
   );
 
-  const persist = React.useCallback((next) => {
-    setState(next);
-    saveCatalog(next);
+  // Functional persist: atomically reads the *current* state, applies the
+  // updater, persists to localStorage, then commits to React. This fixes a
+  // bug where two API calls in one handler (e.g. upsertProduct + setRecipe)
+  // would each capture stale state via closure and the second persist call
+  // would overwrite the first.
+  const persist = React.useCallback((updater) => {
+    setState((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      saveCatalog(next);
+      return next;
+    });
   }, []);
 
   const api = React.useMemo(
     () => ({
       state,
-      upsertProduct: (p) => {
-        const exists = state.products.some((x) => x.id === p.id);
+      upsertProduct: (p) => persist((prev) => {
+        const exists = prev.products.some((x) => x.id === p.id);
         const products = exists
-          ? state.products.map((x) => (x.id === p.id ? p : x))
-          : [...state.products, p];
-        persist({ ...state, products });
-      },
-      deleteProduct: (id) => {
-        const recipes = { ...state.recipes };
+          ? prev.products.map((x) => (x.id === p.id ? p : x))
+          : [...prev.products, p];
+        return { ...prev, products };
+      }),
+      deleteProduct: (id) => persist((prev) => {
+        const recipes = { ...prev.recipes };
         delete recipes[id];
-        persist({
-          ...state,
-          products: state.products.filter((p) => p.id !== id),
+        return {
+          ...prev,
+          products: prev.products.filter((p) => p.id !== id),
           recipes,
-        });
-      },
-      setRecipe: (productId, lines) => {
-        const recipes = { ...state.recipes };
+        };
+      }),
+      setRecipe: (productId, lines) => persist((prev) => {
+        const recipes = { ...prev.recipes };
         if (!lines || lines.length === 0) delete recipes[productId];
         else recipes[productId] = { productId, lines };
-        persist({ ...state, recipes });
-      },
-      setImage: (slug, dataUrl) => {
-        persist({
-          ...state,
-          imagesBySlug: { ...state.imagesBySlug, [slug]: dataUrl },
-        });
-      },
-      clearImage: (slug) => {
-        const imagesBySlug = { ...state.imagesBySlug };
+        return { ...prev, recipes };
+      }),
+      setImage: (slug, dataUrl) => persist((prev) => ({
+        ...prev,
+        imagesBySlug: { ...prev.imagesBySlug, [slug]: dataUrl },
+      })),
+      clearImage: (slug) => persist((prev) => {
+        const imagesBySlug = { ...prev.imagesBySlug };
         delete imagesBySlug[slug];
-        persist({ ...state, imagesBySlug });
-      },
+        return { ...prev, imagesBySlug };
+      }),
       resetAll: () => {
         clearCatalog();
         setState(makeEmptyCatalog(flattenSeed()));
@@ -658,13 +666,22 @@ function ToastProvider({ children }) {
   return (
     <ToastContext.Provider value={{ showToast }}>
       {children}
-      <div style={{
-        position: "fixed", bottom: 22, insetInlineEnd: 22, zIndex: 9999,
-        display: "flex", flexDirection: "column", gap: 8, pointerEvents: "none",
-        maxWidth: 360,
-      }}>
+      <div
+        role="region"
+        aria-label="Notifications"
+        style={{
+          position: "fixed", bottom: 22, insetInlineEnd: 22, zIndex: 9999,
+          display: "flex", flexDirection: "column", gap: 8, pointerEvents: "none",
+          maxWidth: 360,
+        }}>
         {toasts.map((t) => (
-          <div key={t.id} className="ai-toast" style={{
+          <div
+            key={t.id}
+            className="ai-toast"
+            role={t.kind === "crit" ? "alert" : "status"}
+            aria-live={t.kind === "crit" ? "assertive" : "polite"}
+            aria-atomic="true"
+            style={{
             padding: "10px 14px", borderRadius: 10,
             background: t.kind === "crit" ? "#3A1A18" : "var(--terminal)",
             color: "var(--terminal-ink)", fontSize: 12.5, lineHeight: 1.45,
@@ -727,6 +744,8 @@ const Icon = ({ name, size = 14, stroke = 1.5, className = "", style }) => {
     arrowUp: <path d="M12 19V5M5 12L12 5L19 12"/>,
     arrowDown: <path d="M12 5V19M5 12L12 19L19 12"/>,
     arrowRight: <path d="M5 12H19M12 5L19 12L12 19"/>,
+    arrowLeft: <path d="M19 12H5M12 5L5 12L12 19"/>,
+    refresh: <><path d="M20 6V11H15"/><path d="M4 18V13H9"/><path d="M18 9A7 7 0 006 7L4 9"/><path d="M6 15A7 7 0 0018 17L20 15"/></>,
     plus: <path d="M12 5V19M5 12H19"/>,
     minus: <path d="M5 12H19"/>,
     x: <path d="M6 6L18 18M6 18L18 6"/>,
@@ -901,6 +920,69 @@ const unwrapOdoo = (payload) => {
   return payload.message || payload.data || payload;
 };
 
+const LIVE_ONLY_KEY = "__bayaanLiveOnly";
+
+const EMPTY_ENGINE_SNAPSHOT = {
+  [LIVE_ONLY_KEY]: true,
+  engine: "odoo_pos",
+  summary: null,
+  kiosks: [],
+  products: [],
+  recipes: [],
+  purchase_orders: [],
+  transfers: [],
+  suggested_transfers: [],
+  closings: [],
+  warehouse_stock: [],
+  kiosk_stock: {},
+  kiosk_stock_rows: [],
+  kioskStockDetails: {},
+  today: {
+    orders: [],
+    payments: [],
+    sales: [],
+    consumption: [],
+    waste: [],
+  },
+};
+
+const EMPTY_WAREHOUSE_SETUP = {
+  [LIVE_ONLY_KEY]: true,
+  engine: "odoo_pos",
+  company: null,
+  warehouses: [],
+  locations: [],
+  kiosks: [],
+  pos_configs: [],
+};
+
+const markLiveOnlySnapshot = (payload) => {
+  const snapshot = unwrapOdoo(payload);
+  if (!snapshot || typeof snapshot !== "object") return EMPTY_ENGINE_SNAPSHOT;
+  return {
+    ...EMPTY_ENGINE_SNAPSHOT,
+    ...snapshot,
+    [LIVE_ONLY_KEY]: true,
+    today: {
+      ...EMPTY_ENGINE_SNAPSHOT.today,
+      ...(snapshot.today || {}),
+    },
+  };
+};
+
+const markLiveOnlyWarehouseSetup = (payload) => {
+  const setup = unwrapOdoo(payload);
+  if (!setup || typeof setup !== "object") return EMPTY_WAREHOUSE_SETUP;
+  return {
+    ...EMPTY_WAREHOUSE_SETUP,
+    ...setup,
+    [LIVE_ONLY_KEY]: true,
+  };
+};
+
+const isLiveOnlyPayload = (payload) => Boolean(unwrapOdoo(payload)?.[LIVE_ONLY_KEY]);
+const canUseDemoFallback = (payload) => !isLiveOnlyPayload(payload);
+
 const odooSummary = (bootstrap) => unwrapOdoo(bootstrap)?.summary || null;
 
 const normalizeLookup = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -1018,7 +1100,8 @@ const DEMO_WAREHOUSE_SETUP = {
 
 const odooKioskRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
-  if (!snapshot?.kiosks?.length) return MOCK.kiosks;
+  const useDemo = canUseDemoFallback(bootstrap);
+  if (!snapshot?.kiosks?.length) return useDemo ? MOCK.kiosks : [];
   const summaryRows = snapshot?.summary?.byKiosk || [];
   const salesByKiosk = {};
   (snapshot.today?.sales || []).forEach((sale) => {
@@ -1030,7 +1113,25 @@ const odooKioskRows = (bootstrap) => {
   });
 
   return snapshot.kiosks.map((kiosk, index) => {
-    const fallback = MOCK.kiosks[index % MOCK.kiosks.length];
+    const fallback = useDemo
+      ? MOCK.kiosks[index % MOCK.kiosks.length]
+      : {
+          id: kiosk.kiosk_code || `K-${index + 1}`,
+          name: kiosk.name || "Kiosk",
+          city: kiosk.city || kiosk.area || "-",
+          revenue: 0,
+          orders: 0,
+          margin: 0,
+          waste: 0,
+          wasteLoad: 0,
+          stockHealth: 0,
+          variance: 0,
+          criticalStock: "-",
+          issue: "No verified activity yet",
+          staff: 0,
+          status: "good",
+          trend: [],
+        };
     const summary = summaryRows.find((row) => matchesKiosk(row.kioskId || row.name, kiosk));
     const sales = Object.entries(salesByKiosk).find(([key]) => matchesKiosk(key, kiosk))?.[1] || {};
     const stockRows = Object.entries(snapshot.kiosk_stock || {}).find(([key]) => matchesKiosk(key, kiosk))?.[1] || [];
@@ -1073,29 +1174,59 @@ const odooKioskRows = (bootstrap) => {
   });
 };
 
+const inventoryCategoryFor = (mode, fallback = "") => {
+  if (fallback) return fallback;
+  if (mode === "recipe") return "Recipe product";
+  if (mode === "hybrid") return "Hybrid product";
+  if (mode === "none") return "Non-stock product";
+  return "Stock item";
+};
+
+const inventoryStatusFor = (qty) => {
+  if (qty <= 5) return "crit";
+  if (qty <= 25) return "low";
+  return "ok";
+};
+
 const odooInventoryRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
-  if (!snapshot?.warehouse_stock?.length) return MOCK.inventory;
-  return snapshot.warehouse_stock.slice(0, 30).map((row) => {
+  if (!snapshot?.warehouse_stock?.length && !snapshot?.kiosk_stock_rows?.length) {
+    return canUseDemoFallback(bootstrap)
+      ? MOCK.inventory.map((row) => ({ ...row, location: "Demo warehouse", locationKey: "demo-warehouse" }))
+      : [];
+  }
+  const productMeta = new Map();
+  (snapshot.products || []).forEach((product) => {
+    [product.default_code, product.name, cleanDisplayName(product.name)].filter(Boolean).forEach((key) => {
+      productMeta.set(String(key), product);
+    });
+  });
+  const makeRow = (row, location, locationKey) => {
+    const meta = productMeta.get(String(row.item)) || productMeta.get(cleanDisplayName(row.item)) || {};
     const qty = Number(row.actual_qty || 0);
-    const status = qty <= 5 ? "crit" : qty <= 25 ? "low" : "ok";
+    const status = inventoryStatusFor(qty);
     return {
       item: row.item || "Stock item",
-      category: row.mode === "recipe" ? "Recipe ingredient" : "Stock item",
+      category: inventoryCategoryFor(row.mode || meta.consumption_mode, row.category || meta.category),
       stock: Math.round(qty * 100) / 100,
       unit: row.uom || "u",
       reorder: status === "crit" ? 10 : 25,
       days: status === "crit" ? 0.6 : status === "low" ? 1.8 : 6.4,
       supplier: "Bayaan",
       status,
+      location,
+      locationKey,
     };
-  });
+  };
+  const warehouseRows = (snapshot.warehouse_stock || []).slice(0, 500).map((row) => makeRow(row, "Company total", "company-total"));
+  const kioskRows = (snapshot.kiosk_stock_rows || []).slice(0, 500).map((row) => makeRow(row, row.kiosk || "Kiosk location", row.kiosk || "kiosk"));
+  return [...warehouseRows, ...kioskRows];
 };
 
 const odooPosOrderRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
   const rows = snapshot?.today?.orders || [];
-  if (!rows.length) return MOCK.posOrders;
+  if (!rows.length) return canUseDemoFallback(bootstrap) ? MOCK.posOrders : [];
   return rows.slice(0, 50).map((order, index) => {
     const firstLine = order.lines?.[0];
     const firstPayment = order.payments?.[0];
@@ -1130,7 +1261,11 @@ const closeInvestigationStatus = (close) => {
 
 const odooClosingRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
-  const rows = snapshot?.closings?.length ? snapshot.closings : MOCK.closings;
+  const rows = snapshot?.closings?.length
+    ? snapshot.closings
+    : canUseDemoFallback(bootstrap)
+      ? MOCK.closings
+      : [];
   return rows.map((row) => ({
     ...row,
     stock: (row.stock || []).map((line) => ({ ...line, item: cleanDisplayName(line.item) })),
@@ -1143,7 +1278,7 @@ const odooClosingRows = (bootstrap) => {
 
 const odooKioskStockReconciliationRows = (bootstrap, kiosk) => {
   const snapshot = unwrapOdoo(bootstrap);
-  const base = snapshot || MOCK;
+  const base = snapshot || (canUseDemoFallback(bootstrap) ? MOCK : {});
 
   const detailMap = base.kioskStockDetails || base.kiosk_stock_details || null;
   if (detailMap && typeof detailMap === "object") {
@@ -1395,16 +1530,19 @@ const odooPaymentSplit = (bootstrap) => {
 const odooTransferRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
   const rows = snapshot?.transfers || [];
-  if (!rows.length) return MOCK.pendingTransfers;
+  if (!rows.length) return canUseDemoFallback(bootstrap) ? MOCK.pendingTransfers : [];
   return rows.slice(0, 12).map((transfer) => ({
     id: transfer.name || `PICK-${transfer.id}`,
     from: transfer.from || "Central Warehouse",
     to: transfer.toKioskId || transfer.to || "Kiosk",
+    toKioskId: transfer.toKioskId || transfer.to_kiosk_id || transfer.kiosk || "",
     items: transfer.lines?.length
       ? transfer.lines.slice(0, 2).map((line) => `${line.product} x ${Number(line.qty || 0).toLocaleString("en", { maximumFractionDigits: 2 })}`).join(", ")
       : `${transfer.items || 0} items`,
+    lines: transfer.lines || [],
     eta: transfer.scheduledAt ? String(transfer.scheduledAt).slice(11, 16) : "--:--",
-    status: transfer.state || "draft",
+    status: transfer.bayaan_state || transfer.bayaanState || transfer.state || "draft",
+    engineState: transfer.state || "draft",
   }));
 };
 
@@ -1415,6 +1553,7 @@ const transferKioskId = (value) => String(value || "").match(/K-\d+/)?.[0] || St
 const odooTransferSuggestionRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
   const rows = snapshot?.suggested_transfers || [];
+  if (!rows.length && !canUseDemoFallback(bootstrap)) return [];
   if (!rows.length) return MOCK.transferSuggestions.map((row) => ({
     ...row,
     kioskId: transferKioskId(row.kiosk),
@@ -1445,7 +1584,7 @@ const demoRecipeMarginRows = () => ([
 const odooRecipeMarginRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
   const recipes = snapshot?.recipes || [];
-  if (!recipes.length) return demoRecipeMarginRows();
+  if (!recipes.length) return canUseDemoFallback(bootstrap) ? demoRecipeMarginRows() : [];
   const products = snapshot?.products || [];
   return recipes.slice(0, 12).map((recipe) => {
     const product = products.find((row) => matchesItem(row.default_code || row.name, recipe.product_code || recipe.product));
@@ -1470,33 +1609,99 @@ const odooPurchaseOrderRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
   const rows = snapshot?.purchase_orders || [];
   if (!rows.length) {
-    return [
-      { po: "PO-2026-0509-007", supplier: "Baghdad Dairy", items: "Milk, cream, yogurt", value: 2_950_000, status: "approved" },
-      { po: "PO-2026-0509-008", supplier: "Mesopotamia Foods", items: "Pistachio paste 50 kg", value: 11_125_000, status: "draft" },
-      { po: "PO-2026-0509-009", supplier: "Najaf Fresh", items: "Oranges, lemons, mint", value: 1_840_000, status: "receiving" },
-    ];
+    return canUseDemoFallback(bootstrap) ? [
+      { po: "PO-2026-0509-007", supplier: "Baghdad Dairy", invoice: "INV-BD-501", warehouse: DEFAULT_WAREHOUSE_NAME, items: "Milk, cream, yogurt", value: 2_950_000, status: "created" },
+      { po: "PO-2026-0509-008", supplier: "Mesopotamia Foods", invoice: "INV-MF-118", warehouse: DEFAULT_WAREHOUSE_NAME, items: "Pistachio paste 50 kg", value: 11_125_000, status: "created" },
+      { po: "PO-2026-0509-009", supplier: "Najaf Fresh", invoice: "INV-NF-772", warehouse: "Baghdad Area Warehouse", items: "Oranges, lemons, mint", value: 1_840_000, status: "received" },
+    ] : [];
   }
   return rows.slice(0, 12).map((order) => ({
     po: order.name || `PO-${order.id}`,
     supplier: order.supplier || "Supplier",
+    invoice: order.invoice || order.vendor_bill || order.vendorBill || "-",
+    warehouse: order.warehouse || order.receiving_warehouse || "",
     items: order.lines?.length
       ? order.lines.slice(0, 3).map((line) => line.product).join(", ")
       : "No lines",
     value: Number(order.amount_total || 0),
-    status: order.state || "draft",
+    status: order.receipt_state === "done" ? "received" : "created",
+    receiptState: order.receipt_state || "none",
   }));
+};
+
+const DEFAULT_WAREHOUSE_NAME = "Main Warehouse";
+
+const tomorrowIsoDate = () => {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  return date.toISOString().slice(0, 10);
+};
+
+const estimatePurchaseRate = (item) => {
+  const name = String(item?.item || item || "").toLowerCase();
+  if (name.includes("pistachio")) return 222_500;
+  if (name.includes("milk")) return 14_000;
+  if (name.includes("cup")) return 700;
+  if (name.includes("mint")) return 175_000;
+  if (name.includes("lemon")) return 14_000;
+  if (name.includes("orange")) return 70_000;
+  if (name.includes("bean")) return 18_000;
+  if (name.includes("syrup")) return 11_000;
+  if (name.includes("croissant")) return 7_000;
+  return 7_500;
+};
+
+const reorderQtyFor = (item) => (
+  Math.max(Number(item?.reorder || 0) * 2 - Number(item?.stock || 0), Number(item?.reorder || 0), 1)
+);
+
+const purchaseLineFromInventory = (item) => ({
+  item: item?.item || "",
+  qty: Math.round(reorderQtyFor(item) * 100) / 100,
+  unit: item?.unit || "",
+  rate: estimatePurchaseRate(item),
+});
+
+const purchaseLineTotal = (line) => Number(line.qty || 0) * Number(line.rate || 0);
+const purchaseTotal = (lines) => Math.round((lines || []).reduce((sum, line) => sum + purchaseLineTotal(line), 0));
+const purchaseLineSummary = (lines) => (lines || [])
+  .filter((line) => line.item)
+  .map((line) => `${line.item} ${Number(line.qty || 0).toLocaleString("en", { maximumFractionDigits: 2 })}${line.unit ? ` ${line.unit}` : ""}`)
+  .join(", ");
+
+const purchaseStatusClass = (status) => {
+  const normalized = String(status || "").toLowerCase();
+  if (["done", "received"].includes(normalized)) return "badge-pos";
+  if (["created", "draft", "sent", "receiving", "purchase", "approved"].includes(normalized)) return "badge-warn";
+  if (["cancel", "cancelled", "rejected"].includes(normalized)) return "badge-crit";
+  return "";
+};
+
+const nextPurchaseAction = (status) => {
+  const normalized = String(status || "created").toLowerCase();
+  if (["created", "draft", "sent", "approved", "purchase"].includes(normalized)) return { label: "Receive", action: "receive", next: "received" };
+  if (normalized === "receiving") return { label: "Complete", action: "receive", next: "received" };
+  return null;
+};
+
+const nextTransferAction = (status) => {
+  const normalized = String(status || "draft").toLowerCase();
+  if (normalized === "draft") return { label: "Approve", action: "approve", next: "approved" };
+  if (normalized === "approved" || normalized === "confirmed" || normalized === "waiting") return { label: "Pick", action: "pick", next: "picked" };
+  if (normalized === "picked") return { label: "Dispatch", action: "dispatch", next: "dispatched" };
+  return null;
 };
 
 const odooCashierPerformanceRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
   const orders = snapshot?.today?.orders || [];
   if (!orders.length) {
-    return [
+    return canUseDemoFallback(bootstrap) ? [
       { name: "Maya Ahmed", kiosk: "K-01", sales: 6_447_000, shortage: 0, voidRefund: "3 / 1" },
       { name: "Yusuf Saleh", kiosk: "K-02", sales: 7_469_000, shortage: -84_000, voidRefund: "8 / 2" },
       { name: "Karim Fahmy", kiosk: "K-09", sales: 3_353_000, shortage: -32_000, voidRefund: "14 / 3" },
       { name: "Sara Younis", kiosk: "K-04", sales: 4_239_000, shortage: null, voidRefund: "4 / 1" },
-    ];
+    ] : [];
   }
 
   const byCashier = {};
@@ -1525,7 +1730,7 @@ const odooCashierPerformanceRows = (bootstrap) => {
 const odooWasteRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
   const rows = snapshot?.today?.waste || [];
-  if (!rows.length) return MOCK.waste;
+  if (!rows.length) return canUseDemoFallback(bootstrap) ? MOCK.waste : [];
   return rows.slice(0, 50).map((row, index) => ({
     id: `${row.kiosk || "waste"}-${index}`,
     kiosk: row.kiosk || "POS kiosk",
@@ -1569,6 +1774,20 @@ const insightSourceMeta = (bootstrap) => {
   const summary = odooSummary(bootstrap);
   const counts = summary?.sourceCounts;
   if (!counts) {
+    if (isLiveOnlyPayload(bootstrap)) {
+      return {
+        live: true,
+        empty: true,
+        cite: "0 verified rows loaded",
+        header: "Live engine only",
+        budget: "AI disabled until verified source rows exist",
+        chips: [
+          ["orders", 0],
+          ["stock", 0],
+          ["waste", 0],
+        ],
+      };
+    }
     return {
       live: false,
       cite: `${SCENES.default.cards.length} demo cards`,
@@ -1612,6 +1831,7 @@ const payrollExpenseForPeriod = (period = "Daily") => {
 const odooReportMetrics = (bootstrap, period = "Daily") => {
   const snapshot = unwrapOdoo(bootstrap);
   const summary = odooSummary(bootstrap);
+  const liveOnly = isLiveOnlyPayload(bootstrap);
   const periodKey = String(period || "Daily").toLowerCase();
   const periodSummary = summary?.reportPeriods?.[periodKey];
   if (periodSummary) {
@@ -1620,7 +1840,7 @@ const odooReportMetrics = (bootstrap, period = "Daily") => {
       revenue: Number(periodSummary.revenue || 0),
       cogs: Number(periodSummary.cogs || 0),
       waste: Number(periodSummary.wasteCost || 0),
-      payroll: Number(periodSummary.payrollExpense || payrollExpenseForPeriod(period)),
+      payroll: Number(periodSummary.payrollExpense || (liveOnly ? 0 : payrollExpenseForPeriod(period))),
       netProfit: Math.max(0, Number(periodSummary.netProfit || 0)),
       cash: Number(periodSummary.cashExpected || payments.cash || 0),
       digital: Number(periodSummary.digitalPayments || payments.digital || 0),
@@ -1636,7 +1856,7 @@ const odooReportMetrics = (bootstrap, period = "Daily") => {
       revenue: Number(summary.totals.salesToday || 0),
       cogs: Number(summary.totals.cogs || 0),
       waste: Number(summary.totals.wasteCost || 0),
-      payroll: Number(summary.totals.payrollExpense || payrollExpenseForPeriod(period)),
+      payroll: Number(summary.totals.payrollExpense || (liveOnly ? 0 : payrollExpenseForPeriod(period))),
       netProfit: Math.max(0, Number(summary.totals.profitEstimate || 0)),
       cash: Number(payments.cash || 0),
       digital: Number(payments.digital || 0),
@@ -1647,6 +1867,22 @@ const odooReportMetrics = (bootstrap, period = "Daily") => {
     };
   }
   const orders = snapshot?.today?.orders || [];
+  if (!orders.length && liveOnly) {
+    const emptyPayments = finalizePaymentSplit(createPaymentSplit());
+    return {
+      revenue: 0,
+      cogs: 0,
+      waste: 0,
+      payroll: 0,
+      netProfit: 0,
+      cash: 0,
+      digital: 0,
+      paymentSignal: "no verified payments",
+      paymentRows: paymentMethodRows(emptyPayments),
+      gatewayRows: paymentGatewayRows(emptyPayments),
+      sourceCounts: { orders: 0, payments: 0, consumptionRows: 0, wasteRows: 0, closingRows: 0 },
+    };
+  }
   if (!orders.length) {
     const demoPayments = demoPaymentSplit();
     return {
@@ -1977,7 +2213,14 @@ function LiveFeed({ events, maxRows = 9, ar }) {
   });
 
   return (
-    <div ref={containerRef} style={{ position: "relative" }}>
+    <div
+      ref={containerRef}
+      role="log"
+      aria-live="polite"
+      aria-relevant="additions"
+      aria-label={ar ? "تدفق المبيعات المباشر" : "Live sales stream"}
+      style={{ position: "relative" }}
+    >
       {events.slice(0, maxRows).map((e, i) => {
         const fade = Math.max(0.35, 1 - (i / maxRows) * 0.7);
         return (
@@ -2069,10 +2312,57 @@ function RankIndicator({ rank }) {
 // ============================================================
 function OverviewScreen({ lang, bootstrap }) {
   const ar = lang === "ar";
+  const liveOnly = isLiveOnlyPayload(bootstrap);
   const sourceKiosks = useMemo(() => odooKioskRows(bootstrap), [bootstrap]);
   const closeRows = useMemo(() => odooClosingRows(bootstrap), [bootstrap]);
   const paymentSplit = useMemo(() => odooPaymentSplit(bootstrap), [bootstrap]);
   const summary = useMemo(() => odooSummary(bootstrap), [bootstrap]);
+  const liveProductRows = useMemo(() => {
+    if (!liveOnly) return [];
+    const snapshot = unwrapOdoo(bootstrap);
+    const byProduct = new Map();
+    (snapshot?.today?.orders || []).forEach((order) => {
+      (order.lines || []).forEach((line) => {
+        const name = cleanDisplayName(line.product || line.name || "POS item");
+        const current = byProduct.get(name) || { id: `live-product-${byProduct.size}`, name, cat: "Engine", rev: 0, qty: 0 };
+        current.rev += Number(line.price_subtotal_incl || line.price_subtotal || line.amount || 0);
+        current.qty += Number(line.qty || 0);
+        byProduct.set(name, current);
+      });
+    });
+    return Array.from(byProduct.values()).sort((a, b) => b.rev - a.rev).slice(0, 8);
+  }, [bootstrap, liveOnly]);
+  const liveWasteRows = useMemo(() => {
+    if (!liveOnly) return [];
+    return odooWasteRows(bootstrap).map((row, index) => ({
+      id: `live-waste-${index}`,
+      name: cleanDisplayName(row.item || "Waste item"),
+      cat: row.reason || "Waste",
+      cost: Number(row.cost || 0),
+      qty: Number(row.qty || 0),
+    }));
+  }, [bootstrap, liveOnly]);
+  const liveFeedRows = useMemo(() => {
+    if (!liveOnly) return [];
+    const snapshot = unwrapOdoo(bootstrap);
+    const kioskNames = new Map(sourceKiosks.map((kiosk) => [kiosk.id, kiosk.name]));
+    const now = Date.now();
+    return (snapshot?.today?.orders || []).slice(0, 14).map((order, index) => {
+      const firstLine = order.lines?.[0];
+      const item = firstLine
+        ? cleanDisplayName(firstLine.product || firstLine.name)
+        : cleanDisplayName(order.name || "POS order");
+      return {
+        id: order.name || `live-order-${index}`,
+        kid: order.kiosk || order.pos_config || "-",
+        kiosk: kioskNames.get(order.kiosk) || order.kiosk || order.pos_config || "POS kiosk",
+        item,
+        amount: Number(order.amount_total || firstLine?.price_subtotal_incl || 0),
+        ago: order.date_order ? String(order.date_order).slice(11, 16) : "synced",
+        ts: now - index * 1000,
+      };
+    });
+  }, [bootstrap, liveOnly, sourceKiosks]);
 
   // ---- Live state: per-kiosk metrics (revenue + stock %) ----
   const initial = useMemo(() => {
@@ -2099,11 +2389,11 @@ function OverviewScreen({ lang, bootstrap }) {
   const [kiosks, setKiosks] = useState(initial);
   useEffect(() => {
     setKiosks(initial);
-    setFeed(seedFeed(initial));
-  }, [initial]);
+    setFeed(liveOnly ? liveFeedRows : seedFeed(initial));
+  }, [initial, liveOnly, liveFeedRows]);
 
   // Live products (revenue tickers)
-  const initialProducts = useMemo(() => ([
+  const initialProducts = useMemo(() => liveOnly ? liveProductRows : ([
     { id: "p1", name: "Iced Latte",       cat: "Iced Coffee", rev: 3_690_000, qty: 415 },
     { id: "p2", name: "Iced Americano",   cat: "Iced Coffee", rev: 2_620_000, qty: 392 },
     { id: "p3", name: "Orange Juice",     cat: "Juice",       rev: 2_330_000, qty: 301 },
@@ -2112,30 +2402,44 @@ function OverviewScreen({ lang, bootstrap }) {
     { id: "p6", name: "Cold Brew",        cat: "Iced Coffee", rev: 1_630_000, qty: 172 },
     { id: "p7", name: "Cappuccino",       cat: "Hot Coffee",  rev: 1_580_000, qty: 215 },
     { id: "p8", name: "Mocha",            cat: "Hot Coffee",  rev: 1_410_000, qty: 178 },
-  ]), []);
+  ]), [liveOnly, liveProductRows]);
   const [products, setProducts] = useState(initialProducts);
+  useEffect(() => {
+    setProducts(initialProducts);
+  }, [initialProducts]);
 
   // Live waste leaderboard (cost lost per item — ticks like products)
-  const initialWaste = useMemo(() => ([
+  const initialWaste = useMemo(() => liveOnly ? liveWasteRows : ([
     { id: "w1", name: "Croissant - chocolate", cat: "Bakery",      cost: 412_000, qty: 28 },
     { id: "w2", name: "Pistachio cake slice",  cat: "Cake",        cost: 384_000, qty: 18 },
     { id: "w3", name: "Iced latte",            cat: "Iced Coffee", cost: 294_000, qty: 22 },
     { id: "w4", name: "Mango juice",           cat: "Juice",       cost: 168_000, qty: 14 },
     { id: "w5", name: "Croissant - plain",     cat: "Bakery",      cost: 142_000, qty: 19 },
     { id: "w6", name: "Espresso shot",         cat: "Coffee",      cost: 84_000,  qty: 12 },
-  ]), []);
+  ]), [liveOnly, liveWasteRows]);
   const [waste, setWaste] = useState(initialWaste);
+  useEffect(() => {
+    setWaste(initialWaste);
+  }, [initialWaste]);
 
   // Live activity feed (rolling event stream)
-  const [feed, setFeed] = useState(() => seedFeed(initial));
+  const [feed, setFeed] = useState(() => liveOnly ? liveFeedRows : seedFeed(initial));
   const eventCounterRef = useRef(1000);
 
   // Hourly bars — current hour ticks up
-  const [hourly, setHourly] = useState(() => [4,3,2,2,3,8,18,32,48,52,46,58,62,55,40,32,38,46,52,58,48,32,18,8]);
+  const [hourly, setHourly] = useState(() => liveOnly
+    ? Array(24).fill(0)
+    : [4,3,2,2,3,8,18,32,48,52,46,58,62,55,40,32,38,46,52,58,48,32,18,8]);
   const currentHour = 14;
+  useEffect(() => {
+    setHourly(liveOnly
+      ? Array(24).fill(0)
+      : [4,3,2,2,3,8,18,32,48,52,46,58,62,55,40,32,38,46,52,58,48,32,18,8]);
+  }, [liveOnly]);
 
   // ---- Tick: nudge metrics, occasionally trigger rank swaps ----
   useEffect(() => {
+    if (liveOnly || !initial.length) return undefined;
     let alive = true;
 
     // Frequent tick: small revenue/orders nudges + new feed entry
@@ -2233,6 +2537,7 @@ function OverviewScreen({ lang, bootstrap }) {
     const tickProdSwap = setInterval(() => {
       if (!alive) return;
       setProducts((prev) => {
+        if (prev.length < 2) return prev;
         const sorted = [...prev].sort((a, b) => b.rev - a.rev);
         const idx = Math.floor(Math.random() * Math.min(4, sorted.length - 1));
         const a = sorted[idx], b = sorted[idx + 1];
@@ -2245,6 +2550,7 @@ function OverviewScreen({ lang, bootstrap }) {
     const tickWasteSwap = setInterval(() => {
       if (!alive) return;
       setWaste((prev) => {
+        if (prev.length < 2) return prev;
         const sorted = [...prev].sort((a, b) => b.cost - a.cost);
         const idx = Math.floor(Math.random() * Math.min(4, sorted.length - 1));
         const a = sorted[idx], b = sorted[idx + 1];
@@ -2254,7 +2560,7 @@ function OverviewScreen({ lang, bootstrap }) {
     }, 8100);
 
     return () => { alive = false; clearInterval(tickFast); clearInterval(tickSwap); clearInterval(tickStockSwap); clearInterval(tickProdSwap); clearInterval(tickWasteSwap); };
-  }, [initial]);
+  }, [initial, liveOnly]);
 
   // ---- Derived sorted lists ----
   const topPerformers = useMemo(
@@ -2287,14 +2593,21 @@ function OverviewScreen({ lang, bootstrap }) {
   const lowStockAlerts = summary?.alerts ? Number(summary.alerts.lowStockItems || 0) : kiosks.filter((k) => k.liveStock < 50).length;
   const unresolvedVariances = summary?.alerts ? Number(summary.alerts.unresolvedVariances || 0) : closeRows.filter((close) => close.status === "pending" || close.status === "issue").length;
   const wastePct = summary?.totals?.salesToday ? Number(((Number(summary.totals.wasteCost || 0) / Number(summary.totals.salesToday || 1)) * 100).toFixed(1)) : 3.1;
-  const variancePct = -1.3;
+  const displayWastePct = liveOnly && !summary?.totals?.salesToday ? 0 : wastePct;
+  const variancePct = liveOnly ? 0 : -1.3;
 
   // Period filter: "day" | "week" | "month". Pure display multiplier — keeps the
   // underlying live state ticking so rank-swap animations still fire.
   const [period, setPeriod] = useState("day");
   const periodMul = period === "month" ? 30 : period === "week" ? 7 : 1;
   const periodSubtitle = period === "month" ? "this month" : period === "week" ? "this week" : "today";
-  const planDelta = period === "month" ? "+11.2% vs plan" : period === "week" ? "+9.6% vs plan" : "+8.4% vs plan";
+  const planDelta = liveOnly ? "engine only" : period === "month" ? "+11.2% vs plan" : period === "week" ? "+9.6% vs plan" : "+8.4% vs plan";
+  const alertRows = liveOnly ? [] : MOCK.alerts;
+  const actionRows = liveOnly ? [] : [
+    { label: "Auto-PO drafted - Baghdad Dairy", sub: "Milk x 4 kiosks - IQD 1.2M", ok: true },
+    { label: "Pre-prep schedule shifted", sub: "Zayouna Plaza - 7:30 to 7:45", ok: true },
+    { label: "Pistachio recipe flagged", sub: "12g to 9g - awaiting approval", ok: false },
+  ];
 
   return (
     <div className="col" style={{ gap: 12, height: "calc(100vh - 130px)", overflow: "hidden" }}>
@@ -2542,28 +2855,6 @@ function OverviewScreen({ lang, bootstrap }) {
           <div className="ov-section">
             <div className="ov-section-head">
               <div className="ov-section-title">
-                <PulseDot color="var(--ai)"/>
-                {ar ? "ملخص الذكاء" : "AI summary"}
-              </div>
-              <span className="badge badge-ai" style={{ height: 18, fontSize: 10 }}>traceable</span>
-            </div>
-            <div style={{ padding: "12px 14px" }}>
-              <div className="ai-block">
-                <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.45 }}>
-                  {ar ? MOCK.ai.varianceLead.headlineAr : MOCK.ai.varianceLead.headlineEn}
-                </div>
-                <div className="t-small muted" style={{ fontSize: 11, marginTop: 5, lineHeight: 1.45 }}>
-                  {ar
-                    ? "الأرقام مرتبطة بإغلاق الوردية ودفتر الاستهلاك. الذكاء لا يحسب الرقم الرسمي."
-                    : "Numbers link back to shift close and the consumption ledger. AI does not compute the official total."}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="ov-section">
-            <div className="ov-section-head">
-              <div className="ov-section-title">
                 <PulseDot color="var(--crit)"/>
                 {ar ? "أولوية إعادة التزويد" : "Restock priority"}
               </div>
@@ -2691,7 +2982,7 @@ function OverviewScreen({ lang, bootstrap }) {
               <div className="ov-kpi-row">
                 <div>
                   <div className="ov-kpi-label">{ar ? "الإيرادات" : "Total sales today"}</div>
-                  <div className="ov-kpi-delta" style={{ color: "var(--pos)" }}>+ {planDelta}</div>
+                  <div className="ov-kpi-delta" style={{ color: liveOnly ? "var(--ink-3)" : "var(--pos)" }}>{planDelta}</div>
                 </div>
                 <div className="ov-kpi-value">
                   <TickerNum value={totalRev * periodMul} format={(v) => fmtIQD(v)}/>
@@ -2745,7 +3036,7 @@ function OverviewScreen({ lang, bootstrap }) {
                   <div className="ov-kpi-label">{ar ? "الهدر" : "Waste"}</div>
                   <div className="ov-kpi-delta" style={{ color: "var(--pos)" }}>+ target 4%</div>
                 </div>
-                <div className="ov-kpi-value">{wastePct.toFixed(1)}%</div>
+                <div className="ov-kpi-value">{displayWastePct.toFixed(1)}%</div>
               </div>
               <div className="ov-kpi-row">
                 <div>
@@ -2804,13 +3095,13 @@ function OverviewScreen({ lang, bootstrap }) {
                 <PulseDot color="var(--warn)"/>
                 {ar ? "تنبيهات" : "Alerts"}
               </div>
-              <span className="badge" style={{ height: 18, fontSize: 10 }}>{MOCK.alerts.length}</span>
+              <span className="badge" style={{ height: 18, fontSize: 10 }}>{alertRows.length}</span>
             </div>
             <div>
-              {MOCK.alerts.map((a, i) => (
+              {alertRows.length ? alertRows.map((a, i) => (
                 <div key={a.id} style={{
                   padding: "11px 14px",
-                  borderBottom: i < MOCK.alerts.length - 1 ? "1px solid var(--line-soft)" : 0,
+                  borderBottom: i < alertRows.length - 1 ? "1px solid var(--line-soft)" : 0,
                   display: "flex", gap: 10, alignItems: "flex-start"
                 }}>
                   <span className={`dot ${a.level}`} style={{ marginTop: 6, flexShrink: 0 }}></span>
@@ -2820,7 +3111,11 @@ function OverviewScreen({ lang, bootstrap }) {
                     <div className="t-small faint" style={{ fontSize: 10.5, marginTop: 5, fontFamily: "var(--font-mono)" }}>{a.time}</div>
                   </div>
                 </div>
-              ))}
+              )) : (
+                <div className="t-small muted" style={{ padding: "14px", lineHeight: 1.5 }}>
+                  No verified alerts from the engine yet.
+                </div>
+              )}
             </div>
           </div>
 
@@ -2830,15 +3125,11 @@ function OverviewScreen({ lang, bootstrap }) {
                 <PulseDot color="var(--accent)"/>
                 {ar ? "إجراءات تلقائية" : "Auto-actions"}
               </div>
-              <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>queue - 3</span>
+              <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>queue - {actionRows.length}</span>
             </div>
             <div style={{ padding: "10px 14px" }}>
-              {[
-                { label: "Auto-PO drafted - Baghdad Dairy", sub: "Milk x 4 kiosks - IQD 1.2M", ok: true },
-                { label: "Pre-prep schedule shifted", sub: "Zayouna Plaza - 7:30 to 7:45", ok: true },
-                { label: "Pistachio recipe flagged", sub: "12g to 9g - awaiting approval", ok: false },
-              ].map((a, i) => (
-                <div key={i} className="row" style={{ padding: "8px 0", gap: 8, borderBottom: i < 2 ? "1px solid var(--line-soft)" : 0 }}>
+              {actionRows.length ? actionRows.map((a, i) => (
+                <div key={i} className="row" style={{ padding: "8px 0", gap: 8, borderBottom: i < actionRows.length - 1 ? "1px solid var(--line-soft)" : 0 }}>
                   <span style={{
                     width: 14, height: 14, borderRadius: 3, flexShrink: 0,
                     background: a.ok ? "var(--pos-soft)" : "var(--warn-soft)",
@@ -2850,7 +3141,35 @@ function OverviewScreen({ lang, bootstrap }) {
                     <div className="t-small subtle" style={{ fontSize: 10.5 }}>{a.sub}</div>
                   </div>
                 </div>
-              ))}
+              )) : (
+                <div className="t-small muted" style={{ padding: "4px 0", lineHeight: 1.5 }}>
+                  No automated actions without verified engine inputs.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="ov-section">
+            <div className="ov-section-head">
+              <div className="ov-section-title">
+                <PulseDot color="var(--ai)"/>
+                {ar ? "ملخص الذكاء" : "AI summary"}
+              </div>
+              <span className="badge badge-ai" style={{ height: 18, fontSize: 10 }}>traceable</span>
+            </div>
+            <div style={{ padding: "12px 14px" }}>
+              <div className="ai-block">
+                <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.45 }}>
+                  {liveOnly
+                    ? "No AI summary until verified engine rows are synced."
+                    : ar ? MOCK.ai.varianceLead.headlineAr : MOCK.ai.varianceLead.headlineEn}
+                </div>
+                <div className="t-small muted" style={{ fontSize: 11, marginTop: 5, lineHeight: 1.45 }}>
+                  {ar
+                    ? "الأرقام مرتبطة بإغلاق الوردية ودفتر الاستهلاك. الذكاء لا يحسب الرقم الرسمي."
+                    : "Numbers link back to shift close and the consumption ledger. AI does not compute the official total."}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -2861,6 +3180,7 @@ function OverviewScreen({ lang, bootstrap }) {
 
 // ---------- Seed initial activity feed ----------
 function seedFeed(kiosks) {
+  if (!kiosks?.length) return [];
   const items = [
     { name: "Orange Juice L", amt: 9000 },
     { name: "Mocha L - Cinnamon Roll", amt: 14000 },
@@ -3580,6 +3900,19 @@ function InsightCanvas({ sceneId, sourceMeta, lang }) {
   const showing = SCENES[renderId] || SCENES.default;
   const fadingOut = sceneId !== renderId;
 
+  if (sourceMeta?.empty) {
+    return (
+      <div style={{ height: "100%", display: "grid", placeItems: "center", padding: 24, textAlign: "center" }}>
+        <div>
+          <div className="t-h2" style={{ marginBottom: 6 }}>{ar ? "لا توجد بيانات موثقة بعد" : "No verified insight data yet"}</div>
+          <div className="t-small muted" style={{ maxWidth: 420, lineHeight: 1.6 }}>
+            {ar ? "وضع التشغيل فقط لا يعرض بطاقات تجريبية. اربط المحرك أو حدث المزامنة لعرض التحليلات." : "Live-only mode does not show demo insight cards. Connect the engine or refresh sync to populate this canvas."}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ position: "relative", height: "100%", overflow: "auto" }}>
       <div style={{
@@ -3814,17 +4147,43 @@ function InsightsScreen({ lang, bootstrap }) {
   const ar = lang === "ar";
   const [scene, setScene] = useStateIns("default");
   const [messages, setMessages] = useStateIns([
-    { role: "ai", text: ar ? (SCENES.default.replyAr || SCENES.default.reply) : SCENES.default.reply, cite: sourceMeta.cite },
+    {
+      role: "ai",
+      text: sourceMeta.empty
+        ? (ar ? "لا توجد صفوف موثقة بعد. لن أعرض أي ملخص تجريبي." : "No verified rows are loaded yet. I will not show a demo summary in live-only mode.")
+        : ar ? (SCENES.default.replyAr || SCENES.default.reply) : SCENES.default.reply,
+      cite: sourceMeta.cite,
+    },
   ]);
   const [busy, setBusy] = useStateIns(false);
 
   useEffectIns(() => {
     setMessages((items) => items.map((item, index) => (
-      index === 0 && item.role === "ai" ? { ...item, cite: sourceMeta.cite } : item
+      index === 0 && item.role === "ai"
+        ? {
+            ...item,
+            text: sourceMeta.empty
+              ? (ar ? "لا توجد صفوف موثقة بعد. لن أعرض أي ملخص تجريبي." : "No verified rows are loaded yet. I will not show a demo summary in live-only mode.")
+              : item.text,
+            cite: sourceMeta.cite,
+          }
+        : item
     )));
-  }, [sourceMeta.cite]);
+  }, [sourceMeta.cite, sourceMeta.empty, ar]);
 
   const sendQuestion = (q, sceneIdHint) => {
+    if (sourceMeta.empty) {
+      setMessages((m) => [
+        ...m,
+        { role: "user", text: q },
+        {
+          role: "ai",
+          text: ar ? "لا توجد بيانات محرك موثقة للإجابة عليها الآن." : "There are no verified engine rows to answer from yet.",
+          cite: sourceMeta.cite,
+        },
+      ]);
+      return;
+    }
     // pick the matching scene by keyword if no hint
     const guessed = sceneIdHint || guessScene(q);
     setMessages(m => [...m, { role: "user", text: q }]);
@@ -3940,13 +4299,22 @@ const statusTone = (status) => status === "good" ? "pos" : status === "warn" ? "
 function HealthBar({ label, value, right, kind = "stock", compact = false }) {
   const safeValue = clampPercent(value);
   const tone = kind === "waste" ? wasteTone(safeValue) : stockTone(safeValue);
+  const toneWord = tone === "crit" ? "critical" : tone === "warn" ? "watch" : "healthy";
   return (
     <div className={compact ? "health-bar compact" : "health-bar"}>
       <div className="between health-meta">
         <span>{label}</span>
         <span className="t-num">{right || `${safeValue}%`}</span>
       </div>
-      <div className="health-track" aria-label={`${label}: ${safeValue}%`}>
+      <div
+        className="health-track"
+        role="progressbar"
+        aria-label={`${label}: ${toneWord}, ${safeValue} percent`}
+        aria-valuenow={safeValue}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuetext={`${safeValue}% — ${toneWord}`}
+      >
         <div className={`health-fill tone-${tone}`} style={{ width: `${safeValue}%` }} />
       </div>
     </div>
@@ -4075,22 +4443,29 @@ function KiosksScreenPrevious({ lang, onPick, bootstrap }) {
             <table className="tbl kiosk-health-table">
               <thead>
                 <tr>
-                  <th style={{ width: 32 }}></th>
-                  <th>Kiosk</th>
-                  <th>City</th>
-                  <th style={{ textAlign: "end" }}>Revenue</th>
-                  <th style={{ textAlign: "end" }}>Orders</th>
-                  <th style={{ textAlign: "end" }}>Margin</th>
-                  <th>Stock inventory</th>
-                  <th>Waste tracker</th>
-                  <th>Issue</th>
-                  <th>7-day</th>
-                  <th></th>
+                  <th scope="col" style={{ width: 32 }}></th>
+                  <th scope="col">Kiosk</th>
+                  <th scope="col">City</th>
+                  <th scope="col" style={{ textAlign: "end" }}>Revenue</th>
+                  <th scope="col" style={{ textAlign: "end" }}>Orders</th>
+                  <th scope="col" style={{ textAlign: "end" }}>Margin</th>
+                  <th scope="col">Stock inventory</th>
+                  <th scope="col">Waste tracker</th>
+                  <th scope="col">Issue</th>
+                  <th scope="col">7-day</th>
+                  <th scope="col"></th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map(k => (
-                  <tr key={k.id} className="row-click" onClick={onPick}>
+                  <tr
+                    key={k.id}
+                    className="row-click"
+                    onClick={onPick}
+                    tabIndex={0}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPick?.(); } }}
+                    aria-label={`${k.name}, ${k.city}, open kiosk details`}
+                  >
                     <td><span className={`dot ${statusTone(k.status)}`}></span></td>
                     <td>
                       <div style={{ fontWeight: 500 }}>{k.name}</div>
@@ -4372,8 +4747,8 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
     crit: live.filter(k => k.status === "crit").length,
     warn: live.filter(k => k.status === "warn").length,
     good: live.filter(k => k.status === "good").length,
-    avgInv: Math.round(live.reduce((s, k) => s + k.ops.inv, 0) / live.length),
-    avgWaste: (live.reduce((s, k) => s + k.waste, 0) / live.length).toFixed(1),
+    avgInv: live.length ? Math.round(live.reduce((s, k) => s + k.ops.inv, 0) / live.length) : 0,
+    avgWaste: live.length ? (live.reduce((s, k) => s + k.waste, 0) / live.length).toFixed(1) : "0.0",
   }), [live]);
 
   return (
@@ -4441,7 +4816,7 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
           </div>
           <button type="button" className="btn btn-primary"
             onClick={() => { setKioskError(""); setKioskModalOpen(true); }}
-            disabled={!sourceOfTruth}
+            disabled={!enabled}
             style={{ height: 28, fontSize: 12 }}>
             <Icon name="plus" size={12}/> Create kiosk location
           </button>
@@ -4457,21 +4832,28 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
           <table className="tbl">
             <thead>
               <tr>
-                <th style={{ width: 32 }}></th>
-                <th>Kiosk</th>
-                <th>City</th>
-                <th>Status</th>
-                <th style={{ textAlign: "end" }}>Revenue today</th>
-                <th style={{ textAlign: "end" }}>Orders</th>
-                <th style={{ width: 160 }}>Inventory</th>
-                <th style={{ width: 160 }}>Waste</th>
-                <th style={{ textAlign: "end" }}>Margin</th>
-                <th></th>
+                <th scope="col" style={{ width: 32 }}></th>
+                <th scope="col">Kiosk</th>
+                <th scope="col">City</th>
+                <th scope="col">Status</th>
+                <th scope="col" style={{ textAlign: "end" }}>Revenue today</th>
+                <th scope="col" style={{ textAlign: "end" }}>Orders</th>
+                <th scope="col" style={{ width: 160 }}>Inventory</th>
+                <th scope="col" style={{ width: 160 }}>Waste</th>
+                <th scope="col" style={{ textAlign: "end" }}>Margin</th>
+                <th scope="col"></th>
               </tr>
             </thead>
             <tbody>
               {sorted.map(k => (
-                <tr key={k.id} className="row-click" onClick={() => onPick(k)}>
+                <tr
+                  key={k.id}
+                  className="row-click"
+                  onClick={() => onPick(k)}
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPick(k); } }}
+                  aria-label={`${k.name}, open kiosk details`}
+                >
                   <td><span className={`dot ${statusTone(k.status)}`}></span></td>
                   <td>
                     <div style={{ fontWeight: 500 }}>{k.name}</div>
@@ -4577,22 +4959,29 @@ function KiosksScreenLegacy({ lang, onPick }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th style={{ width: 32 }}></th>
-              <th>{ar ? "الكشك" : "Kiosk"}</th>
-              <th>{ar ? "المدينة" : "City"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "إيرادات اليوم" : "Revenue today"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "الطلبات" : "Orders"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "متوسط الطلب" : "Avg order"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "الهامش" : "Margin"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "الهدر" : "Waste"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "الموظفون" : "Staff"}</th>
-              <th>{ar ? "اتجاه ٧ أيام" : "7-day"}</th>
-              <th></th>
+              <th scope="col" style={{ width: 32 }}></th>
+              <th scope="col">{ar ? "الكشك" : "Kiosk"}</th>
+              <th scope="col">{ar ? "المدينة" : "City"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "إيرادات اليوم" : "Revenue today"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الطلبات" : "Orders"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "متوسط الطلب" : "Avg order"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الهامش" : "Margin"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الهدر" : "Waste"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الموظفون" : "Staff"}</th>
+              <th scope="col">{ar ? "اتجاه ٧ أيام" : "7-day"}</th>
+              <th scope="col"></th>
             </tr>
           </thead>
           <tbody>
             {MOCK.kiosks.map(k => (
-              <tr key={k.id} className="row-click" onClick={onPick}>
+              <tr
+                key={k.id}
+                className="row-click"
+                onClick={onPick}
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPick?.(); } }}
+                aria-label={`${k.name}, open kiosk details`}
+              >
                 <td><span className={`dot ${k.status === "good" ? "pos" : k.status === "warn" ? "warn" : "crit"}`}></span></td>
                 <td>
                   <div style={{ fontWeight: 500 }}>{k.name}</div>
@@ -4712,9 +5101,10 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
   const ar = lang === "ar";
   const selected = kiosk || MOCK.kiosks[0];
   const [tab, setTab] = useState("currentStock");
-  const stockRows = odooKioskStockReconciliationRows(bootstrap, selected) || MOCK.kioskStockDetails[selected.id] || MOCK.kioskStockDetails["K-01"];
+  const liveOnly = isLiveOnlyPayload(bootstrap);
+  const stockRows = odooKioskStockReconciliationRows(bootstrap, selected) || (liveOnly ? [] : MOCK.kioskStockDetails[selected.id] || MOCK.kioskStockDetails["K-01"]);
   const orders = odooPosOrderRows(bootstrap).filter((order) => matchesKiosk(order.kioskId || order.kiosk, selected));
-  const visibleOrders = orders.length ? orders : MOCK.posOrders.slice(0, 4);
+  const visibleOrders = orders.length ? orders : liveOnly ? [] : MOCK.posOrders.slice(0, 4);
   const closing = odooClosingRows(bootstrap).find((c) => matchesKiosk(c.kioskId || c.kioskName, selected));
   const fmtQty = (value, unit) => `${Number(value).toLocaleString("en", { maximumFractionDigits: 2 })} ${unit}`;
   const tabs = [
@@ -4751,15 +5141,15 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
         <table className="tbl" style={{ minWidth: 1120 }}>
           <thead>
             <tr>
-              <th>{ar ? "المكون / البند" : "Ingredient / item"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "افتتاح" : "Opening stock"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "مستلم اليوم" : "Received today"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "استهلاك POS" : "Expected consumed from POS sales"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "هدر مسجل" : "Recorded waste"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "متبقي متوقع" : "Expected remaining"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "عد فعلي" : "Actual counted"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "الفرق" : "Variance"}</th>
-              <th>{ar ? "الحالة" : "Status"}</th>
+              <th scope="col">{ar ? "المكون / البند" : "Ingredient / item"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "افتتاح" : "Opening stock"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "مستلم اليوم" : "Received today"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "استهلاك POS" : "Expected consumed from POS sales"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "هدر مسجل" : "Recorded waste"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "متبقي متوقع" : "Expected remaining"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "عد فعلي" : "Actual counted"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الفرق" : "Variance"}</th>
+              <th scope="col">{ar ? "الحالة" : "Status"}</th>
             </tr>
           </thead>
           <tbody>
@@ -4799,13 +5189,13 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
       <table className="tbl">
         <thead>
           <tr>
-            <th>{ar ? "الوقت" : "Time"}</th>
-            <th>{ar ? "الطلب" : "Order"}</th>
-            <th>{ar ? "الكاشير" : "Cashier"}</th>
-            <th>{ar ? "المنتج" : "Product sold"}</th>
-            <th>{ar ? "الدفع" : "Payment method"}</th>
-            <th style={{ textAlign: "end" }}>{ar ? "المبلغ" : "Amount"}</th>
-            <th>{ar ? "الحالة" : "Status"}</th>
+            <th scope="col">{ar ? "الوقت" : "Time"}</th>
+            <th scope="col">{ar ? "الطلب" : "Order"}</th>
+            <th scope="col">{ar ? "الكاشير" : "Cashier"}</th>
+            <th scope="col">{ar ? "المنتج" : "Product sold"}</th>
+            <th scope="col">{ar ? "الدفع" : "Payment method"}</th>
+            <th scope="col" style={{ textAlign: "end" }}>{ar ? "المبلغ" : "Amount"}</th>
+            <th scope="col">{ar ? "الحالة" : "Status"}</th>
           </tr>
         </thead>
         <tbody>
@@ -5086,6 +5476,7 @@ function RealtimeWarehouseCard({ node }) {
 function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
   const ar = lang === "ar";
   const setup = unwrapOdoo(sync?.warehouseSetup) || DEMO_WAREHOUSE_SETUP;
+  const liveOnly = isLiveOnlyPayload(sync?.warehouseSetup);
   const [view, setView] = useState("cards");
   const [scope, setScope] = useState("all");
   const [sortBy, setSortBy] = useState("status");
@@ -5191,20 +5582,22 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
   return (
     <div className="col" style={{ gap: 14 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        <KPI label={ar ? "مستودعات" : "Warehouses"} value={String(setup.warehouses?.length || 0)} footer={enabled ? "stock.warehouse" : "demo fallback"}/>
+        <KPI label={ar ? "مستودعات" : "Warehouses"} value={String(setup.warehouses?.length || 0)} footer={enabled || liveOnly ? "stock.warehouse" : "demo fallback"}/>
         <KPI label={ar ? "مواقع أكشاك" : "Kiosk locations"} value={String(kioskLocations.length)} footer="stock.location"/>
         <KPI label={ar ? "نقاط بيع" : "POS configs"} value={String(setup.pos_configs?.length || 0)} footer="pos.config"/>
-        <KPI label={ar ? "المصدر" : "Source"} value={enabled ? "Engine" : "Demo"} footer={sync?.status === "error" ? "sync error" : sync?.status || "ready"}/>
+        <KPI label={ar ? "المصدر" : "Source"} value={enabled || liveOnly ? "Engine" : "Demo"} footer={sync?.status === "error" ? "sync error" : sync?.status || "ready"}/>
       </div>
 
       <div className="card card-pad" style={{ background: enabled ? "var(--pos-soft)" : "var(--warn-soft)", borderColor: "transparent" }}>
         <div className="between" style={{ gap: 14, alignItems: "flex-start" }}>
           <div className="ai-block" style={{ flex: 1 }}>
-            <div style={{ fontWeight: 500, marginBottom: 4 }}>{enabled ? "Bayaan is reading the source engine" : "Backend engine is not configured in this browser session"}</div>
+            <div style={{ fontWeight: 500, marginBottom: 4 }}>{enabled ? "Bayaan is reading the source engine" : liveOnly ? "Live-only mode is hiding demo topology" : "Backend engine is not configured in this browser session"}</div>
             <div className="t-small muted" style={{ lineHeight: 1.6 }}>
               {enabled
                 ? "Creating warehouses or kiosks here writes real inventory, POS, and Bayaan records in the single backend database."
-                : "Set the backend URL and sign in to the engine in the same browser session. Until then this page shows the demo topology only."}
+                : liveOnly
+                  ? "No demo warehouses or kiosk locations are shown. Configure the backend URL and refresh to load real records."
+                  : "Set the backend URL and sign in to the engine in the same browser session. Until then this page shows the demo topology only."}
             </div>
             {(sync?.error || localError) && <div className="t-small delta-neg" style={{ marginTop: 8 }}>{sync?.error || localError}</div>}
           </div>
@@ -5338,12 +5731,12 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th>Type</th>
-              <th>Name</th>
-              <th>Engine record</th>
-              <th>Stock location</th>
-              <th style={{ textAlign: "end" }}>Qty</th>
-              <th style={{ textAlign: "end" }}>Reserved / policy</th>
+              <th scope="col">Type</th>
+              <th scope="col">Name</th>
+              <th scope="col">Engine record</th>
+              <th scope="col">Stock location</th>
+              <th scope="col" style={{ textAlign: "end" }}>Qty</th>
+              <th scope="col" style={{ textAlign: "end" }}>Reserved / policy</th>
             </tr>
           </thead>
           <tbody>
@@ -5412,7 +5805,7 @@ function SalesMonitorScreen({ lang, bootstrap }) {
         <KPI label={ar ? "تحتاج مراجعة" : "Needs review"} value={String(issueCount)} delta={recipeHeld ? `${recipeHeld} recipe held` : "all posted"} deltaDir={issueCount ? "down" : "up"} />
       </div>
 
-      <div className="card card-pad" style={{ background: "var(--accent-soft)", borderColor: "transparent" }}>
+      <div className="card card-pad" style={{ display: "none", background: "var(--accent-soft)", borderColor: "transparent" }}>
         <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
           <AITag>{ar ? "حارس واحد" : "Single source guardrail"}</AITag>
           <div className="ai-block" style={{ flex: 1 }}>
@@ -5520,13 +5913,13 @@ function SalesMonitorScreen({ lang, bootstrap }) {
           <table className="tbl">
             <thead>
               <tr>
-                <th>{ar ? "الوقت" : "Time"}</th>
-                <th>{ar ? "الكشك" : "Kiosk"}</th>
-                <th>{ar ? "الكاشير" : "Cashier"}</th>
-                <th>{ar ? "المنتج" : "Product sold"}</th>
-                <th>{ar ? "الدفع" : "Payment"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "المبلغ" : "Amount"}</th>
-                <th>{ar ? "الحالة" : "Status"}</th>
+                <th scope="col">{ar ? "الوقت" : "Time"}</th>
+                <th scope="col">{ar ? "الكشك" : "Kiosk"}</th>
+                <th scope="col">{ar ? "الكاشير" : "Cashier"}</th>
+                <th scope="col">{ar ? "المنتج" : "Product sold"}</th>
+                <th scope="col">{ar ? "الدفع" : "Payment"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "المبلغ" : "Amount"}</th>
+                <th scope="col">{ar ? "الحالة" : "Status"}</th>
               </tr>
             </thead>
             <tbody>
@@ -5562,33 +5955,97 @@ function SalesMonitorScreen({ lang, bootstrap }) {
 }
 
 // =============== INVENTORY ===============
-function InventoryScreen({ lang, bootstrap, sourceOfTruth }) {
+function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const ar = lang === "ar";
   const { showToast } = useToast();
+  const liveOnly = isLiveOnlyPayload(bootstrap);
   const [busyTransfer, setBusyTransfer] = React.useState("");
+  const [poBusy, setPoBusy] = React.useState(false);
   const inv = odooInventoryRows(bootstrap);
+  const [categoryFilter, setCategoryFilter] = React.useState("all");
+  const [locationFilter, setLocationFilter] = React.useState("all");
   const baseTransfers = odooTransferRows(bootstrap);
   const [draftTransfers, setDraftTransfers] = React.useState([]);
+  const [transferStatusOverrides, setTransferStatusOverrides] = React.useState({});
+  const [transferActionBusy, setTransferActionBusy] = React.useState("");
   const [purchaseDrafts, setPurchaseDrafts] = React.useState([]);
+  const [poModalOpen, setPoModalOpen] = React.useState(false);
+  const [itemModalOpen, setItemModalOpen] = React.useState(false);
+  const [itemBusy, setItemBusy] = React.useState(false);
+  const [itemDraft, setItemDraft] = React.useState({
+    name: "",
+    code: "",
+    category: "Ingredients",
+    uom: "Units",
+    supplier: "",
+    unitCost: "",
+    purchasePrice: "",
+    consumptionMode: "finished",
+  });
+  const [poDraft, setPoDraft] = React.useState({
+    supplier: MOCK.suppliers[0]?.name || "",
+    warehouse: DEFAULT_WAREHOUSE_NAME,
+    scheduleDate: tomorrowIsoDate(),
+    lines: [],
+  });
   const [transferModalOpen, setTransferModalOpen] = React.useState(false);
   const [transferDraft, setTransferDraft] = React.useState({ kiosk: "", item: "", qty: "" });
-  React.useEffect(() => { setDraftTransfers([]); }, [bootstrap]);
-  const transfers = [...draftTransfers, ...baseTransfers];
+  React.useEffect(() => {
+    setDraftTransfers([]);
+    setTransferStatusOverrides({});
+    setPurchaseDrafts([]);
+  }, [bootstrap]);
+  React.useEffect(() => {
+    if (!liveOnly) return;
+    setPoDraft((draft) => draft.supplier ? { ...draft, supplier: "" } : draft);
+  }, [liveOnly]);
+  const transfers = [...draftTransfers, ...baseTransfers].map((transfer) => ({
+    ...transfer,
+    status: transferStatusOverrides[transfer.id] || transfer.status,
+  }));
   const suggestions = odooTransferSuggestionRows(bootstrap);
   const kioskRows = odooKioskRows(bootstrap);
-  const lowCount = inv.filter(i => i.status !== "ok").length;
+  const supplierOptions = Array.from(new Set([
+    ...(liveOnly ? [] : MOCK.suppliers.map((supplier) => supplier.name)),
+    poDraft.supplier,
+  ].filter(Boolean)));
   React.useEffect(() => {
     setTransferDraft((draft) => ({
-      kiosk: draft.kiosk || kioskRows[0]?.id || "K-01",
+      kiosk: draft.kiosk || kioskRows[0]?.id || "",
       item: draft.item || inv[0]?.item || "",
       qty: draft.qty || "",
     }));
   }, [bootstrap]);
+  const categoryOptions = React.useMemo(() => (
+    ["all", ...Array.from(new Set(inv.map((row) => row.category).filter(Boolean))).sort()]
+  ), [inv]);
+  const locationOptions = React.useMemo(() => (
+    [
+      { key: "all", label: "All locations" },
+      ...Array.from(new Map(inv.map((row) => [row.locationKey || row.location, row.location || row.locationKey]).filter(([key]) => key)).entries())
+        .map(([key, label]) => ({ key, label })),
+    ]
+  ), [inv]);
+  React.useEffect(() => {
+    if (!categoryOptions.includes(categoryFilter)) setCategoryFilter("all");
+  }, [categoryFilter, categoryOptions]);
+  React.useEffect(() => {
+    if (!locationOptions.some((option) => option.key === locationFilter)) setLocationFilter("all");
+  }, [locationFilter, locationOptions]);
+  const filteredInv = React.useMemo(() => inv.filter((row) => (
+    (categoryFilter === "all" || row.category === categoryFilter) &&
+    (locationFilter === "all" || row.locationKey === locationFilter)
+  )), [inv, categoryFilter, locationFilter]);
+  const filteredLowCount = filteredInv.filter((item) => item.status !== "ok").length;
+  const filteredStockValue = Math.round(filteredInv.reduce((sum, item) => sum + (Number(item.stock || 0) * estimatePurchaseRate(item.item)), 0));
+  const filteredAvgDays = filteredInv.length
+    ? (filteredInv.reduce((sum, item) => sum + Number(item.days || 0), 0) / filteredInv.length).toFixed(1)
+    : "0.0";
 
   const exportInventory = () => {
     const rows = [
-      ["Item", "Category", "Stock", "Unit", "Reorder at", "Days of cover", "Supplier", "Status"],
-      ...inv.map((item) => [item.item, item.category, item.stock, item.unit, item.reorder, item.days, item.supplier, item.status]),
+      ["Item", "Category", "Location", "Stock", "Unit", "Reorder at", "Days of cover", "Supplier", "Status"],
+      ...filteredInv.map((item) => [item.item, item.category, item.location, item.stock, item.unit, item.reorder, item.days, item.supplier, item.status]),
     ];
     const filename = `bayaan-inventory-${new Date().toISOString().slice(0, 10)}.csv`;
     if (typeof document !== "undefined" && typeof Blob !== "undefined" && typeof URL !== "undefined") {
@@ -5605,36 +6062,141 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth }) {
     showToast(ar ? "Inventory exported" : `Inventory exported as ${filename}`, "success");
   };
 
-  const createDraftPo = (item = inv.find((row) => row.status !== "ok") || inv[0]) => {
-    if (!item) return;
-    const qty = Math.max(Number(item.reorder || 0) * 2 - Number(item.stock || 0), Number(item.reorder || 0), 1);
-    const draft = {
-      id: `PO-DRAFT-${Date.now()}`,
-      supplier: item.supplier || "Supplier",
-      items: `${item.item} ${Math.round(qty)} ${item.unit || ""}`.trim(),
-      value: Math.round(qty * 7_500),
-      status: "draft",
-    };
-    setPurchaseDrafts((rows) => [draft, ...rows]);
-    showToast(ar ? "Purchase draft created" : `Purchase draft created - ${draft.items}`, "success");
+  const openPoModal = (lines, supplier = "") => {
+    const cleanLines = (lines || []).filter((line) => line.item).map((line) => ({
+      item: line.item,
+      qty: line.qty || 1,
+      unit: line.unit || "",
+      rate: line.rate || estimatePurchaseRate(line.item),
+    }));
+    const firstInventoryItem = inv.find((row) => row.status !== "ok") || inv[0];
+    setPoDraft({
+      supplier: supplier || firstInventoryItem?.supplier || (liveOnly ? "" : MOCK.suppliers[0]?.name || ""),
+      warehouse: DEFAULT_WAREHOUSE_NAME,
+      scheduleDate: tomorrowIsoDate(),
+      lines: cleanLines.length ? cleanLines : (firstInventoryItem ? [purchaseLineFromInventory(firstInventoryItem)] : []),
+    });
+    setPoModalOpen(true);
   };
 
-  const reviewAndApprovePo = () => {
+  const openReorderPo = (item = inv.find((row) => row.status !== "ok") || inv[0]) => {
+    if (!item) return;
+    openPoModal([purchaseLineFromInventory(item)], item.supplier || "");
+  };
+
+  const openSuggestedPo = () => {
     const lowItems = inv.filter((row) => row.status !== "ok").slice(0, 4);
     if (!lowItems.length) {
       showToast(ar ? "No reorder items" : "No reorder items", "info");
       return;
     }
-    const suppliers = Array.from(new Set(lowItems.map((row) => row.supplier || "Supplier"))).join(", ");
-    const draft = {
-      id: `PO-APPROVED-${Date.now()}`,
-      supplier: suppliers,
-      items: lowItems.map((row) => row.item).join(", "),
-      value: 2_950_000,
-      status: "approved",
-    };
-    setPurchaseDrafts((rows) => [draft, ...rows]);
-    showToast(ar ? "Suggested PO approved" : "Suggested PO approved and queued", "success");
+    openPoModal(lowItems.map(purchaseLineFromInventory), lowItems[0]?.supplier || "");
+    showToast(ar ? "Review suggested PO before creating" : "Review suggested PO before creating", "info");
+  };
+
+  const updatePoLine = (index, patch) => {
+    setPoDraft((draft) => ({
+      ...draft,
+      lines: draft.lines.map((line, i) => (i === index ? { ...line, ...patch } : line)),
+    }));
+  };
+
+  const addPoLine = () => {
+    const item = inv[0];
+    if (!item) return;
+    setPoDraft((draft) => ({ ...draft, lines: [...draft.lines, purchaseLineFromInventory(item)] }));
+  };
+
+  const removePoLine = (index) => {
+    setPoDraft((draft) => ({ ...draft, lines: draft.lines.filter((_, i) => i !== index) }));
+  };
+
+  const submitPo = async (event, submit = false) => {
+    event.preventDefault();
+    const lines = poDraft.lines
+      .filter((line) => line.item && Number(line.qty || 0) > 0)
+      .map((line) => ({
+        item: line.item,
+        qty: Number(line.qty || 0),
+        unit: line.unit || inv.find((item) => item.item === line.item)?.unit || "",
+        rate: Number(line.rate || 0),
+      }));
+    if (!poDraft.supplier || !lines.length || lines.some((line) => line.rate <= 0)) {
+      showToast(ar ? "PO needs supplier, item lines, quantities, and rates" : "PO needs supplier, item lines, quantities, and rates", "warn");
+      return;
+    }
+    setPoBusy(true);
+    try {
+      let created = null;
+      if (sourceOfTruth?.enabled) {
+        created = unwrapOdoo(await sourceOfTruth.submitPurchaseOrder({
+          supplier: poDraft.supplier,
+          warehouse: poDraft.warehouse,
+          scheduleDate: poDraft.scheduleDate,
+          submit,
+          items: lines.map((line) => ({ itemId: line.item, qty: line.qty, rate: line.rate })),
+        }));
+        await refreshOdoo?.();
+      }
+      const draft = {
+        id: created?.name || `PO-DRAFT-${Date.now()}`,
+        supplier: poDraft.supplier,
+        warehouse: poDraft.warehouse,
+        items: purchaseLineSummary(lines),
+        value: purchaseTotal(lines),
+        status: created?.state || (submit ? "sent" : "draft"),
+      };
+      setPurchaseDrafts((rows) => [draft, ...rows]);
+      setPoModalOpen(false);
+      showToast(ar ? "Purchase order created" : `${sourceOfTruth?.enabled ? "Odoo PO" : "Demo PO"} created - ${draft.items}`, "success");
+    } catch (error) {
+      showToast(error?.message || "Could not create purchase order", "warn");
+    } finally {
+      setPoBusy(false);
+    }
+  };
+
+  const submitStockItem = async (event) => {
+    event.preventDefault();
+    if (!itemDraft.name.trim()) {
+      showToast(ar ? "Stock item needs a name" : "Stock item needs a name", "warn");
+      return;
+    }
+    if (!sourceOfTruth?.enabled) {
+      showToast(ar ? "Connect live backend first" : "Connect live backend first to create real stock items", "warn");
+      return;
+    }
+    setItemBusy(true);
+    try {
+      const created = unwrapOdoo(await sourceOfTruth.createStockItem({
+        name: itemDraft.name.trim(),
+        code: itemDraft.code.trim() || undefined,
+        category: itemDraft.category.trim() || undefined,
+        uom: itemDraft.uom,
+        supplier: itemDraft.supplier.trim() || undefined,
+        unitCost: Number(itemDraft.unitCost || itemDraft.purchasePrice || 0),
+        purchasePrice: Number(itemDraft.purchasePrice || itemDraft.unitCost || 0),
+        consumptionMode: itemDraft.consumptionMode,
+        availableInPos: false,
+      }));
+      await refreshOdoo?.();
+      setItemModalOpen(false);
+      setItemDraft({
+        name: "",
+        code: "",
+        category: "Ingredients",
+        uom: "Units",
+        supplier: itemDraft.supplier,
+        unitCost: "",
+        purchasePrice: "",
+        consumptionMode: "finished",
+      });
+      showToast(ar ? "Stock item created" : `Stock item created - ${created?.product?.default_code || created?.product?.name || itemDraft.name}`, "success");
+    } catch (error) {
+      showToast(error?.message || "Could not create stock item", "warn");
+    } finally {
+      setItemBusy(false);
+    }
   };
 
   const createManualTransfer = async (event) => {
@@ -5652,7 +6214,9 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth }) {
           kioskId: transferDraft.kiosk,
           itemId: transferDraft.item,
           qty,
+          fromWarehouse: DEFAULT_WAREHOUSE_NAME,
         });
+        await refreshOdoo?.();
       }
       const kioskName = kioskRows.find((row) => row.id === transferDraft.kiosk || row.kiosk_code === transferDraft.kiosk)?.name || transferDraft.kiosk;
       const draftId = created?.name || `DRAFT-${transferDraft.kiosk}-${slugify(transferDraft.item)}-${Date.now()}`;
@@ -5669,57 +6233,64 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth }) {
       ]);
       setTransferModalOpen(false);
       setTransferDraft((draft) => ({ ...draft, qty: "" }));
-      showToast(ar ? "Transfer drafted" : `Transfer drafted - ${transferDraft.item} to ${kioskName}`, "success");
+      showToast(ar ? "Transfer drafted" : `Draft transfer prepared - ${transferDraft.item} to ${kioskName}`, "success");
     } catch (error) {
       showToast(error?.message || "Could not create transfer", "warn");
     } finally {
       setBusyTransfer("");
     }
   };
-  const createSuggestedTransfer = async (suggestion) => {
-    const key = `${suggestion.kiosk}-${suggestion.item}`;
-    setBusyTransfer(key);
-    try {
-      let created = null;
-      if (sourceOfTruth?.enabled) {
-        created = await sourceOfTruth.submitStockTransfer({
-          kioskId: suggestion.kioskId || transferKioskId(suggestion.kiosk),
-          itemId: suggestion.itemId || suggestion.item,
-          qty: suggestion.qtyValue || transferQtyValue(suggestion.qty),
-          uom: suggestion.uom || transferQtyUnit(suggestion.qty),
-        });
+  const createSuggestedTransfer = (suggestion) => {
+    setTransferDraft({
+      kiosk: suggestion.kioskId || transferKioskId(suggestion.kiosk),
+      item: suggestion.itemId || suggestion.item,
+      qty: suggestion.qtyValue || transferQtyValue(suggestion.qty),
+    });
+    setTransferModalOpen(true);
+    showToast(ar ? "Review suggested transfer before creating" : "Review suggested transfer before creating", "info");
+  };
+
+  const openTransferForItem = (item) => {
+    const target = suggestions.find((suggestion) => matchesItem(suggestion.itemId || suggestion.item, item.item));
+    setTransferDraft({
+      kiosk: target?.kioskId || transferKioskId(target?.kiosk) || kioskRows[0]?.id || "",
+      item: item.item,
+      qty: target?.qtyValue || Math.max(Number(item.reorder || 0) - Number(item.stock || 0), 1),
+    });
+    setTransferModalOpen(true);
+  };
+
+  const advanceTransferStatus = async (transfer, action) => {
+    const nextStatus = action?.next || action;
+    if (sourceOfTruth?.enabled) {
+      setTransferActionBusy(transfer.id);
+      try {
+        const result = unwrapOdoo(await sourceOfTruth.stockTransferAction({
+          transfer: transfer.id,
+          action: action?.action || "receive",
+        }));
+        await refreshOdoo?.();
+        const displayStatus = result?.bayaan_state || nextStatus || result?.state;
+        setTransferStatusOverrides((rows) => ({ ...rows, [transfer.id]: displayStatus }));
+        showToast(`Odoo transfer ${transfer.id} moved to ${displayStatus}`, "success");
+      } catch (error) {
+        showToast(error?.message || "Could not update transfer in Odoo", "warn");
+      } finally {
+        setTransferActionBusy("");
       }
-      const draftId = created?.name || `DRAFT-${transferKioskId(suggestion.kiosk)}-${slugify(suggestion.item)}`;
-      setDraftTransfers((rows) => [
-        {
-          id: draftId,
-          from: "Main Warehouse",
-          to: suggestion.kiosk,
-          items: `${suggestion.item} ${suggestion.qty}`,
-          eta: created?.state ? "engine" : "draft",
-          status: created?.state || "draft",
-        },
-        ...rows.filter((row) => row.id !== draftId),
-      ]);
-      showToast(
-        ar
-          ? `تم تجهيز تحويل ${suggestion.item} إلى ${suggestion.kiosk}`
-          : `Draft transfer prepared - ${suggestion.item} to ${suggestion.kiosk}`,
-        "success",
-      );
-    } catch (error) {
-      showToast(error?.message || "Could not create transfer", "warn");
-    } finally {
-      setBusyTransfer("");
+      return;
     }
+    setTransferStatusOverrides((rows) => ({ ...rows, [transfer.id]: nextStatus }));
+    setDraftTransfers((rows) => rows.map((row) => (row.id === transfer.id ? { ...row, status: nextStatus, eta: nextStatus === "received" ? "received" : row.eta } : row)));
+    showToast(ar ? "Transfer status updated" : `Transfer ${transfer.id} moved to ${nextStatus}`, "success");
   };
   return (
     <div className="col" style={{ gap: 14 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        <KPI label={ar ? "بنود متابعة" : "SKUs tracked"} value="142"/>
-        <KPI label={ar ? "تحت الحد الأدنى" : "Below reorder"} value={lowCount} delta={ar ? "حرج" : "needs PO"} deltaDir="down"/>
-        <KPI label={ar ? "قيمة المخزون" : "Stock value"} value={fmtMoney(284200)}/>
-        <KPI label={ar ? "متوسط أيام التغطية" : "Avg days of cover"} value="4.6" sub={ar ? "يوم" : "days"}/>
+        <KPI label={ar ? "بنود متابعة" : "SKUs tracked"} value={String(filteredInv.length)}/>
+        <KPI label={ar ? "تحت الحد الأدنى" : "Below reorder"} value={filteredLowCount} delta={ar ? "حرج" : "needs transfer"} deltaDir="down"/>
+        <KPI label={ar ? "قيمة المخزون" : "Stock value"} value={fmtMoney(filteredStockValue)}/>
+        <KPI label={ar ? "متوسط أيام التغطية" : "Avg days of cover"} value={filteredAvgDays} sub={ar ? "يوم" : "days"}/>
       </div>
 
       <div className="card card-pad" style={{ background: "var(--accent-soft)", borderColor: "transparent" }}>
@@ -5733,7 +6304,7 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth }) {
               }
             </div>
           </div>
-          <button className="btn btn-accent" onClick={reviewAndApprovePo}>{ar ? "مراجعة وموافقة" : "Review & approve"}</button>
+          <button className="btn btn-accent" onClick={openSuggestedPo}>{ar ? "مراجعة وموافقة" : "Review & approve"}</button>
         </div>
       </div>
 
@@ -5768,8 +6339,8 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth }) {
         <div className="card">
           <div className="between" style={{ padding: "14px 18px" }}>
             <div>
-              <div className="t-h2">{ar ? "تحويلات قيد التنفيذ" : "Pending transfers"}</div>
-              <div className="t-small subtle">{ar ? "من المستودع إلى موقع مخزون الكشك" : "Warehouse to kiosk stock locations"}</div>
+              <div className="t-h2">{ar ? "تحويلات قيد التنفيذ" : "Warehouse transfers"}</div>
+              <div className="t-small subtle">{ar ? "من المستودع إلى موقع مخزون الكشك" : "Admin creates, warehouse dispatches, kiosk receives"}</div>
             </div>
             <button className="btn btn-ghost" onClick={() => setTransferModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
               <Icon name="truck" size={12}/>{ar ? "تحويل جديد" : "New transfer"}
@@ -5785,7 +6356,16 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth }) {
                   </td>
                   <td className="muted">{transfer.items}</td>
                   <td className="t-num muted">{transfer.eta}</td>
-                  <td><span className={`badge ${transfer.status === "draft" ? "badge-warn" : "badge-pos"}`}>{transfer.status}</span></td>
+                  <td style={{ textAlign: "end" }}>
+                    <span className={`badge ${transfer.status === "draft" ? "badge-warn" : "badge-pos"}`}>{transfer.status}</span>
+                    {nextTransferAction(transfer.status) && (
+                      <button className="btn btn-ghost" onClick={() => advanceTransferStatus(transfer, nextTransferAction(transfer.status))}
+                        disabled={transferActionBusy === transfer.id}
+                        style={{ height: 24, fontSize: 11, marginInlineStart: 6 }}>
+                        {transferActionBusy === transfer.id ? "Working" : nextTransferAction(transfer.status).label}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -5795,8 +6375,8 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth }) {
         <div className="card">
           <div className="between" style={{ padding: "14px 18px" }}>
             <div>
-              <div className="t-h2">{ar ? "اقتراحات الغد" : "Suggested transfers for tomorrow"}</div>
-              <div className="t-small subtle">{ar ? "محسوبة من المبيعات والاستهلاك والحد الأدنى" : "From sales pace, consumption, and safety stock"}</div>
+              <div className="t-h2">{ar ? "احتياجات الأكشاك" : "Kiosk live stock needs"}</div>
+              <div className="t-small subtle">{ar ? "محسوبة من المبيعات والاستهلاك والحد الأدنى" : "Use this list to create warehouse-to-kiosk transfers"}</div>
             </div>
             <span className="badge badge-ai">AI reads verified data</span>
           </div>
@@ -5829,34 +6409,39 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth }) {
       <div className="card">
         <div className="between" style={{ padding: "14px 18px" }}>
           <div className="row" style={{ gap: 8 }}>
-            <button className="btn btn-primary" style={{ height: 28, fontSize: 12 }}>{ar ? "كل الفئات" : "All categories"} <Icon name="chevDown" size={11}/></button>
-            <button className="btn btn-ghost" style={{ height: 28, fontSize: 12 }}>{ar ? "كل المواقع" : "All locations"} <Icon name="chevDown" size={11}/></button>
+            <select className="input" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 160 }}>
+              {categoryOptions.map((category) => <option key={category} value={category}>{category === "all" ? (ar ? "كل الفئات" : "All categories") : category}</option>)}
+            </select>
+            <select className="input" value={locationFilter} onChange={(event) => setLocationFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 160 }}>
+              {locationOptions.map((location) => <option key={location.key} value={location.key}>{location.key === "all" ? (ar ? "كل المواقع" : "All locations") : location.label}</option>)}
+            </select>
           </div>
           <div className="row" style={{ gap: 6 }}>
             <button className="btn btn-ghost" onClick={exportInventory} style={{ height: 28, fontSize: 12 }}><Icon name="download" size={12}/>{ar ? "تصدير" : "Export"}</button>
-            <button className="btn btn-ghost" onClick={() => createDraftPo()} style={{ height: 28, fontSize: 12 }}><Icon name="plus" size={12}/>{ar ? "طلب شراء" : "New PO"}</button>
           </div>
         </div>
         <table className="tbl">
           <thead>
             <tr>
-              <th>{ar ? "البند" : "Item"}</th>
-              <th>{ar ? "الفئة" : "Category"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "المخزون" : "Stock"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "نقطة الطلب" : "Reorder at"}</th>
-              <th style={{ width: 140 }}>{ar ? "أيام التغطية" : "Days of cover"}</th>
-              <th>{ar ? "المورد" : "Supplier"}</th>
-              <th style={{ textAlign: "end" }}></th>
+              <th scope="col">{ar ? "البند" : "Item"}</th>
+              <th scope="col">{ar ? "الفئة" : "Category"}</th>
+              <th scope="col">{ar ? "الموقع" : "Location"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "المخزون" : "Stock"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "نقطة الطلب" : "Reorder at"}</th>
+              <th scope="col" style={{ width: 140 }}>{ar ? "أيام التغطية" : "Days of cover"}</th>
+              <th scope="col">{ar ? "المورد" : "Supplier"}</th>
+              <th scope="col" style={{ textAlign: "end" }}></th>
             </tr>
           </thead>
           <tbody>
-            {inv.map((it, i) => {
+            {filteredInv.map((it, i) => {
               const pct = Math.min(it.days / 14, 1);
               const tone = it.status === "crit" ? "crit" : it.status === "low" ? "warn" : "ok";
               return (
                 <tr key={i}>
                   <td><span style={{ fontWeight: 500 }}>{it.item}</span></td>
                   <td className="muted">{it.category}</td>
+                  <td className="muted">{it.location}</td>
                   <td style={{ textAlign: "end" }} className="t-num">{it.stock} <span className="faint">{it.unit}</span></td>
                   <td style={{ textAlign: "end" }} className="t-num muted">{it.reorder}</td>
                   <td>
@@ -5875,7 +6460,7 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth }) {
                   <td className="muted">{it.supplier}</td>
                   <td style={{ textAlign: "end" }}>
                     {tone !== "ok"
-                      ? <button className="btn btn-ghost" onClick={() => createDraftPo(it)} style={{ height: 24, fontSize: 11 }}>{ar ? "اطلب" : "Reorder"}</button>
+                      ? <button className="btn btn-ghost" onClick={() => openTransferForItem(it)} style={{ height: 24, fontSize: 11 }}>{ar ? "حوّل" : "Allocate"}</button>
                       : <Icon name="dots" size={14} style={{ color: "var(--ink-3)" }}/>
                     }
                   </td>
@@ -5886,10 +6471,108 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth }) {
         </table>
       </div>
 
+      <Modal open={itemModalOpen} onClose={() => setItemModalOpen(false)}
+        title={ar ? "بند مخزون جديد" : "New stock item"}
+        sub={ar ? "ينشئ منتجاً قابلاً للشراء في المحرك" : "Creates a purchasable stock product in the engine"}
+        width={640}>
+        <form onSubmit={submitStockItem} className="col" style={{ gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 8 }}>
+            <input className="input" value={itemDraft.name} onChange={(event) => setItemDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="Milk whole 1L"/>
+            <input className="input" value={itemDraft.code} onChange={(event) => setItemDraft((draft) => ({ ...draft, code: event.target.value }))} placeholder="MILK-WHOLE-1L"/>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 120px 1fr", gap: 8 }}>
+            <input className="input" value={itemDraft.category} onChange={(event) => setItemDraft((draft) => ({ ...draft, category: event.target.value }))} placeholder="Ingredients"/>
+            <select className="input" value={itemDraft.uom} onChange={(event) => setItemDraft((draft) => ({ ...draft, uom: event.target.value }))}>
+              {["Units", "kg", "g", "l", "ml"].map((uom) => <option key={uom} value={uom}>{uom}</option>)}
+            </select>
+            <input className="input" value={itemDraft.supplier} onChange={(event) => setItemDraft((draft) => ({ ...draft, supplier: event.target.value }))} placeholder="Supplier"/>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 170px", gap: 8 }}>
+            <input className="input" type="number" min="0" step="0.01" value={itemDraft.unitCost} onChange={(event) => setItemDraft((draft) => ({ ...draft, unitCost: event.target.value }))} placeholder="Unit cost"/>
+            <input className="input" type="number" min="0" step="0.01" value={itemDraft.purchasePrice} onChange={(event) => setItemDraft((draft) => ({ ...draft, purchasePrice: event.target.value }))} placeholder="Purchase price"/>
+            <select className="input" value={itemDraft.consumptionMode} onChange={(event) => setItemDraft((draft) => ({ ...draft, consumptionMode: event.target.value }))}>
+              <option value="finished">Stock item</option>
+              <option value="recipe">Sellable recipe item</option>
+              <option value="hybrid">Hybrid item</option>
+              <option value="none">No stock consumption</option>
+            </select>
+          </div>
+          <div className="t-small subtle">For supplier ingredients, use Stock item. Sellable juices/coffee get their recipe on Products & Recipes after the ingredient exists.</div>
+          <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+            <button type="button" className="btn btn-ghost" onClick={() => setItemModalOpen(false)}>Cancel</button>
+            <button className="btn btn-primary" disabled={itemBusy || !itemDraft.name.trim()}>{itemBusy ? "Creating" : "Create item"}</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={poModalOpen} onClose={() => setPoModalOpen(false)}
+        title={ar ? "New purchase order" : "Upload invoice"}
+        sub={ar ? "Supplier to warehouse receiving" : "Invoice first, then match items and assign receiving warehouse"}
+        width={700}>
+        <form onSubmit={submitPo} className="col" style={{ gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 8 }}>
+            <input className="input" type="file" accept="image/*,.pdf" onChange={(event) => setPoDraft((draft) => ({ ...draft, invoiceName: event.target.files?.[0]?.name || "" }))}/>
+            <input className="input" value={poDraft.invoiceRef} onChange={(event) => setPoDraft((draft) => ({ ...draft, invoiceRef: event.target.value }))} placeholder="Invoice number"/>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 150px", gap: 8 }}>
+            <select className="input" value={poDraft.supplier} onChange={(event) => setPoDraft((draft) => ({ ...draft, supplier: event.target.value }))}>
+              {supplierOptions.length ? supplierOptions.map((supplier) => (
+                <option key={supplier} value={supplier}>{supplier}</option>
+              )) : <option value="">No live suppliers loaded</option>}
+            </select>
+            <select className="input" value={poDraft.warehouse} onChange={(event) => setPoDraft((draft) => ({ ...draft, warehouse: event.target.value }))}>
+              <option value={DEFAULT_WAREHOUSE_NAME}>{DEFAULT_WAREHOUSE_NAME}</option>
+              <option value="Baghdad Area Warehouse">Baghdad Area Warehouse</option>
+            </select>
+            <input className="input" type="date" value={poDraft.scheduleDate} onChange={(event) => setPoDraft((draft) => ({ ...draft, scheduleDate: event.target.value }))}/>
+          </div>
+          <div className="t-small subtle">Structured PO lines. In live mode this creates the official Odoo purchase.order; warehouse stock changes only when the Odoo receipt is received.</div>
+          <div className="col" style={{ gap: 8 }}>
+            {poDraft.lines.map((line, index) => (
+              <div key={index} className="row" style={{ gap: 8 }}>
+                <select className="input" value={line.item} onChange={(event) => {
+                  const picked = inv.find((item) => item.item === event.target.value);
+                  updatePoLine(index, {
+                    item: event.target.value,
+                    unit: picked?.unit || line.unit,
+                    rate: estimatePurchaseRate(picked || event.target.value),
+                  });
+                }} style={{ flex: 1.6 }}>
+                  {inv.map((item) => <option key={item.item} value={item.item}>{item.item}</option>)}
+                </select>
+                <input className="input" value={line.qty} onChange={(event) => updatePoLine(index, { qty: event.target.value })} placeholder="Qty" inputMode="decimal" style={{ flex: 0.55 }}/>
+                <input className="input" value={line.unit} onChange={(event) => updatePoLine(index, { unit: event.target.value })} placeholder="Unit" style={{ flex: 0.5 }}/>
+                <input className="input" value={line.rate} onChange={(event) => updatePoLine(index, { rate: event.target.value })} placeholder="Unit cost" inputMode="numeric" style={{ flex: 0.8 }}/>
+                <div className="t-num muted" style={{ width: 110, textAlign: "end" }}>{fmtMoney(purchaseLineTotal(line))}</div>
+                <button type="button" className="btn btn-ghost" onClick={() => removePoLine(index)} style={{ width: 30, height: 30, padding: 0, justifyContent: "center" }}>
+                  <Icon name="x" size={12}/>
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="between" style={{ paddingTop: 4 }}>
+            <button type="button" className="btn btn-ghost" onClick={addPoLine} style={{ height: 30, fontSize: 12 }}>
+              <Icon name="plus" size={12}/>Add line
+            </button>
+            <div className="t-num" style={{ fontSize: 14 }}>Total {fmtMoney(purchaseTotal(poDraft.lines))}</div>
+          </div>
+          <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+            <button type="button" className="btn btn-ghost" onClick={() => setPoModalOpen(false)}>Cancel</button>
+            <button type="submit" className="btn btn-ghost" disabled={poBusy}>
+              {poBusy ? "Creating..." : "Save draft"}
+            </button>
+            <button type="button" className="btn btn-primary" disabled={poBusy} onClick={(event) => submitPo(event, true)}>
+              {poBusy ? "Creating..." : "Create & send"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
       <Modal open={transferModalOpen} onClose={() => setTransferModalOpen(false)}
         title={ar ? "New stock transfer" : "New stock transfer"}
         sub={ar ? "Warehouse to kiosk stock location" : "Warehouse to kiosk stock location"}>
         <form onSubmit={createManualTransfer} className="col" style={{ gap: 10 }}>
+          <input className="input" value={DEFAULT_WAREHOUSE_NAME} readOnly aria-label="From warehouse"/>
           <select className="input" value={transferDraft.kiosk} onChange={(event) => setTransferDraft((draft) => ({ ...draft, kiosk: event.target.value }))}>
             {kioskRows.map((kiosk) => (
               <option key={kiosk.id || kiosk.kiosk_code} value={kiosk.id || kiosk.kiosk_code}>{kiosk.id || kiosk.kiosk_code} - {kiosk.name}</option>
@@ -5979,14 +6662,14 @@ function WasteScreen({ lang, bootstrap }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th style={{ width: 30 }}></th>
-              <th>{ar ? "الوقت" : "Time"}</th>
-              <th>{ar ? "الكشك" : "Kiosk"}</th>
-              <th>{ar ? "البند" : "Item"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "الكمية" : "Qty"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "التكلفة" : "Cost"}</th>
-              <th>{ar ? "السبب" : "Reason"}</th>
-              <th></th>
+              <th scope="col" style={{ width: 30 }}></th>
+              <th scope="col">{ar ? "الوقت" : "Time"}</th>
+              <th scope="col">{ar ? "الكشك" : "Kiosk"}</th>
+              <th scope="col">{ar ? "البند" : "Item"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الكمية" : "Qty"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "التكلفة" : "Cost"}</th>
+              <th scope="col">{ar ? "السبب" : "Reason"}</th>
+              <th scope="col"></th>
             </tr>
           </thead>
           <tbody>
@@ -6008,6 +6691,171 @@ function WasteScreen({ lang, bootstrap }) {
         </table>
       </div>
 
+    </div>
+  );
+}
+
+function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
+  const ar = lang === "ar";
+  const { showToast } = useToast();
+  const engineRows = odooInventoryRows(bootstrap);
+  const [localItems, setLocalItems] = React.useState([]);
+  const [categoryFilter, setCategoryFilter] = React.useState("all");
+  const [itemModalOpen, setItemModalOpen] = React.useState(false);
+  const [itemBusy, setItemBusy] = React.useState(false);
+  const [itemDraft, setItemDraft] = React.useState({
+    name: "",
+    code: "",
+    category: "Ingredients",
+    uom: "Units",
+    supplier: "",
+    unitCost: "",
+    purchasePrice: "",
+    consumptionMode: "finished",
+  });
+
+  React.useEffect(() => { setLocalItems([]); }, [bootstrap]);
+
+  const rows = React.useMemo(() => [...localItems, ...engineRows], [localItems, engineRows]);
+  const categoryOptions = React.useMemo(() => (
+    ["all", ...Array.from(new Set(rows.map((row) => row.category).filter(Boolean))).sort()]
+  ), [rows]);
+  const filteredRows = categoryFilter === "all"
+    ? rows
+    : rows.filter((row) => row.category === categoryFilter);
+
+  const submitStockItem = async (event) => {
+    event.preventDefault();
+    if (!itemDraft.name.trim()) {
+      showToast("Stock item needs a name", "warn");
+      return;
+    }
+    setItemBusy(true);
+    try {
+      let created = null;
+      if (sourceOfTruth?.enabled) {
+        created = unwrapOdoo(await sourceOfTruth.createStockItem({
+          name: itemDraft.name.trim(),
+          code: itemDraft.code.trim() || undefined,
+          category: itemDraft.category.trim() || undefined,
+          uom: itemDraft.uom,
+          supplier: itemDraft.supplier.trim() || undefined,
+          unitCost: Number(itemDraft.unitCost || itemDraft.purchasePrice || 0),
+          purchasePrice: Number(itemDraft.purchasePrice || itemDraft.unitCost || 0),
+          consumptionMode: itemDraft.consumptionMode,
+          availableInPos: false,
+        }));
+        await refreshOdoo?.();
+      } else {
+        setLocalItems((items) => [{
+          item: itemDraft.code.trim() || itemDraft.name.trim(),
+          category: itemDraft.category.trim() || "Ingredients",
+          location: "Item catalog",
+          locationKey: "item-catalog",
+          stock: 0,
+          unit: itemDraft.uom,
+          reorder: 0,
+          days: 0,
+          supplier: itemDraft.supplier.trim() || "Unassigned",
+          status: "ok",
+          mode: itemDraft.consumptionMode,
+        }, ...items]);
+      }
+      setItemModalOpen(false);
+      setItemDraft({
+        name: "",
+        code: "",
+        category: "Ingredients",
+        uom: "Units",
+        supplier: itemDraft.supplier,
+        unitCost: "",
+        purchasePrice: "",
+        consumptionMode: "finished",
+      });
+      showToast(`Stock item created - ${created?.product?.default_code || created?.product?.name || itemDraft.name}`, "success");
+    } catch (error) {
+      showToast(error?.message || "Could not create stock item", "warn");
+    } finally {
+      setItemBusy(false);
+    }
+  };
+
+  return (
+    <div className="col" style={{ gap: 14 }}>
+      <div className="card">
+        <div className="between" style={{ padding: "14px 18px" }}>
+          <div>
+            <div className="t-h2">{ar ? "Stock items" : "Stock item catalog"}</div>
+            <div className="t-small subtle">{ar ? "Master purchasable items" : "Create purchasable items once, then link them to suppliers and recipes"}</div>
+          </div>
+          <div className="row" style={{ gap: 6 }}>
+            <select className="input" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 160 }}>
+              {categoryOptions.map((category) => <option key={category} value={category}>{category === "all" ? "All categories" : category}</option>)}
+            </select>
+            <button className="btn btn-primary" onClick={() => setItemModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
+              <Icon name="plus" size={12}/>{ar ? "New item" : "New item"}
+            </button>
+          </div>
+        </div>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th scope="col">Item</th>
+              <th scope="col">Category</th>
+              <th scope="col">UoM</th>
+              <th scope="col">Default supplier</th>
+              <th scope="col" style={{ textAlign: "end" }}>Unit cost</th>
+              <th scope="col">Mode</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredRows.map((item, index) => (
+              <tr key={`${item.item}-${index}`}>
+                <td><span style={{ fontWeight: 500 }}>{item.item}</span></td>
+                <td className="muted">{item.category}</td>
+                <td className="muted">{item.unit}</td>
+                <td className="muted">{item.supplier || "Unassigned"}</td>
+                <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(estimatePurchaseRate(item.item))}</td>
+                <td><span className="badge">{item.mode || "stock"}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <Modal open={itemModalOpen} onClose={() => setItemModalOpen(false)}
+        title="New stock item"
+        sub="Creates a global purchasable stock item"
+        width={640}>
+        <form onSubmit={submitStockItem} className="col" style={{ gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 8 }}>
+            <input className="input" value={itemDraft.name} onChange={(event) => setItemDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="Milk whole 1L"/>
+            <input className="input" value={itemDraft.code} onChange={(event) => setItemDraft((draft) => ({ ...draft, code: event.target.value }))} placeholder="MILK-WHOLE-1L"/>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 120px 1fr", gap: 8 }}>
+            <input className="input" value={itemDraft.category} onChange={(event) => setItemDraft((draft) => ({ ...draft, category: event.target.value }))} placeholder="Ingredients"/>
+            <select className="input" value={itemDraft.uom} onChange={(event) => setItemDraft((draft) => ({ ...draft, uom: event.target.value }))}>
+              {["Units", "kg", "g", "l", "ml"].map((uom) => <option key={uom} value={uom}>{uom}</option>)}
+            </select>
+            <input className="input" value={itemDraft.supplier} onChange={(event) => setItemDraft((draft) => ({ ...draft, supplier: event.target.value }))} placeholder="Default supplier"/>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 170px", gap: 8 }}>
+            <input className="input" type="number" min="0" step="0.01" value={itemDraft.unitCost} onChange={(event) => setItemDraft((draft) => ({ ...draft, unitCost: event.target.value }))} placeholder="Unit cost"/>
+            <input className="input" type="number" min="0" step="0.01" value={itemDraft.purchasePrice} onChange={(event) => setItemDraft((draft) => ({ ...draft, purchasePrice: event.target.value }))} placeholder="Purchase price"/>
+            <select className="input" value={itemDraft.consumptionMode} onChange={(event) => setItemDraft((draft) => ({ ...draft, consumptionMode: event.target.value }))}>
+              <option value="finished">Stock item</option>
+              <option value="recipe">Recipe component</option>
+              <option value="hybrid">Hybrid item</option>
+              <option value="none">No stock consumption</option>
+            </select>
+          </div>
+          <div className="t-small subtle">Stock items are global. Supplier pages link suppliers to these items; Stock & Allocation only moves existing stock.</div>
+          <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+            <button type="button" className="btn btn-ghost" onClick={() => setItemModalOpen(false)}>Cancel</button>
+            <button className="btn btn-primary" disabled={itemBusy || !itemDraft.name.trim()}>{itemBusy ? "Creating" : "Create item"}</button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }
@@ -6169,18 +7017,18 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th style={{ width: 24 }}></th>
-              <th>{ar ? "الكشك" : "Kiosk"}</th>
-              <th>{ar ? "الكاشير" : "Cashier"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "المبيعات" : "Sales"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "نقد متوقع" : "Cash expected"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "نقد فعلي" : "Cash counted"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "مدفوعات رقمية" : "Digital payments"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "فرق النقد" : "Cash variance"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "فرق المخزون" : "Stock variance"}</th>
-              <th>{ar ? "الحالة" : "Status"}</th>
-              <th>{ar ? "التحقيق" : "Investigation"}</th>
-              <th style={{ width: 24 }}></th>
+              <th scope="col" style={{ width: 24 }}></th>
+              <th scope="col">{ar ? "الكشك" : "Kiosk"}</th>
+              <th scope="col">{ar ? "الكاشير" : "Cashier"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "المبيعات" : "Sales"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "نقد متوقع" : "Cash expected"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "نقد فعلي" : "Cash counted"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "مدفوعات رقمية" : "Digital payments"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "فرق النقد" : "Cash variance"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "فرق المخزون" : "Stock variance"}</th>
+              <th scope="col">{ar ? "الحالة" : "Status"}</th>
+              <th scope="col">{ar ? "التحقيق" : "Investigation"}</th>
+              <th scope="col" style={{ width: 24 }}></th>
             </tr>
           </thead>
           <tbody>
@@ -6204,8 +7052,15 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
                 : "";
               return (
                 <React.Fragment key={c.id}>
-                  <tr className="row-click" onClick={() => setExpandedId(expanded ? null : c.id)}
-                    data-motion={flashId === c.id ? "approving" : undefined}>
+                  <tr
+                    className="row-click"
+                    onClick={() => setExpandedId(expanded ? null : c.id)}
+                    tabIndex={0}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId(expanded ? null : c.id); } }}
+                    aria-expanded={expanded}
+                    aria-label={`${c.kioskName} shift close, ${c.cashier}, expand for review`}
+                    data-motion={flashId === c.id ? "approving" : undefined}
+                  >
                     <td>{dotClass ? <span className={`dot ${dotClass}`}></span> : <span className="dot" style={{ opacity: 0.3 }}></span>}</td>
                     <td>
                       <div style={{ fontWeight: 500 }}>{c.kioskName}</div>
@@ -6231,7 +7086,43 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
                       </span>
                     </td>
                     <td className="muted">{investigationLabel}</td>
-                    <td><Icon name={expanded ? "chevDown" : "chevRight"} size={11}/></td>
+                    <td onClick={(e) => e.stopPropagation()} style={{ width: 110, textAlign: "end" }}>
+                      <div className="row" style={{ gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
+                        {c.status !== "approved" && c.status !== "open" && (
+                          <>
+                            <button
+                              type="button"
+                              title={ar ? "اعتماد" : "Approve"}
+                              onClick={() => onApproveClose(c)}
+                              disabled={busyId === c.id}
+                              className="btn btn-quiet"
+                              style={{ height: 24, padding: "0 6px", color: "var(--pos, #2C7C58)" }}
+                            >
+                              <Icon name="check" size={12}/>
+                            </button>
+                            <button
+                              type="button"
+                              title={ar ? "رفض" : "Reject"}
+                              onClick={() => onRejectClose(c)}
+                              disabled={busyId === c.id}
+                              className="btn btn-quiet"
+                              style={{ height: 24, padding: "0 6px", color: "var(--crit, #C04A38)" }}
+                            >
+                              <Icon name="x" size={12}/>
+                            </button>
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setExpandedId(expanded ? null : c.id)}
+                          className="btn btn-quiet"
+                          style={{ height: 24, padding: "0 6px", color: "var(--ink-3)" }}
+                          title={ar ? "تفاصيل" : "Details"}
+                        >
+                          <Icon name={expanded ? "chevDown" : "chevRight"} size={11}/>
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                   {expanded && (
                     <tr>
@@ -6277,14 +7168,14 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
                                 <table className="tbl" style={{ background: "var(--paper)", marginBottom: 12 }}>
                                   <thead>
                                     <tr>
-                                      <th>{ar ? "البند" : "Item"}</th>
-                                      <th style={{ textAlign: "end" }}>{ar ? "افتتاح" : "Opening"}</th>
-                                      <th style={{ textAlign: "end" }}>{ar ? "مستلم" : "Received"}</th>
-                                      <th style={{ textAlign: "end" }}>{ar ? "استهلاك" : "Consumed"}</th>
-                                      <th style={{ textAlign: "end" }}>{ar ? "هدر" : "Waste"}</th>
-                                      <th style={{ textAlign: "end" }}>{ar ? "متوقع" : "Expected"}</th>
-                                      <th style={{ textAlign: "end" }}>{ar ? "فعلي" : "Counted"}</th>
-                                      <th style={{ textAlign: "end" }}>{ar ? "فارق" : "Variance"}</th>
+                                      <th scope="col">{ar ? "البند" : "Item"}</th>
+                                      <th scope="col" style={{ textAlign: "end" }}>{ar ? "افتتاح" : "Opening"}</th>
+                                      <th scope="col" style={{ textAlign: "end" }}>{ar ? "مستلم" : "Received"}</th>
+                                      <th scope="col" style={{ textAlign: "end" }}>{ar ? "استهلاك" : "Consumed"}</th>
+                                      <th scope="col" style={{ textAlign: "end" }}>{ar ? "هدر" : "Waste"}</th>
+                                      <th scope="col" style={{ textAlign: "end" }}>{ar ? "متوقع" : "Expected"}</th>
+                                      <th scope="col" style={{ textAlign: "end" }}>{ar ? "فعلي" : "Counted"}</th>
+                                      <th scope="col" style={{ textAlign: "end" }}>{ar ? "فارق" : "Variance"}</th>
                                     </tr>
                                   </thead>
                                   <tbody>
@@ -6309,11 +7200,11 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
                             <table className="tbl" style={{ background: "var(--paper)" }}>
                               <thead>
                                 <tr>
-                                  <th>{ar ? "البند" : "Item"}</th>
-                                  <th style={{ textAlign: "end" }}>{ar ? "متوقع" : "Expected"}</th>
-                                  <th style={{ textAlign: "end" }}>{ar ? "فعلي" : "Counted"}</th>
-                                  <th style={{ textAlign: "end" }}>{ar ? "فرق" : "Variance"}</th>
-                                  <th style={{ textAlign: "end" }}>{ar ? "قيمة الفرق" : "Variance value"}</th>
+                                  <th scope="col">{ar ? "البند" : "Item"}</th>
+                                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "متوقع" : "Expected"}</th>
+                                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "فعلي" : "Counted"}</th>
+                                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "فرق" : "Variance"}</th>
+                                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "قيمة الفرق" : "Variance value"}</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -6384,9 +7275,15 @@ const recipeProductKey = (value) => String(value || "").trim().toLowerCase();
 function ProductsScreen({ lang, bootstrap, sourceOfTruth }) {
   const ar = lang === "ar";
   const catalog = useCatalog();
+  const { showToast } = useToast();
   const [filter, setFilter] = React.useState("all");
   const [search, setSearch] = React.useState("");
   const [editingId, setEditingId] = React.useState(null);
+  const [createDraft, setCreateDraft] = React.useState(null);
+  const [createLines, setCreateLines] = React.useState([]);
+  const [createSaving, setCreateSaving] = React.useState(false);
+  const [createError, setCreateError] = React.useState("");
+  const [highlightId, setHighlightId] = React.useState(null);
   const recipeRows = odooRecipeMarginRows(bootstrap);
   const recipeCoverage = React.useMemo(
     () => new Map(recipeRows.map((row) => [recipeProductKey(row.product), row])),
@@ -6401,6 +7298,11 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth }) {
   const filtered = products
     .filter((p) => filter === "all" || p.category === filter)
     .filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()));
+  // When highlighting a freshly-created product, hoist it to the top so the user
+  // sees what they just added without scrolling through 30+ rows.
+  const sortedFiltered = highlightId
+    ? [...filtered].sort((a, b) => (a.id === highlightId ? -1 : b.id === highlightId ? 1 : 0))
+    : filtered;
 
   const totals = {
     total: products.length,
@@ -6411,11 +7313,75 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth }) {
 
   const startNew = () => {
     const id = catalog.nextId();
-    const name = "New product";
-    const slug = slugify(name) + "-" + id;
-    const draft = { id, category: "Hot Coffee", name, image: slug, price: 5_000, sizes: ["S"] };
-    catalog.upsertProduct(draft);
-    setEditingId(id);
+    const draft = { id, category: "Hot Coffee", name: "", image: "", price: 5000, sizes: ["S"] };
+    setCreateDraft(draft);
+    setCreateLines([]);
+    setCreateError("");
+  };
+
+  const cancelCreate = () => {
+    setCreateDraft(null);
+    setCreateLines([]);
+    setCreateError("");
+    setCreateSaving(false);
+  };
+
+  const saveCreate = async () => {
+    if (!createDraft) return;
+    const trimmedName = (createDraft.name || "").trim();
+    if (!trimmedName) {
+      setCreateError(ar ? "الاسم مطلوب" : "Name is required");
+      return;
+    }
+    if (!(createDraft.price >= 0)) {
+      setCreateError(ar ? "السعر يجب أن يكون رقماً موجباً" : "Price must be a non-negative number");
+      return;
+    }
+    const slug = (createDraft.image || slugify(trimmedName)) + (createDraft.image ? "" : "-" + createDraft.id);
+    const finalProduct = {
+      ...createDraft,
+      name: trimmedName,
+      price: Math.max(0, Number(createDraft.price) || 0),
+      image: slugify(slug) || `product-${createDraft.id}`,
+      sizes: (createDraft.sizes || []).filter(Boolean),
+    };
+    if (finalProduct.sizes.length === 0) finalProduct.sizes = ["S"];
+    const validLines = createLines.filter((l) => l.ingredient && l.qty > 0);
+    setCreateSaving(true);
+    setCreateError("");
+    try {
+      catalog.upsertProduct(finalProduct);
+      catalog.setRecipe(finalProduct.id, validLines);
+      if (sourceOfTruth?.enabled && validLines.length) {
+        await sourceOfTruth.submitRecipeVersion({
+          itemId: finalProduct.name,
+          effectiveFrom: new Date().toISOString(),
+          ingredients: validLines.map((line) => ({
+            ingredientId: line.ingredient,
+            qty: Number(line.qty) || 0,
+            uom: line.unit,
+          })),
+          submit: true,
+        });
+      }
+      showToast(
+        ar ? `تمت إضافة ${finalProduct.name}` : `Added ${finalProduct.name}`,
+        "success",
+      );
+      // Make sure the user actually sees the new row: switch filter to its
+      // category, clear search, and pin it to the top with a brief highlight.
+      setSearch("");
+      setFilter(finalProduct.category);
+      setHighlightId(finalProduct.id);
+      window.setTimeout(() => setHighlightId(null), 4000);
+      cancelCreate();
+    } catch (err) {
+      const message = String(err?.message ?? err);
+      setCreateError(message);
+      showToast(message || "Could not save product", "warn");
+    } finally {
+      setCreateSaving(false);
+    }
   };
 
   return (
@@ -6443,12 +7409,12 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th>{ar ? "المنتج" : "Product"}</th>
-              <th>{ar ? "إصدار الوصفة" : "Recipe version"}</th>
-              <th>{ar ? "المكونات" : "Ingredients / packaging"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "السعر" : "Price"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "التكلفة" : "Cost"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "الهامش" : "Gross margin"}</th>
+              <th scope="col">{ar ? "المنتج" : "Product"}</th>
+              <th scope="col">{ar ? "إصدار الوصفة" : "Recipe version"}</th>
+              <th scope="col">{ar ? "المكونات" : "Ingredients / packaging"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "السعر" : "Price"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "التكلفة" : "Cost"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الهامش" : "Gross margin"}</th>
             </tr>
           </thead>
           <tbody>
@@ -6514,24 +7480,29 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th style={{ width: 56 }}></th>
-              <th>{ar ? "المنتج" : "Product"}</th>
-              <th>{ar ? "الفئة" : "Category"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "السعر" : "Price"}</th>
-              <th>{ar ? "الأحجام" : "Sizes"}</th>
-              <th>{ar ? "الوصفة" : "Recipe"}</th>
-              <th style={{ width: 100, textAlign: "end" }}></th>
+              <th scope="col" style={{ width: 56 }}></th>
+              <th scope="col">{ar ? "المنتج" : "Product"}</th>
+              <th scope="col">{ar ? "الفئة" : "Category"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "السعر" : "Price"}</th>
+              <th scope="col">{ar ? "الأحجام" : "Sizes"}</th>
+              <th scope="col">{ar ? "الوصفة" : "Recipe"}</th>
+              <th scope="col" style={{ width: 100, textAlign: "end" }}></th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((p) => {
+            {sortedFiltered.map((p) => {
               const recipe = catalog.state.recipes[p.id];
               const engineRecipe = recipeCoverage.get(recipeProductKey(p.name));
               const lineCount = recipe?.lines?.length ?? 0;
               const isEditing = editingId === p.id;
+              const isHighlighted = highlightId === p.id;
               return (
                 <React.Fragment key={p.id}>
-                  <tr className="row-click">
+                  <tr className="row-click" style={isHighlighted ? {
+                    background: "var(--accent-soft, #FFF6E0)",
+                    boxShadow: "inset 3px 0 0 var(--accent, #B88A2C)",
+                    transition: "background 600ms",
+                  } : undefined}>
                     <td><ProductImage slug={p.image} name={p.name} size={40} radius={6}/></td>
                     <td>
                       <div style={{ fontWeight: 500 }}>{p.name}</div>
@@ -6574,7 +7545,172 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth }) {
           </tbody>
         </table>
       </div>
+
+      <ProductCreateDialog
+        ar={ar}
+        open={createDraft != null}
+        draft={createDraft}
+        setDraft={setCreateDraft}
+        lines={createLines}
+        setLines={setCreateLines}
+        saving={createSaving}
+        error={createError}
+        onCancel={cancelCreate}
+        onSave={saveCreate}
+      />
     </div>
+  );
+}
+
+function ProductCreateDialog({ ar, open, draft, setDraft, lines, setLines, saving, error, onCancel, onSave }) {
+  const ingredientOptions = React.useMemo(
+    () => MOCK.inventory.map((it) => ({ value: it.item, label: it.item, unit: it.unit })),
+    [],
+  );
+
+  if (!open || !draft) return null;
+
+  const addLine = () => {
+    const first = ingredientOptions[0];
+    setLines([...lines, { ingredient: first.value, qty: 0, unit: first.unit }]);
+  };
+  const updateLine = (i, patch) => setLines(lines.map((l, idx) => idx === i ? { ...l, ...patch } : l));
+  const removeLine = (i) => setLines(lines.filter((_, idx) => idx !== i));
+
+  return (
+    <Modal
+      open={open}
+      onClose={onCancel}
+      width={760}
+      title={ar ? "منتج جديد" : "New product"}
+      sub={ar
+        ? "املأ الاسم والسعر والفئة والمكونات. سيظهر المنتج فور الحفظ في القائمة أعلى."
+        : "Fill in name, price, category, and ingredients. The product appears at the top of the list on save."}
+    >
+      <div className="col" style={{ gap: 14 }}>
+        <div className="row" style={{ gap: 10 }}>
+          <div className="col" style={{ flex: 2, gap: 4 }}>
+            <label className="t-micro">{ar ? "الاسم" : "Name"}</label>
+            <input
+              autoFocus
+              value={draft.name}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              placeholder={ar ? "مثال: لاتيه فانيلا" : "e.g. Vanilla Latte"}
+              style={editorInput}
+            />
+          </div>
+          <div className="col" style={{ flex: 1, gap: 4 }}>
+            <label className="t-micro">{ar ? "السعر (د.ع)" : "Price (IQD)"}</label>
+            <input
+              type="number"
+              min={0}
+              step={500}
+              value={draft.price}
+              onChange={(e) => setDraft({ ...draft, price: Number(e.target.value) })}
+              style={editorInput}
+            />
+          </div>
+          <div className="col" style={{ flex: 1, gap: 4 }}>
+            <label className="t-micro">{ar ? "الفئة" : "Category"}</label>
+            <select
+              value={draft.category}
+              onChange={(e) => setDraft({ ...draft, category: e.target.value })}
+              style={editorInput}
+            >
+              {CATEGORY_ORDER.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="row" style={{ gap: 10 }}>
+          <div className="col" style={{ flex: 2, gap: 4 }}>
+            <label className="t-micro">{ar ? "الأحجام (مفصولة بفاصلة)" : "Sizes (comma-separated)"}</label>
+            <input
+              value={(draft.sizes || []).join(", ")}
+              onChange={(e) => setDraft({ ...draft, sizes: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
+              placeholder="S, M, L"
+              style={editorInput}
+            />
+          </div>
+          <div className="col" style={{ flex: 2, gap: 4 }}>
+            <label className="t-micro">{ar ? "معرف الصورة (slug)" : "Image slug (optional)"}</label>
+            <input
+              value={draft.image}
+              onChange={(e) => setDraft({ ...draft, image: e.target.value })}
+              placeholder={ar ? "تلقائي من الاسم" : "auto from name"}
+              style={editorInput}
+            />
+          </div>
+        </div>
+
+        <div className="col" style={{ gap: 6, marginTop: 4 }}>
+          <div className="between">
+            <div className="t-micro">{ar ? "وصفة المكونات (اختياري)" : "Recipe ingredients (optional)"}</div>
+            <button type="button" className="btn btn-ghost" onClick={addLine} style={{ height: 24, fontSize: 11 }}>
+              <Icon name="plus" size={11}/>{ar ? "إضافة بند" : "Add line"}
+            </button>
+          </div>
+          {lines.length === 0 ? (
+            <div className="t-small muted" style={{ padding: "6px 0" }}>
+              {ar
+                ? "بدون مكونات سيتعامل النظام مع المنتج كمنتج نهائي. أضف مكونات لتفعيل خصم المخزون لكل بيع."
+                : "Without ingredients the product is treated as a finished item. Add lines to enable per-sale stock deduction."}
+            </div>
+          ) : (
+            <div className="col" style={{ gap: 6 }}>
+              {lines.map((l, i) => (
+                <div key={i} className="row" style={{ gap: 8 }}>
+                  <select
+                    value={l.ingredient}
+                    onChange={(e) => {
+                      const opt = ingredientOptions.find((o) => o.value === e.target.value);
+                      updateLine(i, { ingredient: e.target.value, unit: opt?.unit ?? l.unit });
+                    }}
+                    style={{ ...editorInput, flex: 2 }}
+                  >
+                    {ingredientOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {ar ? (RECIPE_INGREDIENTS_AR[opt.value] ?? opt.label) : opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={l.qty}
+                    onChange={(e) => updateLine(i, { qty: Number(e.target.value) })}
+                    style={{ ...editorInput, width: 90 }}
+                  />
+                  <input
+                    value={l.unit}
+                    placeholder="unit"
+                    onChange={(e) => updateLine(i, { unit: e.target.value })}
+                    style={{ ...editorInput, width: 80 }}
+                  />
+                  <button type="button" className="btn btn-quiet" onClick={() => removeLine(i)} style={{ height: 30, fontSize: 11 }}>
+                    <Icon name="x" size={11}/>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {error && (
+          <div className="t-small" style={{ color: "var(--crit, #C04A38)" }}>{error}</div>
+        )}
+
+        <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+          <button type="button" className="btn btn-ghost" onClick={onCancel} style={{ height: 32, fontSize: 12 }}>
+            {ar ? "إلغاء" : "Cancel"}
+          </button>
+          <button type="button" className="btn btn-accent" onClick={onSave} disabled={saving} style={{ height: 32, fontSize: 12 }}>
+            <Icon name="check" size={12}/>{saving ? (ar ? "جارٍ الحفظ" : "Saving") : (ar ? "إضافة المنتج" : "Add product")}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -6803,52 +7939,167 @@ const editorInput = {
 };
 
 // =============== SUPPLIERS ===============
-function SuppliersScreen({ lang, bootstrap }) {
+function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const ar = lang === "ar";
   const { showToast } = useToast();
+  const liveOnly = isLiveOnlyPayload(bootstrap);
   const enginePurchaseOrders = odooPurchaseOrderRows(bootstrap);
+  const inv = odooInventoryRows(bootstrap);
   const [purchaseOrders, setPurchaseOrders] = useState(enginePurchaseOrders);
-  const [supplierRows, setSupplierRows] = useState(MOCK.suppliers);
+  const [supplierRows, setSupplierRows] = useState(canUseDemoFallback(bootstrap) ? MOCK.suppliers : []);
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [poModalOpen, setPoModalOpen] = useState(false);
   const [supplierModalOpen, setSupplierModalOpen] = useState(false);
+  const [poBusy, setPoBusy] = useState(false);
+  const [poActionBusy, setPoActionBusy] = useState("");
   const [poDraft, setPoDraft] = useState({
     supplier: MOCK.suppliers[0]?.name || "",
-    items: "Milk, cream, yogurt",
-    value: "2950000",
+    warehouse: DEFAULT_WAREHOUSE_NAME,
+    scheduleDate: tomorrowIsoDate(),
+    invoiceRef: "",
+    invoiceName: "",
+    lines: [purchaseLineFromInventory(MOCK.inventory[0])],
   });
   const [supplierDraft, setSupplierDraft] = useState({
     name: "",
+    address: "",
+    deliveryCategory: "Same day",
     category: "Produce",
-    ontime: "95",
   });
   React.useEffect(() => { setPurchaseOrders(enginePurchaseOrders); }, [bootstrap]);
-  const openPurchaseOrders = purchaseOrders.filter((po) => !["done", "cancel", "cancelled"].includes(String(po.status).toLowerCase()));
+  React.useEffect(() => {
+    if (!liveOnly) {
+      setSupplierRows(MOCK.suppliers);
+      return;
+    }
+    const bySupplier = new Map();
+    enginePurchaseOrders.forEach((po) => {
+      if (!po.supplier) return;
+      const row = bySupplier.get(po.supplier) || {
+        name: po.supplier,
+        category: "From purchase orders",
+        address: "From purchase records",
+        deliveryCategory: "Review",
+        spend30: 0,
+        lastOrder: po.po || "-",
+        status: "review",
+      };
+      row.spend30 += Number(po.value || 0);
+      row.lastOrder = po.po || row.lastOrder;
+      bySupplier.set(po.supplier, row);
+    });
+    setSupplierRows(Array.from(bySupplier.values()));
+    setPoDraft((draft) => draft.supplier || draft.lines?.length ? { ...draft, supplier: "", lines: [] } : draft);
+  }, [bootstrap, liveOnly]);
+  const openPurchaseOrders = purchaseOrders.filter((po) => !["done", "received", "cancel", "cancelled"].includes(String(po.status).toLowerCase()));
   const supplierCategories = ["all", ...Array.from(new Set(supplierRows.map((supplier) => supplier.category)))];
   const filteredSuppliers = categoryFilter === "all"
     ? supplierRows
     : supplierRows.filter((supplier) => supplier.category === categoryFilter);
+  const priceChangeRows = liveOnly ? [] : [
+    ["Milk (whole) 1L", "ctn", "Baghdad Dairy", "Same day"],
+    ["Oranges", "kg", "Najaf Fresh", "Next morning"],
+    ["Pistachio paste", "kg", "Mesopotamia Foods", "2-3 days"],
+    ["Cups 12oz", "pc", "Iraq Pack", "Weekly"],
+  ];
   const openPoModal = (supplier = supplierRows[0]) => {
-    setPoDraft((draft) => ({ ...draft, supplier: supplier?.name || draft.supplier }));
+    setPoDraft((draft) => ({
+      ...draft,
+      supplier: supplier?.name || draft.supplier,
+      warehouse: draft.warehouse || DEFAULT_WAREHOUSE_NAME,
+      scheduleDate: draft.scheduleDate || tomorrowIsoDate(),
+      invoiceRef: draft.invoiceRef || "",
+      invoiceName: draft.invoiceName || "",
+      lines: draft.lines?.length ? draft.lines : [purchaseLineFromInventory(inv[0] || (liveOnly ? null : MOCK.inventory[0]))].filter((line) => line.item),
+    }));
     setPoModalOpen(true);
   };
-  const submitPo = (event) => {
-    event.preventDefault();
-    const value = Number(poDraft.value || 0);
-    if (!poDraft.supplier || !poDraft.items.trim() || value <= 0) {
-      showToast(ar ? "PO needs supplier, items, and value" : "PO needs supplier, items, and value", "warn");
+  const updatePoLine = (index, patch) => {
+    setPoDraft((draft) => ({
+      ...draft,
+      lines: draft.lines.map((line, i) => (i === index ? { ...line, ...patch } : line)),
+    }));
+  };
+  const addPoLine = () => {
+    const item = inv[0] || (liveOnly ? null : MOCK.inventory[0]);
+    if (!item) {
+      showToast("No live inventory items loaded for PO lines", "warn");
       return;
     }
-    const next = {
-      po: `PO-DRAFT-${String(purchaseOrders.length + 1).padStart(3, "0")}`,
-      supplier: poDraft.supplier,
-      items: poDraft.items.trim(),
-      value,
-      status: "draft",
-    };
-    setPurchaseOrders((rows) => [next, ...rows]);
-    setPoModalOpen(false);
-    showToast(ar ? "Purchase order drafted" : `Purchase order drafted - ${next.supplier}`, "success");
+    setPoDraft((draft) => ({ ...draft, lines: [...draft.lines, purchaseLineFromInventory(item)] }));
+  };
+  const removePoLine = (index) => {
+    setPoDraft((draft) => ({ ...draft, lines: draft.lines.filter((_, i) => i !== index) }));
+  };
+  const submitPo = async (event, submit = false) => {
+    event.preventDefault();
+    const lines = poDraft.lines
+      .filter((line) => line.item && Number(line.qty || 0) > 0)
+      .map((line) => ({
+        item: line.item,
+        qty: Number(line.qty || 0),
+        unit: line.unit || inv.find((item) => item.item === line.item)?.unit || "",
+        rate: Number(line.rate || 0),
+      }));
+    if (!poDraft.supplier || !lines.length || lines.some((line) => line.rate <= 0)) {
+      showToast(ar ? "PO needs supplier, item lines, quantities, and rates" : "PO needs supplier, item lines, quantities, and rates", "warn");
+      return;
+    }
+    setPoBusy(true);
+    try {
+      let created = null;
+      if (sourceOfTruth?.enabled) {
+        created = unwrapOdoo(await sourceOfTruth.submitPurchaseOrder({
+          supplier: poDraft.supplier,
+          warehouse: poDraft.warehouse,
+          scheduleDate: poDraft.scheduleDate,
+          submit: true,
+          items: lines.map((line) => ({ itemId: line.item, qty: line.qty, rate: line.rate })),
+        }));
+        await refreshOdoo?.();
+      }
+      const next = {
+        po: created?.name || `PO-DRAFT-${String(purchaseOrders.length + 1).padStart(3, "0")}`,
+        supplier: poDraft.supplier,
+        warehouse: poDraft.warehouse,
+        invoice: poDraft.invoiceRef || poDraft.invoiceName || "-",
+        delivery: poDraft.scheduleDate,
+        items: purchaseLineSummary(lines),
+        value: purchaseTotal(lines),
+        status: "created",
+        lines,
+      };
+      setPurchaseOrders((rows) => [next, ...rows]);
+      setPoModalOpen(false);
+      showToast(ar ? "Purchase order created" : `${sourceOfTruth?.enabled ? "Odoo PO" : "Demo PO"} created - ${next.supplier}`, "success");
+    } catch (error) {
+      showToast(error?.message || "Could not create purchase order", "warn");
+    } finally {
+      setPoBusy(false);
+    }
+  };
+  const advancePoStatus = async (po, action) => {
+    const nextStatus = action?.next || action;
+    if (sourceOfTruth?.enabled) {
+      setPoActionBusy(po.po);
+      try {
+        const result = unwrapOdoo(await sourceOfTruth.purchaseOrderAction({
+          po: po.po,
+          action: action?.action || "receive",
+        }));
+        await refreshOdoo?.();
+        const nextEngineStatus = result?.receipt_state === "done" ? "received" : result?.state || nextStatus;
+        setPurchaseOrders((rows) => rows.map((row) => (row.po === po.po ? { ...row, status: nextEngineStatus } : row)));
+        showToast(`Odoo PO ${po.po} moved to ${nextEngineStatus}`, "success");
+      } catch (error) {
+        showToast(error?.message || "Could not update purchase order in Odoo", "warn");
+      } finally {
+        setPoActionBusy("");
+      }
+      return;
+    }
+    setPurchaseOrders((rows) => rows.map((row) => (row.po === po.po ? { ...row, status: nextStatus } : row)));
+    showToast(`PO ${po.po} moved to ${nextStatus}`, "success");
   };
   const submitSupplier = (event) => {
     event.preventDefault();
@@ -6859,22 +8110,23 @@ function SuppliersScreen({ lang, bootstrap }) {
     const next = {
       name: supplierDraft.name.trim(),
       category: supplierDraft.category,
+      address: supplierDraft.address.trim(),
+      deliveryCategory: supplierDraft.deliveryCategory,
       spend30: 0,
-      ontime: Math.max(0, Math.min(100, Number(supplierDraft.ontime || 95))),
       lastOrder: "New",
       status: "good",
     };
     setSupplierRows((rows) => [next, ...rows]);
-    setSupplierDraft({ name: "", category: "Produce", ontime: "95" });
+    setSupplierDraft({ name: "", address: "", deliveryCategory: "Same day", category: "Produce" });
     setSupplierModalOpen(false);
     showToast(ar ? "Supplier added" : `Supplier added - ${next.name}`, "success");
   };
   return (
     <div className="col" style={{ gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+      <div style={{ display: "none", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
         <KPI label={ar ? "موردون نشطون" : "Active suppliers"} value={String(supplierRows.length)}/>
-        <KPI label={ar ? "إنفاق ٣٠ يوم" : "30-day spend"} value={fmtMoney(supplierRows.reduce((sum, supplier) => sum + Number(supplier.spend30 || 0), 0))} delta="4.2%" deltaDir="up"/>
-        <KPI label={ar ? "وصول في الموعد" : "On-time delivery"} value="93%" delta="2 pts" deltaDir="down"/>
+        <KPI label={ar ? "إنفاق ٣٠ يوم" : "30-day spend"} value={fmtMoney(supplierRows.reduce((sum, supplier) => sum + Number(supplier.spend30 || 0), 0))} delta={liveOnly ? undefined : "4.2%"} deltaDir="up"/>
+        <KPI label={ar ? "وصول في الموعد" : "On-time delivery"} value={liveOnly ? "0%" : "93%"} delta={liveOnly ? undefined : "2 pts"} deltaDir="down"/>
         <KPI label={ar ? "طلبات مفتوحة" : "Open POs"} value={String(openPurchaseOrders.length)} footer={ar ? "بيانات الشراء" : "purchase.order"}/>
       </div>
 
@@ -6883,20 +8135,22 @@ function SuppliersScreen({ lang, bootstrap }) {
           <div className="between" style={{ padding: "14px 18px" }}>
             <div>
               <div className="t-h2">{ar ? "طلبات الشراء المفتوحة" : "Open purchase orders"}</div>
-              <div className="t-small subtle">{ar ? "المشتريات التي تغير تكلفة المنتج" : "Purchases that change ingredient cost"}</div>
+              <div className="t-small subtle">{ar ? "المشتريات التي تغير تكلفة المنتج" : "Invoice-first purchases assigned to a receiving warehouse"}</div>
             </div>
             <button className="btn btn-ghost" onClick={() => openPoModal()} style={{ height: 28, fontSize: 12 }}>
-              <Icon name="plus" size={12}/>{ar ? "طلب شراء" : "New PO"}
+              <Icon name="plus" size={12}/>{ar ? "طلب شراء" : "Upload invoice"}
             </button>
           </div>
           <table className="tbl">
             <thead>
               <tr>
-                <th>{ar ? "الطلب" : "PO"}</th>
-                <th>{ar ? "المورد" : "Supplier"}</th>
-                <th>{ar ? "بنود" : "Items"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "القيمة" : "Value"}</th>
-                <th>{ar ? "الحالة" : "Status"}</th>
+                <th scope="col">{ar ? "الطلب" : "PO"}</th>
+                <th scope="col">{ar ? "المورد" : "Supplier"}</th>
+                <th scope="col">{ar ? "الفاتورة" : "Invoice"}</th>
+                <th scope="col">{ar ? "المستودع" : "Warehouse"}</th>
+                <th scope="col">{ar ? "بنود" : "Items"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "القيمة" : "Value"}</th>
+                <th scope="col">{ar ? "الحالة" : "Status"}</th>
               </tr>
             </thead>
             <tbody>
@@ -6904,9 +8158,20 @@ function SuppliersScreen({ lang, bootstrap }) {
                 <tr key={po.po}>
                   <td className="t-num">{po.po}</td>
                   <td>{po.supplier}</td>
+                  <td className="muted">{po.invoice || "-"}</td>
+                  <td className="muted">{po.warehouse || DEFAULT_WAREHOUSE_NAME}</td>
                   <td className="muted">{po.items}</td>
                   <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(po.value)}</td>
-                  <td><span className={`badge ${po.status === "purchase" || po.status === "approved" ? "badge-pos" : po.status === "draft" || po.status === "sent" ? "badge-warn" : ""}`}>{po.status}</span></td>
+                  <td style={{ textAlign: "end" }}>
+                    <span className={`badge ${purchaseStatusClass(po.status)}`}>{po.status}</span>
+                    {nextPurchaseAction(po.status) && (
+                      <button className="btn btn-ghost" onClick={() => advancePoStatus(po, nextPurchaseAction(po.status))}
+                        disabled={poActionBusy === po.po}
+                        style={{ height: 24, fontSize: 11, marginInlineStart: 6 }}>
+                        {poActionBusy === po.po ? "Working" : nextPurchaseAction(po.status).label}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -6916,26 +8181,25 @@ function SuppliersScreen({ lang, bootstrap }) {
         <div className="card">
           <div className="between" style={{ padding: "14px 18px" }}>
             <div>
-              <div className="t-h2">{ar ? "تغيرات سعر المكونات" : "Ingredient price changes"}</div>
-              <div className="t-small subtle">{ar ? "الأثر على هامش المنتجات" : "Margin impact by recipe component"}</div>
+              <div className="t-h2">{ar ? "تغيرات سعر المكونات" : "Supplier item catalog"}</div>
+              <div className="t-small subtle">{ar ? "الأثر على هامش المنتجات" : "Items must exist before invoice lines can be matched"}</div>
             </div>
             <span className="badge badge-ai">margin watch</span>
           </div>
           <table className="tbl">
             <tbody>
-              {[
-                ["Pistachio paste", "+18%", "Pistachio Cake", "-6.0 pts"],
-                ["Milk (whole) 1L", "+7%", "Latte / Cappuccino", "-1.2 pts"],
-                ["Oranges", "-4%", "Orange Juice 350ml", "+0.9 pts"],
-                ["Cups 12oz", "+3%", "All drinks", "-0.4 pts"],
-              ].map(([item, change, product, impact]) => (
+              {priceChangeRows.length ? priceChangeRows.map(([item, unit, supplier, delivery]) => (
                 <tr key={item}>
                   <td style={{ fontWeight: 500 }}>{item}</td>
-                  <td className={String(change).startsWith("+") ? "delta-neg t-num" : "delta-pos t-num"}>{change}</td>
-                  <td className="muted">{product}</td>
-                  <td className="t-num" style={{ textAlign: "end" }}>{impact}</td>
+                  <td className="muted">{unit}</td>
+                  <td className="muted">{supplier}</td>
+                  <td className="t-num" style={{ textAlign: "end" }}>{delivery}</td>
                 </tr>
-              ))}
+              )) : (
+                <tr>
+                  <td colSpan={4} className="muted">No verified supplier price changes loaded from the engine.</td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -6948,18 +8212,18 @@ function SuppliersScreen({ lang, bootstrap }) {
             <select className="input" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 150 }}>
               {supplierCategories.map((category) => <option key={category} value={category}>{category === "all" ? "All categories" : category}</option>)}
             </select>
-            <button className="btn btn-ghost" onClick={() => setSupplierModalOpen(true)} style={{ height: 28, fontSize: 12 }}><Icon name="plus" size={12}/>{ar ? "مورد" : "Add"}</button>
+            <button className="btn btn-primary" onClick={() => setSupplierModalOpen(true)} disabled={liveOnly} style={{ height: 28, fontSize: 12 }}><Icon name="plus" size={12}/>{ar ? "مورد جديد" : "Add supplier"}</button>
           </div>
         </div>
         <table className="tbl">
           <thead>
             <tr>
-              <th>{ar ? "المورد" : "Supplier"}</th>
-              <th>{ar ? "الفئة" : "Category"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "إنفاق ٣٠ يوم" : "30-day spend"}</th>
-              <th style={{ width: 140 }}>{ar ? "الالتزام" : "On-time"}</th>
-              <th>{ar ? "آخر طلب" : "Last order"}</th>
-              <th style={{ textAlign: "end" }}></th>
+              <th scope="col">{ar ? "المورد" : "Supplier"}</th>
+              <th scope="col">{ar ? "الفئة" : "Category"}</th>
+              <th scope="col">{ar ? "العنوان" : "Address"}</th>
+              <th scope="col">{ar ? "وقت التوصيل" : "Delivery time"}</th>
+              <th scope="col">{ar ? "آخر طلب" : "Last order"}</th>
+              <th scope="col" style={{ textAlign: "end" }}></th>
             </tr>
           </thead>
           <tbody>
@@ -6975,18 +8239,11 @@ function SuppliersScreen({ lang, bootstrap }) {
                   </div>
                 </td>
                 <td className="muted">{s.category}</td>
-                <td style={{ textAlign: "end" }} className="t-num">{fmtMoney(s.spend30)}</td>
-                <td>
-                  <div className="row" style={{ gap: 8 }}>
-                    <div style={{ flex: 1, height: 5, background: "var(--surface-sunk)", borderRadius: 3 }}>
-                      <div style={{ height: "100%", width: `${s.ontime}%`, background: s.ontime > 95 ? "var(--pos)" : s.ontime > 88 ? "var(--ink-1)" : "var(--warn)", borderRadius: 3 }}/>
-                    </div>
-                    <span className="t-num" style={{ fontSize: 12, minWidth: 32, textAlign: "end" }}>{s.ontime}%</span>
-                  </div>
-                </td>
+                <td className="muted">{s.address || "Address not set"}</td>
+                <td><span className="badge">{s.deliveryCategory || "Review"}</span></td>
                 <td className="muted">{s.lastOrder}</td>
                 <td style={{ textAlign: "end" }}>
-                  <button className="btn btn-ghost" onClick={() => openPoModal(s)} style={{ height: 24, fontSize: 11 }}>{ar ? "طلب جديد" : "New PO"}</button>
+                  <button className="btn btn-ghost" onClick={() => openPoModal(s)} style={{ height: 24, fontSize: 11 }}>{ar ? "طلب جديد" : "Upload invoice"}</button>
                 </td>
               </tr>
             ))}
@@ -6996,27 +8253,68 @@ function SuppliersScreen({ lang, bootstrap }) {
 
       <Modal open={poModalOpen} onClose={() => setPoModalOpen(false)}
         title={ar ? "New purchase order" : "New purchase order"}
-        sub={ar ? "Draft supplier order" : "Draft supplier order"}>
-        <form onSubmit={submitPo} className="col" style={{ gap: 10 }}>
+        sub={ar ? "Supplier to warehouse receiving" : "Supplier to warehouse receiving"}
+        width={700}>
+        <form onSubmit={(event) => submitPo(event, false)} className="col" style={{ gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 150px", gap: 8 }}>
           <select className="input" value={poDraft.supplier} onChange={(event) => setPoDraft((draft) => ({ ...draft, supplier: event.target.value }))}>
-            {supplierRows.map((supplier) => <option key={supplier.name} value={supplier.name}>{supplier.name}</option>)}
+            {supplierRows.length ? supplierRows.map((supplier) => <option key={supplier.name} value={supplier.name}>{supplier.name}</option>) : <option value="">No live suppliers loaded</option>}
           </select>
-          <input className="input" value={poDraft.items} onChange={(event) => setPoDraft((draft) => ({ ...draft, items: event.target.value }))} placeholder="Items"/>
-          <input className="input" value={poDraft.value} onChange={(event) => setPoDraft((draft) => ({ ...draft, value: event.target.value }))} placeholder="Value IQD" inputMode="numeric"/>
+            <select className="input" value={poDraft.warehouse} onChange={(event) => setPoDraft((draft) => ({ ...draft, warehouse: event.target.value }))}>
+              <option value={DEFAULT_WAREHOUSE_NAME}>{DEFAULT_WAREHOUSE_NAME}</option>
+              <option value="Baghdad Area Warehouse">Baghdad Area Warehouse</option>
+            </select>
+            <input className="input" type="date" value={poDraft.scheduleDate} onChange={(event) => setPoDraft((draft) => ({ ...draft, scheduleDate: event.target.value }))}/>
+          </div>
+          <div className="t-small subtle">Creating the PO means the purchase has been made. Warehouse stock increases only when a human confirms receipt.</div>
+          <div className="col" style={{ gap: 8 }}>
+            {poDraft.lines.map((line, index) => (
+              <div key={index} className="row" style={{ gap: 8 }}>
+                <select className="input" value={line.item} onChange={(event) => {
+                  const picked = inv.find((item) => item.item === event.target.value);
+                  updatePoLine(index, {
+                    item: event.target.value,
+                    unit: picked?.unit || line.unit,
+                    rate: estimatePurchaseRate(picked || event.target.value),
+                  });
+                }} style={{ flex: 1.6 }}>
+                  {inv.map((item) => <option key={item.item} value={item.item}>{item.item}</option>)}
+                </select>
+                <input className="input" value={line.qty} onChange={(event) => updatePoLine(index, { qty: event.target.value })} placeholder="Qty" inputMode="decimal" style={{ flex: 0.55 }}/>
+                <input className="input" value={line.unit} onChange={(event) => updatePoLine(index, { unit: event.target.value })} placeholder="Unit" style={{ flex: 0.5 }}/>
+                <input className="input" value={line.rate} onChange={(event) => updatePoLine(index, { rate: event.target.value })} placeholder="Unit cost" inputMode="numeric" style={{ flex: 0.8 }}/>
+                <div className="t-num muted" style={{ width: 110, textAlign: "end" }}>{fmtMoney(purchaseLineTotal(line))}</div>
+                <button type="button" className="btn btn-ghost" onClick={() => removePoLine(index)} style={{ width: 30, height: 30, padding: 0, justifyContent: "center" }}>
+                  <Icon name="x" size={12}/>
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="between" style={{ paddingTop: 4 }}>
+            <button type="button" className="btn btn-ghost" onClick={addPoLine} style={{ height: 30, fontSize: 12 }}>
+              <Icon name="plus" size={12}/>Add line
+            </button>
+            <div className="t-num" style={{ fontSize: 14 }}>Total {fmtMoney(purchaseTotal(poDraft.lines))}</div>
+          </div>
           <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
             <button type="button" className="btn btn-ghost" onClick={() => setPoModalOpen(false)}>Cancel</button>
-            <button type="submit" className="btn btn-primary">Create PO</button>
+            <button type="submit" className="btn btn-primary" disabled={poBusy}>{poBusy ? "Creating..." : "Create purchase order"}</button>
           </div>
         </form>
       </Modal>
 
       <Modal open={supplierModalOpen} onClose={() => setSupplierModalOpen(false)}
         title={ar ? "Add supplier" : "Add supplier"}
-        sub={ar ? "Supplier health starts in review" : "Supplier health starts in review"}>
+        sub={ar ? "Supplier setup" : "Supplier setup"}>
         <form onSubmit={submitSupplier} className="col" style={{ gap: 10 }}>
           <input className="input" value={supplierDraft.name} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="Supplier name"/>
-          <input className="input" value={supplierDraft.category} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, category: event.target.value }))} placeholder="Category"/>
-          <input className="input" value={supplierDraft.ontime} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, ontime: event.target.value }))} placeholder="On-time %" inputMode="numeric"/>
+          <input className="input" value={supplierDraft.address} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, address: event.target.value }))} placeholder="Address"/>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <input className="input" value={supplierDraft.category} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, category: event.target.value }))} placeholder="Category"/>
+            <select className="input" value={supplierDraft.deliveryCategory} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, deliveryCategory: event.target.value }))}>
+              {["Same day", "Next morning", "2-3 days", "Weekly"].map((category) => <option key={category} value={category}>{category}</option>)}
+            </select>
+          </div>
           <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
             <button type="button" className="btn btn-ghost" onClick={() => setSupplierModalOpen(false)}>Cancel</button>
             <button type="submit" className="btn btn-primary">Add supplier</button>
@@ -7053,11 +8351,11 @@ function StaffScreen({ lang, bootstrap }) {
           <table className="tbl">
             <thead>
               <tr>
-                <th>{ar ? "الكاشير" : "Cashier"}</th>
-                <th>{ar ? "الكشك" : "Kiosk"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "المبيعات" : "Sales"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "فرق النقد" : "Cash shortage"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "إلغاء/مرتجع" : "Void/refund"}</th>
+                <th scope="col">{ar ? "الكاشير" : "Cashier"}</th>
+                <th scope="col">{ar ? "الكشك" : "Kiosk"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "المبيعات" : "Sales"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "فرق النقد" : "Cash shortage"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "إلغاء/مرتجع" : "Void/refund"}</th>
               </tr>
             </thead>
             <tbody>
@@ -7116,12 +8414,12 @@ function StaffScreen({ lang, bootstrap }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th>{ar ? "الموظف" : "Staff member"}</th>
-              <th>{ar ? "الدور" : "Role"}</th>
-              <th>{ar ? "الكشك" : "Kiosk"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "ساعات الشهر" : "Hours (mo)"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "الراتب" : "Salary"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "الحالة" : "Status"}</th>
+              <th scope="col">{ar ? "الموظف" : "Staff member"}</th>
+              <th scope="col">{ar ? "الدور" : "Role"}</th>
+              <th scope="col">{ar ? "الكشك" : "Kiosk"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "ساعات الشهر" : "Hours (mo)"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الراتب" : "Salary"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الحالة" : "Status"}</th>
             </tr>
           </thead>
           <tbody>
@@ -7154,6 +8452,7 @@ function StaffScreen({ lang, bootstrap }) {
 function HRPayrollScreen({ lang, bootstrap }) {
   const ar = lang === "ar";
   const { showToast } = useToast();
+  const liveOnly = isLiveOnlyPayload(bootstrap);
   const cashierRows = odooCashierPerformanceRows(bootstrap);
   const underReview = cashierRows.filter((row) => row.shortage < 0).length;
   const [roleFilter, setRoleFilter] = useState("all");
@@ -7163,32 +8462,50 @@ function HRPayrollScreen({ lang, bootstrap }) {
   const [adjustmentModalOpen, setAdjustmentModalOpen] = useState(false);
   const [expenseDraft, setExpenseDraft] = useState({ name: "", category: "Operations", amount: "" });
   const [adjustmentDraft, setAdjustmentDraft] = useState({
-    staff: MOCK.staff[2]?.name || "",
+    staff: liveOnly ? "" : MOCK.staff[2]?.name || "",
     type: "deduction",
     amount: "",
     reason: "",
   });
-  const [expenseRows, setExpenseRows] = useState([
+  const [expenseRows, setExpenseRows] = useState(liveOnly ? [] : [
     { name: "Cleaning supplies", category: "Operations", amount: 118_000 },
     { name: "Generator fuel", category: "Utilities", amount: 242_000 },
     { name: "Staff meal allowance", category: "Staff", amount: 96_000 },
     { name: "Kiosk repair", category: "Maintenance", amount: 175_000 },
   ]);
-  const [adjustments, setAdjustments] = useState([
+  const [localStaff, setLocalStaff] = useState([]);
+  const [staffModalOpen, setStaffModalOpen] = useState(false);
+  const [staffDraft, setStaffDraft] = useState({
+    name: "",
+    role: "Cashier",
+    kiosk: liveOnly ? "" : MOCK.kiosks[0]?.id || "K-01",
+    salary: "1500000",
+    hours: "168",
+  });
+  const [adjustments, setAdjustments] = useState(liveOnly ? [] : [
     { staff: "Karim Fahmy", type: "deduction", amount: 32_000, reason: "Cash shortage pending review", status: "hold" },
     { staff: "Yusuf Saleh", type: "advance", amount: 150_000, reason: "Salary advance", status: "approved" },
     { staff: "Sara Younis", type: "deduction", amount: 110_000, reason: "Unpaid leave", status: "approved" },
     { staff: "Rashid Al-Tikriti", type: "bonus", amount: 85_000, reason: "Warehouse overtime", status: "approved" },
   ]);
-  const attendanceRows = [
+  const attendanceRows = liveOnly ? [] : [
     { staff: "Sara Younis", kiosk: "K-04", issue: "Leave", hours: 88, impact: -110_000, status: "approved" },
     { staff: "Karim Fahmy", kiosk: "K-07", issue: "Cash shortage review", hours: 168, impact: -32_000, status: "hold" },
     { staff: "Rashid Al-Tikriti", kiosk: "Central", issue: "Overtime", hours: 184, impact: 85_000, status: "approved" },
     { staff: "Maya Ahmed", kiosk: "K-01", issue: "Normal shift", hours: 162, impact: 0, status: "ready" },
   ];
-  const roles = ["all", ...Array.from(new Set(MOCK.staff.map((person) => person.role)))];
-  const kiosks = ["all", ...Array.from(new Set(MOCK.staff.map((person) => person.kiosk)))];
-  const payrollRows = useMemo(() => MOCK.staff.map((person) => {
+  useEffect(() => {
+    if (!liveOnly) return;
+    setExpenseRows([]);
+    setAdjustments([]);
+    setLocalStaff([]);
+    setAdjustmentDraft((draft) => draft.staff ? { ...draft, staff: "" } : draft);
+    setStaffDraft((draft) => draft.kiosk ? { ...draft, kiosk: "" } : draft);
+  }, [liveOnly]);
+  const allStaff = useMemo(() => [...(liveOnly ? [] : MOCK.staff), ...localStaff], [liveOnly, localStaff]);
+  const roles = ["all", ...Array.from(new Set(allStaff.map((person) => person.role)))];
+  const kiosks = ["all", ...Array.from(new Set(allStaff.map((person) => person.kiosk)))];
+  const payrollRows = useMemo(() => allStaff.map((person) => {
     const personAdjustments = adjustments.filter((item) => item.staff === person.name);
     const hourlyRate = person.salary / Math.max(person.hours, 1);
     const overtimeHours = Math.max(0, person.hours - 168);
@@ -7213,17 +8530,17 @@ function HRPayrollScreen({ lang, bootstrap }) {
       netPay: Math.max(0, Math.round(person.salary + overtimePay + bonus - advance - deduction)),
       payrollStatus: hold ? "review" : person.status === "leave" ? "leave-adjusted" : "ready",
     };
-  }), [adjustments]);
+  }), [adjustments, allStaff]);
   const filteredRoster = payrollRows.filter((person) => (
     (roleFilter === "all" || person.role === roleFilter)
     && (kioskFilter === "all" || person.kiosk === kioskFilter)
   ));
-  const activeStaff = MOCK.staff.filter((person) => person.status !== "leave").length;
+  const activeStaff = allStaff.filter((person) => person.status !== "leave").length;
   const grossPayroll = payrollRows.reduce((sum, person) => sum + person.salary, 0);
   const netPayroll = payrollRows.reduce((sum, person) => sum + person.netPay, 0);
   const adjustmentTotal = payrollRows.reduce((sum, person) => sum + person.bonus + person.overtimePay - person.advance - person.deduction, 0);
   const payrollReviewCount = payrollRows.filter((person) => person.payrollStatus === "review").length;
-  const avgWeeklyHours = Math.round(MOCK.staff.reduce((sum, person) => sum + person.hours, 0) / Math.max(MOCK.staff.length, 1) / 4);
+  const avgWeeklyHours = Math.round(allStaff.reduce((sum, person) => sum + person.hours, 0) / Math.max(allStaff.length, 1) / 4);
   const payrollStatusLabel = payrollStatus === "approved" ? "Approved" : payrollStatus === "reviewed" ? "Reviewed" : "Draft";
   const payrollStatusBadge = payrollStatus === "approved" ? "badge-pos" : payrollStatus === "reviewed" ? "badge-warn" : "";
 
@@ -7241,6 +8558,37 @@ function HRPayrollScreen({ lang, bootstrap }) {
     setExpenseDraft({ name: "", category: "Operations", amount: "" });
     setExpenseModalOpen(false);
     showToast("Expense recorded", "success");
+  };
+
+  const submitStaff = (event) => {
+    event.preventDefault();
+    const name = staffDraft.name.trim();
+    const salary = Number(staffDraft.salary || 0);
+    const hours = Number(staffDraft.hours || 0);
+    if (!name || salary <= 0 || hours <= 0) {
+      showToast(ar ? "الاسم والراتب والساعات مطلوبة" : "Name, salary, and hours are required", "warn");
+      return;
+    }
+    setLocalStaff((rows) => [
+      ...rows,
+      {
+        name,
+        role: staffDraft.role,
+        kiosk: staffDraft.kiosk,
+        salary,
+        hours,
+        status: "ready",
+      },
+    ]);
+    setStaffDraft({
+      name: "",
+      role: "Cashier",
+      kiosk: liveOnly ? "" : MOCK.kiosks[0]?.id || "K-01",
+      salary: "1500000",
+      hours: "168",
+    });
+    setStaffModalOpen(false);
+    showToast(ar ? `تمت إضافة ${name}` : `Added ${name}`, "success");
   };
 
   const submitAdjustment = (event) => {
@@ -7261,7 +8609,7 @@ function HRPayrollScreen({ lang, bootstrap }) {
       ...rows,
     ]);
     setPayrollStatus("draft");
-    setAdjustmentDraft({ staff: MOCK.staff[2]?.name || "", type: "deduction", amount: "", reason: "" });
+    setAdjustmentDraft({ staff: liveOnly ? "" : MOCK.staff[2]?.name || "", type: "deduction", amount: "", reason: "" });
     setAdjustmentModalOpen(false);
     showToast("Payroll adjustment added", "success");
   };
@@ -7361,11 +8709,11 @@ function HRPayrollScreen({ lang, bootstrap }) {
           <table className="tbl">
             <thead>
               <tr>
-                <th>{ar ? "Cashier" : "Cashier"}</th>
-                <th>{ar ? "Kiosk" : "Kiosk"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "Sales" : "Sales"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "Cash shortage" : "Cash shortage"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "Void/refund" : "Void/refund"}</th>
+                <th scope="col">{ar ? "Cashier" : "Cashier"}</th>
+                <th scope="col">{ar ? "Kiosk" : "Kiosk"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Sales" : "Sales"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Cash shortage" : "Cash shortage"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Void/refund" : "Void/refund"}</th>
               </tr>
             </thead>
             <tbody>
@@ -7420,11 +8768,11 @@ function HRPayrollScreen({ lang, bootstrap }) {
           <table className="tbl">
             <thead>
               <tr>
-                <th>{ar ? "Staff" : "Staff"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "Base" : "Base"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "Adj." : "Adj."}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "Net pay" : "Net pay"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "Status" : "Status"}</th>
+                <th scope="col">{ar ? "Staff" : "Staff"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Base" : "Base"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Adj." : "Adj."}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Net pay" : "Net pay"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Status" : "Status"}</th>
               </tr>
             </thead>
             <tbody>
@@ -7461,10 +8809,10 @@ function HRPayrollScreen({ lang, bootstrap }) {
           <table className="tbl">
             <thead>
               <tr>
-                <th>{ar ? "Staff" : "Staff"}</th>
-                <th>{ar ? "Issue" : "Issue"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "Impact" : "Impact"}</th>
-                <th style={{ textAlign: "end" }}>{ar ? "Status" : "Status"}</th>
+                <th scope="col">{ar ? "Staff" : "Staff"}</th>
+                <th scope="col">{ar ? "Issue" : "Issue"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Impact" : "Impact"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Status" : "Status"}</th>
               </tr>
             </thead>
             <tbody>
@@ -7498,17 +8846,20 @@ function HRPayrollScreen({ lang, bootstrap }) {
             <select className="input" value={kioskFilter} onChange={(event) => setKioskFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 132 }}>
               {kiosks.map((kiosk) => <option key={kiosk} value={kiosk}>{kiosk === "all" ? "All kiosks" : kiosk}</option>)}
             </select>
+            <button className="btn btn-primary" onClick={() => setStaffModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
+              <Icon name="plus" size={12}/> {ar ? "موظف جديد" : "Add staff"}
+            </button>
           </div>
         </div>
         <table className="tbl">
           <thead>
             <tr>
-              <th>{ar ? "Staff member" : "Staff member"}</th>
-              <th>{ar ? "Role" : "Role"}</th>
-              <th>{ar ? "Kiosk" : "Kiosk"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "Hours (mo)" : "Hours (mo)"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "Net payroll" : "Net payroll"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "Status" : "Status"}</th>
+              <th scope="col">{ar ? "Staff member" : "Staff member"}</th>
+              <th scope="col">{ar ? "Role" : "Role"}</th>
+              <th scope="col">{ar ? "Kiosk" : "Kiosk"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "Hours (mo)" : "Hours (mo)"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "Net payroll" : "Net payroll"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "Status" : "Status"}</th>
             </tr>
           </thead>
           <tbody>
@@ -7556,7 +8907,7 @@ function HRPayrollScreen({ lang, bootstrap }) {
         sub={ar ? "Advances, deductions, and bonuses before approval" : "Advances, deductions, and bonuses before approval"}>
         <form onSubmit={submitAdjustment} className="col" style={{ gap: 10 }}>
           <select className="input" value={adjustmentDraft.staff} onChange={(event) => setAdjustmentDraft((draft) => ({ ...draft, staff: event.target.value }))}>
-            {MOCK.staff.map((person) => <option key={person.name} value={person.name}>{person.name}</option>)}
+            {allStaff.length ? allStaff.map((person) => <option key={person.name} value={person.name}>{person.name}</option>) : <option value="">No live staff loaded</option>}
           </select>
           <select className="input" value={adjustmentDraft.type} onChange={(event) => setAdjustmentDraft((draft) => ({ ...draft, type: event.target.value }))}>
             <option value="deduction">Deduction</option>
@@ -7568,6 +8919,81 @@ function HRPayrollScreen({ lang, bootstrap }) {
           <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
             <button type="button" className="btn btn-ghost" onClick={() => setAdjustmentModalOpen(false)}>Cancel</button>
             <button type="submit" className="btn btn-primary">Save adjustment</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={staffModalOpen} onClose={() => setStaffModalOpen(false)}
+        width={520}
+        title={ar ? "إضافة موظف" : "Add staff"}
+        sub={ar
+          ? "املأ التفاصيل لإضافة موظف إلى الجدول."
+          : liveOnly ? "Local HR persistence is not wired yet; no demo staff is shown in live-only mode." : "Adds a new staff member to the roster (demo: stays in this browser)."}>
+        <form onSubmit={submitStaff} className="col" style={{ gap: 10 }}>
+          <div className="col" style={{ gap: 4 }}>
+            <label className="t-micro">{ar ? "الاسم" : "Full name"}</label>
+            <input
+              autoFocus
+              className="input"
+              value={staffDraft.name}
+              onChange={(event) => setStaffDraft((d) => ({ ...d, name: event.target.value }))}
+              placeholder={ar ? "مثال: حسن علي" : "e.g. Hassan Ali"}
+            />
+          </div>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "الدور" : "Role"}</label>
+              <select className="input" value={staffDraft.role}
+                onChange={(event) => setStaffDraft((d) => ({ ...d, role: event.target.value }))}>
+                <option value="Cashier">Cashier</option>
+                <option value="Barista">Barista</option>
+                <option value="Supervisor">Supervisor</option>
+                <option value="Warehouse">Warehouse</option>
+                <option value="Manager">Manager</option>
+              </select>
+            </div>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "الكشك" : "Kiosk"}</label>
+              <select className="input" value={staffDraft.kiosk}
+                onChange={(event) => setStaffDraft((d) => ({ ...d, kiosk: event.target.value }))}>
+                {kiosks.filter((kiosk) => kiosk !== "all").length
+                  ? kiosks.filter((kiosk) => kiosk !== "all").map((kiosk) => (
+                    <option key={kiosk} value={kiosk}>{kiosk}</option>
+                  ))
+                  : <option value="">No live kiosks loaded</option>}
+                {!liveOnly && <option value="Central">Central</option>}
+              </select>
+            </div>
+          </div>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "الراتب الشهري (د.ع)" : "Monthly salary (IQD)"}</label>
+              <input
+                className="input"
+                type="number"
+                min={0}
+                step={50000}
+                value={staffDraft.salary}
+                onChange={(event) => setStaffDraft((d) => ({ ...d, salary: event.target.value }))}
+              />
+            </div>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "الساعات شهرياً" : "Monthly hours"}</label>
+              <input
+                className="input"
+                type="number"
+                min={0}
+                step={1}
+                value={staffDraft.hours}
+                onChange={(event) => setStaffDraft((d) => ({ ...d, hours: event.target.value }))}
+              />
+            </div>
+          </div>
+          <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
+            <button type="button" className="btn btn-ghost" onClick={() => setStaffModalOpen(false)}>Cancel</button>
+            <button type="submit" className="btn btn-primary">
+              <Icon name="check" size={12}/> {ar ? "إضافة الموظف" : "Add staff"}
+            </button>
           </div>
         </form>
       </Modal>
@@ -7663,10 +9089,10 @@ function ReportsScreen({ lang, bootstrap }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th>{ar ? "المزود" : "Provider"}</th>
-              <th>{ar ? "الفئة" : "Category"}</th>
-              <th>{ar ? "التسوية" : "Settlement"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "الإجمالي" : "Total"}</th>
+              <th scope="col">{ar ? "المزود" : "Provider"}</th>
+              <th scope="col">{ar ? "الفئة" : "Category"}</th>
+              <th scope="col">{ar ? "التسوية" : "Settlement"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الإجمالي" : "Total"}</th>
             </tr>
           </thead>
           <tbody>
@@ -7705,10 +9131,10 @@ function ReportsScreen({ lang, bootstrap }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th>{ar ? "التقرير" : "Report"}</th>
-              <th>{ar ? "ماذا يقرر المالك؟" : "Owner decision"}</th>
-              <th>{ar ? "المصادر" : "Traceable sources"}</th>
-              <th style={{ textAlign: "end" }}>{ar ? "إشارة اليوم" : "Today signal"}</th>
+              <th scope="col">{ar ? "التقرير" : "Report"}</th>
+              <th scope="col">{ar ? "ماذا يقرر المالك؟" : "Owner decision"}</th>
+              <th scope="col">{ar ? "المصادر" : "Traceable sources"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "إشارة اليوم" : "Today signal"}</th>
             </tr>
           </thead>
           <tbody>
@@ -7779,14 +9205,15 @@ const ADMIN_NAV = [
   { id: "insights", label: "AI Insights", icon: "sparkles", badge: 4 },
   { section: "OPERATIONS" },
   { id: "kiosks", label: "Kiosks", icon: "store" },
+  { id: "warehouses", label: "Warehouses", icon: "box" },
+  { id: "items", label: "Items Catalog", icon: "box" },
   { id: "sales", label: "Sales & POS", icon: "receipt" },
   { id: "closing", label: "Daily Close", icon: "receipt", badge: 3 },
   { id: "waste", label: "Waste & Loss", icon: "trash", badge: 3 },
   { section: "STOCK" },
-  { id: "inventory", label: "Stock & Allocation", icon: "box" },
-  { id: "warehouses", label: "Warehouses", icon: "box" },
   { id: "products", label: "Products & Recipes", icon: "coffee" },
   { id: "suppliers", label: "Purchases & Suppliers", icon: "truck" },
+  { id: "inventory", label: "Stock & Allocation", icon: "box" },
   { section: "PEOPLE & MONEY" },
   { id: "staff", label: "Staff", icon: "users" },
   { id: "finance", label: "Finance", icon: "cash" },
@@ -7800,6 +9227,7 @@ const ADMIN_NAV_AR = {
   kiosks: "الأكشاك",
   sales: "المبيعات ونقاط البيع",
   warehouses: "المستودعات",
+  items: "كتالوج البنود",
   inventory: "المخزون والتوزيع",
   products: "المنتجات والوصفات",
   closing: "الإغلاق اليومي",
@@ -7891,20 +9319,74 @@ function AdminTopBar({ title, sub, right, lang }) {
   );
 }
 
+function DataModeToggle({ bayaan, lang }) {
+  const ar = lang === "ar";
+  const liveOnly = bayaan.mode === "live";
+  return (
+    <div className="segmented" aria-label={ar ? "Ù…ØµØ¯Ø± Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª" : "Data source"} style={{ height: 30 }}>
+      <button
+        type="button"
+        className={`seg-btn ${liveOnly ? "active" : ""}`}
+        onClick={() => bayaan.setMode("live")}
+        title={bayaan.hasBackend ? "Use only verified engine data" : "Live-only mode; backend URL is not configured"}
+      >
+        <Icon name="zap" size={12}/>
+        {ar ? "ØªØ´ØºÙŠÙ„ ÙÙ‚Ø·" : "Live only"}
+      </button>
+      <button
+        type="button"
+        className={`seg-btn ${!liveOnly ? "active" : ""}`}
+        onClick={() => bayaan.setMode("demo")}
+        title="Allow demo fallback data"
+      >
+        <Icon name="grid" size={12}/>
+        {ar ? "ØªØ¬Ø±ÙŠØ¨ÙŠ" : "Demo data"}
+      </button>
+    </div>
+  );
+}
+
 function AdminPanel({ lang }) {
+  const bayaan = useBayaan();
   const [active, setActive] = useState("overview");
   const [selectedKiosk, setSelectedKiosk] = useState(MOCK.kiosks[0]);
-  const sourceOfTruth = useMemo(() => createSourceOfTruthGateway(), []);
+  // The AdminPanel uses the SAME gateway as the BayaanProvider. When the
+  // user toggles to Demo mode, we present a transparent noop wrapper so
+  // every screen's `sourceOfTruth?.enabled` check falls through to the
+  // existing MOCK fallback paths without any per-screen plumbing.
+  const baseGateway = bayaan.gateway;
+  const liveOnlySelected = bayaan.mode === "live";
+  const liveBackendActive = liveOnlySelected && baseGateway.enabled;
+  const sourceOfTruth = useMemo(() => {
+    if (liveBackendActive) return baseGateway;
+    return new Proxy(baseGateway, {
+      get(target, prop) {
+        if (prop === "enabled") return false;
+        const value = target[prop];
+        if (typeof value !== "function") return value;
+        return async () => ({ skipped: true, demo: true });
+      },
+    });
+  }, [baseGateway, liveBackendActive]);
   const [sync, setSync] = useState({
-    status: sourceOfTruth.enabled ? "syncing" : "demo",
+    status: liveBackendActive ? "syncing" : "demo",
     bootstrap: null,
-    warehouseSetup: DEMO_WAREHOUSE_SETUP,
+    warehouseSetup: liveOnlySelected ? EMPTY_WAREHOUSE_SETUP : DEMO_WAREHOUSE_SETUP,
     error: "",
   });
 
   const refreshOdoo = async () => {
-    if (!sourceOfTruth.enabled) {
+    if (!liveOnlySelected) {
       setSync({ status: "demo", bootstrap: null, warehouseSetup: DEMO_WAREHOUSE_SETUP, error: "" });
+      return;
+    }
+    if (!baseGateway.enabled) {
+      setSync({
+        status: "missing",
+        bootstrap: EMPTY_ENGINE_SNAPSHOT,
+        warehouseSetup: EMPTY_WAREHOUSE_SETUP,
+        error: "Live-only mode is on, but no backend URL is configured.",
+      });
       return;
     }
     setSync((current) => ({ ...current, status: "syncing", error: "" }));
@@ -7913,15 +9395,28 @@ function AdminPanel({ lang }) {
         sourceOfTruth.getChainBootstrap(),
         sourceOfTruth.getWarehouseSetup(),
       ]);
-      setSync({ status: "synced", bootstrap, warehouseSetup, error: "" });
+      setSync({
+        status: "synced",
+        bootstrap: markLiveOnlySnapshot(bootstrap),
+        warehouseSetup: markLiveOnlyWarehouseSetup(warehouseSetup),
+        error: "",
+      });
     } catch (error) {
-      setSync((current) => ({ ...current, status: "error", error: compactError(error) }));
+      setSync((current) => ({
+        ...current,
+        status: "error",
+        bootstrap: current.bootstrap || EMPTY_ENGINE_SNAPSHOT,
+        warehouseSetup: current.warehouseSetup || EMPTY_WAREHOUSE_SETUP,
+        error: compactError(error),
+      }));
     }
   };
 
   useEffect(() => {
     void refreshOdoo();
-  }, [sourceOfTruth]);
+    // Re-run whenever mode flips so the dashboard immediately respects Demo/Live.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceOfTruth, bayaan.mode, baseGateway.enabled]);
 
   const openKiosk = (kiosk) => {
     setSelectedKiosk(kiosk || MOCK.kiosks[0]);
@@ -7935,11 +9430,12 @@ function AdminPanel({ lang }) {
     kiosks: <KiosksScreen lang={lang} bootstrap={sync.bootstrap} sync={sync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} onPick={openKiosk}/>,
     kioskDetail: <KioskDetailScreen lang={lang} kiosk={selectedKiosk} bootstrap={sync.bootstrap} onBack={() => setActive("kiosks")}/>,
     warehouses: <WarehousesScreen lang={lang} sync={sync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    inventory: <InventoryScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth}/>,
+    items: <ItemsCatalogScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    inventory: <InventoryScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
     products: <ProductsScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth}/>,
     closing: <ClosingScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth}/>,
     waste: <WasteScreen lang={lang} bootstrap={sync.bootstrap}/>,
-    suppliers: <SuppliersScreen lang={lang} bootstrap={sync.bootstrap}/>,
+    suppliers: <SuppliersScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
     staff: <HRPayrollScreen lang={lang} bootstrap={sync.bootstrap}/>,
     finance: <ReportsScreen lang={lang} bootstrap={sync.bootstrap}/>,
     reports: <ReportsScreen lang={lang} bootstrap={sync.bootstrap}/>,
@@ -7951,7 +9447,8 @@ function AdminPanel({ lang }) {
     kioskDetail: { en: `${selectedKiosk.name} - ${selectedKiosk.id}`, ar: `${selectedKiosk.name} · ${selectedKiosk.id}`, sub: { en: `${selectedKiosk.city} - ${selectedKiosk.staff} staff - stock location scoped`, ar: `${selectedKiosk.city} · ${selectedKiosk.staff} موظفين · مخزون مستقل` } },
     sales: { en: "Sales & POS Monitor", ar: "مراقبة المبيعات ونقاط البيع", sub: { en: "Live POS orders, payment methods, refunds, voids, and recipe posting", ar: "أوامر POS وطرق الدفع والمرتجعات والإلغاءات وترحيل الوصفة" } },
     warehouses: { en: "Warehouses", ar: "المستودعات", sub: { en: "Locations, POS configs, and kiosk stock sources", ar: "المواقع ونقاط البيع ومصادر مخزون الأكشاك" } },
-    inventory: { en: "Stock & Allocation", ar: "المخزون والتوزيع", sub: { en: "Warehouse stock, kiosk stock, transfers, low-stock items, and tomorrow suggestions", ar: "مخزون المستودع والأكشاك والتحويلات والتنبيهات واقتراحات الغد" } },
+    items: { en: "Items Catalog", ar: "كتالوج البنود", sub: { en: "Global purchasable stock items used by suppliers, purchases, and recipes", ar: "بنود مخزون عالمية للموردين والمشتريات والوصفات" } },
+    inventory: { en: "Stock & Allocation", ar: "المخزون والتوزيع", sub: { en: "Warehouse stock, kiosk stock, live needs, and transfer execution", ar: "مخزون المستودع والأكشاك والتحويلات والتنبيهات" } },
     products: { en: "Products & Recipes", ar: "المنتجات والوصفات", sub: { en: "Menu, prices, sizes, images, ingredient recipes", ar: "القائمة والأسعار والأحجام والصور ووصفات المكونات" } },
     closing: { en: "Daily Close & Variance", ar: "الإغلاق اليومي والمطابقة", sub: { en: "Expected vs counted - across kiosks", ar: "متوقع مقابل فعلي — عبر الأكشاك" } },
     waste: { en: "Waste & Loss", ar: "الهدر والخسارة", sub: { en: "Last 7 days - 3 anomalies flagged", ar: "آخر ٧ أيام · ٣ حالات شاذة" } },
@@ -7969,9 +9466,20 @@ function AdminPanel({ lang }) {
         <AdminTopBar title={lang === "ar" ? t.ar : t.en} sub={lang === "ar" ? t.sub.ar : t.sub.en} lang={lang}
           right={(
             <div className="row" style={{ gap: 6 }}>
-              <span className={`badge ${sync.status === "synced" ? "badge-pos" : sync.status === "error" ? "badge-crit" : "badge-warn"}`}>
-                <span className={`dot ${sync.status === "synced" ? "pos" : sync.status === "error" ? "crit" : "warn"}`}></span>
-                {sync.status === "synced" ? "Engine synced" : sync.status === "error" ? "Engine error" : sourceOfTruth.enabled ? "Engine syncing" : "Demo mode"}
+              <DataModeToggle bayaan={bayaan} lang={lang}/>
+              <span className={`badge ${sync.status === "synced" ? "badge-pos" : ["error", "missing"].includes(sync.status) ? "badge-crit" : "badge-warn"}`}>
+                <span className={`dot ${sync.status === "synced" ? "pos" : ["error", "missing"].includes(sync.status) ? "crit" : "warn"}`}></span>
+                {sync.status === "synced"
+                  ? "Engine synced"
+                  : sync.status === "error"
+                    ? "Engine error"
+                    : sync.status === "missing"
+                      ? "Backend missing"
+                      : liveOnlySelected
+                        ? "Live only"
+                        : sourceOfTruth.enabled
+                          ? "Engine syncing"
+                          : "Demo mode"}
               </span>
               {active === "overview" && (
                 <>
@@ -8013,11 +9521,21 @@ function AdminPanel({ lang }) {
 const { useState: useStatePOS } = React;
 
 function POSPanel({ lang }) {
-  const [screen, setScreen] = useStatePOS("login");
+  const bayaan = useBayaan();
+  const { showToast } = useToast();
+  const [screen, setScreen] = useStatePOS(bayaan.shift ? "sale" : "login");
   const [cart, setCart] = useStatePOS([]);
   const [tender, setTender] = useStatePOS(null);
+  const [posTransfers, setPosTransfers] = useStatePOS([]);
+  const [transferBusy, setTransferBusy] = useStatePOS("");
 
   const goSale = () => { setScreen("sale"); setCart([]); };
+  const endShiftAndLogout = () => {
+    bayaan.endShift();
+    setCart([]);
+    setTender(null);
+    setScreen("login");
+  };
   const addItem = (item, size) => {
     setCart(c => {
       const key = item.id + ":" + size;
@@ -8036,6 +9554,42 @@ function POSPanel({ lang }) {
     addItem(item, size);
     setLastAdded({ name: item.name, price: item.price, t: Date.now() });
   };
+  const posKioskId = bayaan.shift?.kioskId || bayaan.kioskId;
+  const loadPosTransfers = React.useCallback(async () => {
+    try {
+      const rows = bayaan.mode === "live" && bayaan.hasBackend
+        ? odooTransferRows(await bayaan.gateway.getChainBootstrap())
+        : MOCK.pendingTransfers;
+      setPosTransfers(rows.filter((transfer) => {
+        const status = String(transfer.status || "").toLowerCase();
+        if (["received", "done", "cancel", "cancelled"].includes(status)) return false;
+        return matchesKiosk(transfer.toKioskId || transfer.to, { id: posKioskId, kiosk_code: posKioskId });
+      }));
+    } catch {
+      setPosTransfers([]);
+    }
+  }, [bayaan.gateway, bayaan.hasBackend, bayaan.mode, posKioskId]);
+
+  React.useEffect(() => {
+    void loadPosTransfers();
+  }, [loadPosTransfers]);
+
+  const receivePosTransfer = async (transfer) => {
+    setTransferBusy(transfer.id);
+    try {
+      if (bayaan.mode === "live" && bayaan.hasBackend) {
+        await bayaan.gateway.stockTransferAction({ transfer: transfer.id, action: "receive" });
+        await loadPosTransfers();
+      } else {
+        setPosTransfers((rows) => rows.map((row) => row.id === transfer.id ? { ...row, status: "received" } : row));
+      }
+      showToast(`Transfer ${transfer.id} received at ${posKioskId}`, "success");
+    } catch (error) {
+      showToast(error?.message || "Could not receive transfer", "warn");
+    } finally {
+      setTransferBusy("");
+    }
+  };
 
   return (
     <div className="tablet-stage" style={{ gap: 24, padding: 24 }}>
@@ -8048,7 +9602,9 @@ function POSPanel({ lang }) {
             subTotal={subTotal} vat={vat} total={total}
             onCharge={() => setScreen("payment")}
             onWaste={() => setScreen("waste")}
-            onLogout={() => setScreen("login")}
+            onStock={() => setScreen("stock")}
+            expectedTransfers={posTransfers}
+            onLogout={endShiftAndLogout}
           />}
           {screen === "payment" && <POSPayment lang={lang}
             total={total} cart={cart}
@@ -8059,6 +9615,13 @@ function POSPanel({ lang }) {
           />}
           {screen === "waste" && <POSWaste lang={lang}
             onDone={() => setScreen("sale")} onBack={() => setScreen("sale")}/>}
+          {screen === "stock" && <POSTransfers lang={lang}
+            kioskId={posKioskId}
+            transfers={posTransfers}
+            busy={transferBusy}
+            onReceive={receivePosTransfer}
+            onRefresh={loadPosTransfers}
+            onBack={() => setScreen("sale")}/>}
         </div>
       </div>
 
@@ -8079,16 +9642,44 @@ function POSPanel({ lang }) {
 }
 
 // =============== LOGIN ===============
+// Demo PINs: matched against picked staff member. In live mode the PIN
+// will be validated server-side via /bayaan/api/staff_pin (added later).
+const DEMO_STAFF = [
+  { name: "Maya Ahmed", arName: "مايا أحمد", role: "Cashier", arRole: "كاشير", pin: "1234", openingCash: 175000 },
+  { name: "Yusuf Saleh", arName: "يوسف صالح", role: "Barista", arRole: "باريستا", pin: "2345", openingCash: 175000 },
+  { name: "Omar Khaled", arName: "عمر خالد", role: "Supervisor", arRole: "مشرف", pin: "3456", openingCash: 250000 },
+  { name: "Sara Younis", arName: "سارة يونس", role: "Barista", arRole: "باريستا", pin: "4567", openingCash: 175000 },
+];
+
 function POSLogin({ lang, onIn }) {
   const ar = lang === "ar";
-  const staff = [
-    { name: "Maya Ahmed", arName: "مايا أحمد", role: "Cashier", arRole: "كاشير" },
-    { name: "Yusuf Saleh", arName: "يوسف صالح", role: "Barista", arRole: "باريستا" },
-    { name: "Omar Khaled", arName: "عمر خالد", role: "Supervisor", arRole: "مشرف" },
-    { name: "Sara Younis", arName: "سارة يونس", role: "Barista", arRole: "باريستا" },
-  ];
+  const bayaan = useBayaan();
+  const { showToast } = useToast();
+  const staff = DEMO_STAFF;
   const [picked, setPicked] = useStatePOS(null);
   const [pin, setPin] = useStatePOS("");
+  const [error, setError] = useStatePOS("");
+
+  const tryStartShift = () => {
+    if (!picked) return;
+    if (pin.length !== 4) {
+      setError(ar ? "أدخل رمز ٤ أرقام" : "Enter your 4-digit PIN");
+      return;
+    }
+    if (pin !== picked.pin) {
+      setError(ar ? "رمز غير صحيح" : "Incorrect PIN");
+      setPin("");
+      showToast(ar ? "رمز الدخول غير صحيح" : "Incorrect PIN", "warn");
+      return;
+    }
+    bayaan.startShift({
+      kioskId: bayaan.kioskId,
+      cashier: picked.name,
+      openingCash: picked.openingCash,
+    });
+    setError("");
+    onIn();
+  };
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -8159,18 +9750,23 @@ function POSLogin({ lang, onIn }) {
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
               {[1,2,3,4,5,6,7,8,9].map(n => (
-                <button key={n} onClick={() => setPin(p => (p + n).slice(0, 4))}
+                <button key={n} onClick={() => { setError(""); setPin(p => (p + n).slice(0, 4)); }}
                   style={{ height: 56, fontSize: 20, fontFamily: "var(--font-mono)", border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)", cursor: "pointer" }}>{n}</button>
               ))}
-              <button onClick={() => setPicked(null)} style={{ height: 56, fontSize: 12, color: "var(--ink-2)", border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)", cursor: "pointer" }}>{ar ? "عودة" : "Back"}</button>
-              <button onClick={() => setPin(p => (p + 0).slice(0, 4))} style={{ height: 56, fontSize: 20, fontFamily: "var(--font-mono)", border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)", cursor: "pointer" }}>0</button>
+              <button onClick={() => { setPicked(null); setPin(""); setError(""); }} style={{ height: 56, fontSize: 12, color: "var(--ink-2)", border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)", cursor: "pointer" }}>{ar ? "عودة" : "Back"}</button>
+              <button onClick={() => { setError(""); setPin(p => (p + 0).slice(0, 4)); }} style={{ height: 56, fontSize: 20, fontFamily: "var(--font-mono)", border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)", cursor: "pointer" }}>0</button>
               <button onClick={() => setPin(p => p.slice(0, -1))} style={{ height: 56, fontSize: 18, color: "var(--ink-2)", border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)", cursor: "pointer" }}>⌫</button>
             </div>
-            <button onClick={onIn} className="btn btn-primary btn-xl" style={{ marginTop: 20, justifyContent: "center" }}>
+            {error && (
+              <div style={{ marginTop: 10, fontSize: 12, color: "var(--crit, #C04A38)", textAlign: "center" }}>{error}</div>
+            )}
+            <button onClick={tryStartShift} disabled={pin.length !== 4} className="btn btn-primary btn-xl" style={{ marginTop: 14, justifyContent: "center", opacity: pin.length === 4 ? 1 : 0.4 }}>
               {ar ? "ابدأ الوردية" : "Start shift"} <Icon name="arrowRight" size={14}/>
             </button>
             <div style={{ marginTop: 14, fontSize: 11.5, color: "var(--ink-3)", textAlign: "center" }}>
-              {ar ? "العد النقدي: د.ع ١٧٥٬٠٠٠ افتراضي" : "Cash float: IQD 175,000 default"}
+              {bayaan.mode === "demo"
+                ? (ar ? `رمز تجريبي: ${picked.pin}` : `Demo PIN: ${picked.pin}`)
+                : (ar ? `العد النقدي: د.ع ${picked.openingCash.toLocaleString("en")}` : `Cash float: IQD ${picked.openingCash.toLocaleString("en")}`)}
             </div>
           </div>
         )}
@@ -8187,7 +9783,7 @@ function POSLogin({ lang, onIn }) {
    POS Sale screen — order taking
    ============================================================ */
 
-function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, onCharge, onWaste, onLogout }) {
+function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, onCharge, onWaste, onStock, expectedTransfers = [], onLogout }) {
   const ar = lang === "ar";
   const catalog = useCatalog();
   const menu = React.useMemo(() => catalog.menuByCategory(), [catalog.state.products]);
@@ -8217,7 +9813,10 @@ function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, onCharge,
         </div>
         <div className="row" style={{ gap: 6 }}>
           <button className="btn btn-ghost" onClick={onWaste}><Icon name="trash" size={13}/>{ar ? "هدر" : "Waste"}</button>
-          <button className="btn btn-ghost"><Icon name="box" size={13}/>{ar ? "المخزون" : "Stock"}</button>
+          <button className="btn btn-ghost" onClick={onStock}>
+            <Icon name="box" size={13}/>{ar ? "المخزون" : "Stock"}
+            {expectedTransfers.length > 0 && <span className="badge" style={{ marginInlineStart: 4 }}>{expectedTransfers.length}</span>}
+          </button>
           <button className="btn btn-ghost" onClick={onLogout}>{ar ? "إنهاء" : "End shift"}</button>
         </div>
       </div>
@@ -8346,11 +9945,75 @@ function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, onCharge,
   );
 }
 
+function POSTransfers({ lang, kioskId, transfers, busy, onReceive, onRefresh, onBack }) {
+  const ar = lang === "ar";
+  const actionable = transfers.filter((transfer) => String(transfer.status || "").toLowerCase() === "dispatched");
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--paper)" }}>
+      <div style={{ height: 52, padding: "0 18px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--line)", background: "var(--surface)" }}>
+        <div className="row" style={{ gap: 10 }}>
+          <button className="btn btn-ghost" onClick={onBack} style={{ width: 30, height: 30, padding: 0, justifyContent: "center" }}>
+            <Icon name="arrowLeft" size={14}/>
+          </button>
+          <div>
+            <div style={{ fontSize: 13.5, fontWeight: 500 }}>{ar ? "Expected transfers" : "Expected transfers"}</div>
+            <div className="t-small subtle">{kioskId} receives only what arrived here</div>
+          </div>
+        </div>
+        <button className="btn btn-ghost" onClick={onRefresh} style={{ height: 30, fontSize: 12 }}>
+          <Icon name="refresh" size={12}/>{ar ? "Refresh" : "Refresh"}
+        </button>
+      </div>
+
+      <div className="scroll" style={{ flex: 1, overflow: "auto", padding: 18 }}>
+        <div className="col" style={{ gap: 10 }}>
+          {transfers.map((transfer) => {
+            const status = String(transfer.status || "").toLowerCase();
+            const canReceive = status === "dispatched";
+            return (
+              <div key={transfer.id} className="card" style={{ padding: 14 }}>
+                <div className="between" style={{ alignItems: "flex-start", gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 500 }}>{transfer.id}</div>
+                    <div className="t-small subtle" style={{ marginTop: 3 }}>{transfer.from}{" -> "}{transfer.to}</div>
+                    <div className="t-small" style={{ marginTop: 8 }}>{transfer.items}</div>
+                  </div>
+                  <span className={`badge ${canReceive ? "badge-warn" : "badge-pos"}`}>{transfer.status}</span>
+                </div>
+                <div className="row" style={{ justifyContent: "space-between", gap: 8, marginTop: 12 }}>
+                  <div className="t-small subtle">ETA {transfer.eta || "--:--"}</div>
+                  <button className="btn btn-primary" disabled={!canReceive || busy === transfer.id} onClick={() => onReceive(transfer)} style={{ height: 30, fontSize: 12 }}>
+                    {busy === transfer.id ? "Receiving..." : "Received"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+          {transfers.length === 0 && (
+            <div className="card" style={{ padding: 24, textAlign: "center" }}>
+              <Icon name="box" size={26} style={{ color: "var(--ink-3)", marginBottom: 10 }}/>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>{ar ? "No expected transfers" : "No expected transfers"}</div>
+              <div className="t-small subtle" style={{ marginTop: 5 }}>Dispatched warehouse transfers will appear here for kiosk receipt.</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ padding: "12px 18px", borderTop: "1px solid var(--line)", background: "var(--surface)" }}>
+        <div className="t-small subtle">{actionable.length} transfer{actionable.length === 1 ? "" : "s"} waiting for kiosk confirmation</div>
+      </div>
+    </div>
+  );
+}
+
 // =============== PAYMENT ===============
 function POSPayment({ lang, total, cart, onTender, tender, onDone, onBack }) {
   const ar = lang === "ar";
+  const bayaan = useBayaan();
+  const { showToast } = useToast();
   const [phase, setPhase] = useStatePOS("choose"); // choose -> processing -> done
   const [cashGiven, setCashGiven] = useStatePOS("");
+  const [submitState, setSubmitState] = useStatePOS({ status: "idle", externalId: null, queued: false, error: "" });
   const tenderOptions = [
     { id: "card", icon: "card", label: ar ? "بطاقة" : "Card", sub: ar ? "تلامس أو إدخال" : "Tap or insert" },
     { id: "cash", icon: "cash", label: ar ? "نقد" : "Cash", sub: ar ? "أدخل المبلغ المستلم" : "Enter amount received" },
@@ -8363,35 +10026,84 @@ function POSPayment({ lang, total, cart, onTender, tender, onDone, onBack }) {
   const pickTender = (t) => {
     onTender(t);
     setPhase("processing");
-    setTimeout(() => setPhase("done"), t === "card" ? 1400 : 600);
+    setSubmitState({ status: "submitting", externalId: null, queued: false, error: "" });
+    const minProcessingMs = t === "card" ? 1400 : 600;
+    const submitPromise = bayaan.submitSale({ cart, tender: t, total });
+    const delayPromise = new Promise((resolve) => setTimeout(resolve, minProcessingMs));
+    Promise.all([submitPromise, delayPromise]).then(([result]) => {
+      if (result.ok) {
+        const externalId = result.result?.external_id || result.result?.id || null;
+        setSubmitState({ status: "ok", externalId, queued: false, error: "" });
+      } else if (result.queued) {
+        setSubmitState({ status: "queued", externalId: null, queued: true, error: result.error });
+        showToast(
+          ar ? `تم حفظ البيع محلياً وسيتم الإرسال عند رجوع الاتصال` : `Sale queued offline · will sync when online`,
+          "warn",
+        );
+      } else {
+        setSubmitState({ status: "error", externalId: null, queued: false, error: result.error });
+        showToast(
+          (ar ? "فشل البيع: " : "Sale failed: ") + result.error,
+          "crit",
+        );
+      }
+      setPhase("done");
+    });
   };
 
   const cashNum = parseFloat(cashGiven) || 0;
   const change = cashNum - total;
 
   if (phase === "done") {
+    const isError = submitState.status === "error";
+    const isQueued = submitState.status === "queued";
+    const isOk = submitState.status === "ok";
+    const titleAr = isError ? "فشل البيع" : isQueued ? "تم الحفظ بانتظار الاتصال" : "تم الدفع";
+    const titleEn = isError ? "Sale failed" : isQueued ? "Saved offline" : "Payment complete";
+    const subAr = isError
+      ? "لم يتم تسجيل البيع. أعد المحاولة أو استدعِ المشرف."
+      : isQueued
+      ? "البيع في قائمة الانتظار وسيُرسل تلقائياً عند رجوع الاتصال."
+      : `طلب ${submitState.externalId ? "#" + String(submitState.externalId).slice(-8) : "#A-1247"} مدفوع`;
+    const subEn = isError
+      ? "Sale was NOT recorded. Retry or call supervisor."
+      : isQueued
+      ? "Sale queued · will sync automatically when network is back."
+      : `Order ${submitState.externalId ? "#" + String(submitState.externalId).slice(-8) : "#A-1247"} paid`;
+    const iconBg = isError ? "var(--crit, #C04A38)" : isQueued ? "var(--warn, #B8860B)" : "var(--ink)";
+    const iconName = isError ? "x" : isQueued ? "clock" : "check";
     return (
       <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
         <div style={{ height: 52, padding: "0 18px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center" }}>
-          <span style={{ fontSize: 13, fontWeight: 500 }}>{ar ? "تم الدفع" : "Payment complete"}</span>
+          <span style={{ fontSize: 13, fontWeight: 500 }}>{ar ? titleAr : titleEn}</span>
+          {isOk && <span className="badge badge-pos" style={{ marginInlineStart: 10 }}><span className="dot pos"></span>{ar ? "مسجل" : "Recorded"}</span>}
+          {isQueued && <span className="badge badge-warn" style={{ marginInlineStart: 10 }}><span className="dot warn"></span>{ar ? "بانتظار" : "Queued"}</span>}
+          {isError && <span className="badge badge-crit" style={{ marginInlineStart: 10 }}><span className="dot crit"></span>{ar ? "خطأ" : "Error"}</span>}
         </div>
         <div className="fade-up" style={{ flex: 1, display: "grid", placeItems: "center", padding: 40 }}>
           <div style={{ textAlign: "center", maxWidth: 420 }}>
-            <div style={{ width: 64, height: 64, borderRadius: "50%", background: "var(--ink)", color: "var(--ink-inverse)", display: "grid", placeItems: "center", margin: "0 auto 24px" }}>
-              <Icon name="check" size={28} stroke={2}/>
+            <div style={{ width: 64, height: 64, borderRadius: "50%", background: iconBg, color: "var(--ink-inverse)", display: "grid", placeItems: "center", margin: "0 auto 24px" }}>
+              <Icon name={iconName} size={28} stroke={2}/>
             </div>
             <div className="t-display" style={{ marginBottom: 6 }}>{fmtMoney(total)}</div>
-            <div className="muted" style={{ marginBottom: 4 }}>{ar ? "اكتمل الدفع" : "Order #A-1247 paid"}</div>
-            {tender === "cash" && cashNum > 0 && (
+            <div className="muted" style={{ marginBottom: 4 }}>{ar ? subAr : subEn}</div>
+            {tender === "cash" && cashNum > 0 && !isError && (
               <div style={{ marginTop: 24, padding: 16, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, display: "inline-block" }}>
                 <div className="t-micro">{ar ? "الباقي" : "Change due"}</div>
                 <div className="t-num-display">{fmtMoney(change)}</div>
               </div>
             )}
+            {isError && submitState.error && (
+              <div style={{ marginTop: 16, padding: 12, background: "var(--surface)", border: "1px solid var(--crit, #C04A38)", borderRadius: 8, fontSize: 12, color: "var(--crit, #C04A38)", maxWidth: 360, marginInline: "auto" }}>
+                {submitState.error}
+              </div>
+            )}
             <div className="row" style={{ gap: 8, justifyContent: "center", marginTop: 32 }}>
-              <button className="btn btn-ghost btn-lg"><Icon name="receipt" size={14}/>{ar ? "اطبع" : "Print"}</button>
-              <button className="btn btn-ghost btn-lg">{ar ? "أرسل عبر SMS" : "Send SMS"}</button>
-              <button onClick={onDone} className="btn btn-primary btn-lg">{ar ? "طلب جديد" : "New order"} <Icon name="arrowRight" size={13}/></button>
+              {!isError && <button className="btn btn-ghost btn-lg"><Icon name="receipt" size={14}/>{ar ? "اطبع" : "Print"}</button>}
+              {!isError && <button className="btn btn-ghost btn-lg">{ar ? "أرسل عبر SMS" : "Send SMS"}</button>}
+              {isError
+                ? <button onClick={onBack} className="btn btn-primary btn-lg">{ar ? "إعادة المحاولة" : "Retry"} <Icon name="arrowRight" size={13}/></button>
+                : <button onClick={onDone} className="btn btn-primary btn-lg">{ar ? "طلب جديد" : "New order"} <Icon name="arrowRight" size={13}/></button>}
             </div>
           </div>
         </div>
@@ -8480,24 +10192,55 @@ function POSPayment({ lang, total, cart, onTender, tender, onDone, onBack }) {
 // =============== WASTE ENTRY ===============
 function POSWaste({ lang, onDone, onBack }) {
   const ar = lang === "ar";
+  const bayaan = useBayaan();
+  const { showToast } = useToast();
   const [item, setItem] = useStatePOS(null);
   const [qty, setQty] = useStatePOS(1);
   const [reason, setReason] = useStatePOS(null);
+  const [busy, setBusy] = useStatePOS(false);
 
   const items = [
-    { name: "Croissant — Plain", price: 12 },
-    { name: "Croissant — Chocolate", price: 14 },
-    { name: "Pistachio Cake", price: 32 },
-    { name: "Latte", price: 22 },
-    { name: "Iced Latte", price: 24 },
-    { name: "Milk (whole) 1L", price: 12 },
+    { id: "menu-croissant-plain", name: "Croissant — Plain", price: 12 },
+    { id: "menu-croissant-chocolate", name: "Croissant — Chocolate", price: 14 },
+    { id: "menu-pistachio-cake", name: "Pistachio Cake", price: 32 },
+    { id: "menu-latte", name: "Latte", price: 22 },
+    { id: "menu-iced-latte", name: "Iced Latte", price: 24 },
+    { id: "ing-milk-whole", name: "Milk (whole) 1L", price: 12 },
   ];
   const reasons = ar
     ? ["انتهاء اليوم", "خطأ في الطلب", "إسقاط/سكب", "رفض جودة", "تالف"]
     : ["End of day", "Wrong order", "Spill / drop", "Quality reject", "Spoiled"];
 
   const cost = item ? item.price * qty : 0;
-  const canSubmit = item && reason;
+  const canSubmit = !!item && !!reason && qty > 0 && !busy;
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    try {
+      const result = await bayaan.submitWaste({ item, qty, reason });
+      if (result.ok) {
+        showToast(
+          ar ? `تم تسجيل الهدر — ${item.name}` : `Waste recorded — ${item.name}`,
+          "success",
+        );
+        onDone();
+      } else if (result.queued) {
+        showToast(
+          ar ? "حُفظ الهدر محلياً وسيُرسل عند الاتصال" : "Waste queued · will sync when online",
+          "warn",
+        );
+        onDone();
+      } else {
+        showToast(
+          (ar ? "فشل تسجيل الهدر: " : "Waste failed: ") + result.error,
+          "crit",
+        );
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -8556,12 +10299,16 @@ function POSWaste({ lang, onDone, onBack }) {
           </div>
 
           <div style={{ flex: 1 }}></div>
-          <button disabled={!canSubmit} onClick={onDone}
+          <button disabled={!canSubmit} onClick={handleSubmit}
             className="btn btn-primary btn-xl" style={{ justifyContent: "center", marginTop: 16, opacity: canSubmit ? 1 : 0.4 }}>
-            {ar ? "سجّل الهدر" : "Submit waste"}
+            {busy ? (ar ? "جارٍ الحفظ…" : "Saving…") : (ar ? "سجّل الهدر" : "Submit waste")}
           </button>
           <div style={{ fontSize: 11, color: "var(--ink-3)", textAlign: "center", marginTop: 10 }}>
-            {ar ? "يُسجَّل تحت اسمك ووقت الوردية" : "Logged under your name and shift time"}
+            {bayaan.shift
+              ? (ar
+                ? `يُسجَّل تحت ${bayaan.shift.cashier} · ${bayaan.shift.kioskId}`
+                : `Logged under ${bayaan.shift.cashier} · ${bayaan.shift.kioskId}`)
+              : (ar ? "يُسجَّل تحت اسمك ووقت الوردية" : "Logged under your name and shift time")}
           </div>
         </div>
       </div>
@@ -8770,6 +10517,8 @@ function getInitialTheme() {
 }
 
 function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme }) {
+  const bayaan = useBayaan();
+  const ar = lang === "ar";
   return (
     <div className="master-top">
       <div className="brand">
@@ -8782,7 +10531,7 @@ function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme }) {
         <button className={panel === "pos" ? "on" : ""} onClick={() => setPanel("pos")}>POS</button>
       </div>
       <div className="row" style={{ gap: 12 }}>
-        <span style={{ fontSize: 11.5, color: "#8B8A82" }}>Demo - Sat May 9</span>
+        <ModeBadge bayaan={bayaan} ar={ar}/>
         <div className="theme-switch" role="group" aria-label="Theme">
           <button
             type="button"
@@ -8814,6 +10563,48 @@ function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme }) {
   );
 }
 
+function ModeBadge({ bayaan, ar }) {
+  const { mode, setMode, hasBackend, pendingCount, kioskId } = bayaan;
+  const liveAvailable = hasBackend;
+  const live = mode === "live";
+  const onToggle = () => {
+    setMode(mode === "live" ? "demo" : "live");
+  };
+  const dotClass = live ? (liveAvailable ? "pos" : "crit") : "warn";
+  const label = live
+    ? (ar ? "تشغيل فقط" : "Live only")
+    : (ar ? "وضع تجريبي" : "Demo mode");
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={liveAvailable
+        ? (ar ? "تبديل بين بيانات الإنتاج والتجريبي" : "Toggle between production and demo data")
+        : (ar ? "تشغيل فقط بدون بيانات تجريبية حتى تضبط الرابط" : "Live-only removes demo data even before the backend URL is configured")}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 6,
+        padding: "3px 9px 3px 7px", height: 22, borderRadius: 4,
+        background: "transparent",
+        border: `1px solid ${live ? "var(--pos)" : "var(--line)"}`,
+        color: live ? "var(--pos)" : "#8B8A82",
+        fontSize: 11, fontWeight: 500, letterSpacing: "0.01em",
+        cursor: "pointer",
+        opacity: 1,
+      }}
+    >
+      <span className={`dot ${dotClass}`} style={{ width: 6, height: 6 }}></span>
+      <span>{label}</span>
+      <span style={{ color: "#6E6E68", fontWeight: 400 }}>· {kioskId}</span>
+      {pendingCount > 0 && (
+        <span style={{
+          marginInlineStart: 4, padding: "0 5px", borderRadius: 8,
+          background: "var(--warn-soft, #FCE8C2)", color: "var(--warn, #B8860B)", fontSize: 10,
+        }}>{pendingCount} {ar ? "بانتظار" : "queued"}</span>
+      )}
+    </button>
+  );
+}
+
 function App() {
   const [panel, setPanel] = useStateApp("admin");
   const [lang, setLang] = useStateApp("en");
@@ -8827,14 +10618,16 @@ function App() {
 
   return (
     <ToastProvider>
-      <CatalogProvider>
-        <div className={`app-frame panel-${panel}`} data-theme={theme} dir={dir} lang={lang}>
-          <MasterTop panel={panel} setPanel={setPanel} lang={lang} setLang={setLang} theme={theme} setTheme={setTheme}/>
-          {panel === "admin"
-            ? <AdminPanel lang={lang}/>
-            : <POSPanel lang={lang}/>}
-        </div>
-      </CatalogProvider>
+      <BayaanProvider>
+        <CatalogProvider>
+          <div className={`app-frame panel-${panel}`} data-theme={theme} dir={dir} lang={lang}>
+            <MasterTop panel={panel} setPanel={setPanel} lang={lang} setLang={setLang} theme={theme} setTheme={setTheme}/>
+            {panel === "admin"
+              ? <AdminPanel lang={lang}/>
+              : <POSPanel lang={lang}/>}
+          </div>
+        </CatalogProvider>
+      </BayaanProvider>
     </ToastProvider>
   );
 }

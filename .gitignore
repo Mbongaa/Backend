@@ -1,0 +1,49 @@
+# Dependencies and build output
+node_modules/
+dist/
+dist-ssr/
+build/
+coverage/
+
+# Local app verification artifacts
+apps/kiosk-pos/verification/
+apps/kiosk-pos/test-output.txt
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local Odoo source/runtime checkout
+backend/odoo/
+
+# Logs and process files
+*.log
+*.pid
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example
+*.local
+
+# Editor and OS files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.sw?
+*.suo
+*.ntvs*
+*.njsproj
+*.sln

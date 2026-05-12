@@ -12,6 +12,7 @@
         "stock",
     ],
     "data": [
+        "security/bayaan_security.xml",
         "security/ir.model.access.csv",
         "views/product_template_views.xml",
         "views/pos_payment_method_views.xml",
@@ -20,6 +21,9 @@
         "views/bayaan_consumption_views.xml",
         "views/bayaan_waste_views.xml",
         "views/bayaan_shift_close_views.xml",
+    ],
+    "demo": [
+        "demo/bayaan_demo.xml",
     ],
     "assets": {
         "point_of_sale.assets_prod": [

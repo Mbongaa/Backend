@@ -28,6 +28,9 @@
     <field name="model">bayaan.shift.close</field>
     <field name="arch" type="xml">
       <form>
+        <header>
+          <button name="action_recompute_ingredient_variance" type="object" string="Recompute ingredient variance" class="btn-primary"/>
+        </header>
         <sheet>
           <group>
             <group>
@@ -51,17 +54,43 @@
           </group>
           <field name="manager_note"/>
           <field name="pos_order_ids"/>
-          <field name="stock_count_line_ids">
-            <list editable="bottom" decoration-danger="variance_qty &lt; 0" decoration-warning="variance_qty &gt; 0">
-              <field name="product_id"/>
-              <field name="uom_id"/>
-              <field name="expected_qty"/>
-              <field name="actual_qty"/>
-              <field name="variance_qty"/>
-              <field name="note"/>
-            </list>
-          </field>
-          <field name="stock_count_json"/>
+          <notebook>
+            <page string="Sellable Stock Counts (per SKU)">
+              <field name="stock_count_line_ids">
+                <list editable="bottom" decoration-danger="variance_qty &lt; 0" decoration-warning="variance_qty &gt; 0">
+                  <field name="product_id"/>
+                  <field name="uom_id"/>
+                  <field name="expected_qty"/>
+                  <field name="actual_qty"/>
+                  <field name="variance_qty"/>
+                  <field name="note"/>
+                </list>
+              </field>
+            </page>
+            <page string="Ingredient Variance (the variance loop)">
+              <group>
+                <field name="ingredient_variance_value" readonly="1"/>
+              </group>
+              <field name="ingredient_variance_line_ids">
+                <list editable="bottom" decoration-danger="variance_qty &lt; 0" decoration-warning="variance_qty &gt; 0">
+                  <field name="ingredient_id"/>
+                  <field name="uom_id"/>
+                  <field name="opening_qty"/>
+                  <field name="received_qty"/>
+                  <field name="consumed_qty"/>
+                  <field name="waste_qty"/>
+                  <field name="expected_qty"/>
+                  <field name="actual_qty"/>
+                  <field name="variance_qty"/>
+                  <field name="unit_cost"/>
+                  <field name="variance_value"/>
+                </list>
+              </field>
+            </page>
+            <page string="Raw Stock Snapshot">
+              <field name="stock_count_json"/>
+            </page>
+          </notebook>
         </sheet>
       </form>
     </field>

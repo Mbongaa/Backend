@@ -33,8 +33,18 @@ export type StockTransferPayload = {
   uom?: string;
 };
 
+export type StockTransferActionPayload = {
+  transfer: string | number;
+  action: "approve" | "pick" | "dispatch" | "receive" | "cancel";
+  items?: Array<{
+    itemId: string;
+    qty: number;
+  }>;
+};
+
 export type PurchaseOrderPayload = {
   supplier: string;
+  warehouse?: string | number;
   items: Array<{
     itemId: string;
     qty: number;
@@ -42,6 +52,27 @@ export type PurchaseOrderPayload = {
   }>;
   scheduleDate?: string;
   submit?: boolean;
+};
+
+export type CreateStockItemPayload = {
+  name: string;
+  code?: string;
+  category?: string;
+  uom?: string;
+  supplier?: string;
+  unitCost?: number;
+  purchasePrice?: number;
+  consumptionMode?: "recipe" | "finished" | "hybrid" | "none";
+  availableInPos?: boolean;
+};
+
+export type PurchaseOrderActionPayload = {
+  po: string | number;
+  action: "send" | "confirm" | "receive" | "cancel";
+  items?: Array<{
+    itemId: string;
+    qty: number;
+  }>;
 };
 
 export type RecipeVersionPayload = {
@@ -77,18 +108,59 @@ export type CreateKioskPayload = {
   stockDeductionPolicy?: "warning" | "strict" | "soft";
 };
 
+export type KioskSalePayload = {
+  external_id: string;
+  kiosk: string;
+  cashier: string;
+  posting_date: string;
+  session_id?: number | string;
+  items: Array<{
+    product: string | number;
+    name: string;
+    qty: number;
+    price_unit: number;
+  }>;
+  payments: Array<{
+    method: string;
+    amount: number;
+  }>;
+};
+
+export type KioskWastePayload = {
+  external_id: string;
+  kiosk: string;
+  cashier: string;
+  item: string | number;
+  name: string;
+  qty: number;
+  reason: string;
+  estimated_cost: number;
+  recorded_at: string;
+};
+
+export type OpenSessionPayload = {
+  kiosk: string;
+  opening_cash: number;
+};
+
 export type SourceOfTruthGateway = {
   enabled: boolean;
   getChainBootstrap: () => Promise<unknown>;
   getWarehouseSetup: () => Promise<unknown>;
   getPaymentGateways: () => Promise<unknown>;
+  openSession: (payload: OpenSessionPayload) => Promise<{ id?: number | string; state?: string }>;
   createWarehouse: (payload: CreateWarehousePayload) => Promise<unknown>;
   createKiosk: (payload: CreateKioskPayload) => Promise<unknown>;
+  createStockItem: (payload: CreateStockItemPayload) => Promise<unknown>;
   submitSale: (sale: SaleRecord, kioskId: string) => Promise<unknown>;
+  submitKioskSale: (payload: KioskSalePayload) => Promise<unknown>;
   submitStockTransfer: (payload: StockTransferPayload) => Promise<unknown>;
+  stockTransferAction: (payload: StockTransferActionPayload) => Promise<unknown>;
   submitPurchaseOrder: (payload: PurchaseOrderPayload) => Promise<unknown>;
+  purchaseOrderAction: (payload: PurchaseOrderActionPayload) => Promise<unknown>;
   submitRecipeVersion: (payload: RecipeVersionPayload) => Promise<unknown>;
   submitWaste: (waste: WasteRecord, kioskId: string) => Promise<unknown>;
+  submitKioskWaste: (payload: KioskWastePayload) => Promise<unknown>;
   submitShiftClose: (payload: ShiftClosePayload) => Promise<unknown>;
   reviewShiftClose: (payload: ShiftCloseReviewPayload) => Promise<unknown>;
 };
@@ -114,6 +186,9 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
     async getPaymentGateways() {
       return client.json("/bayaan/api/payment_gateways");
     },
+    async openSession(payload: OpenSessionPayload) {
+      return client.json("/bayaan/api/open_session", { payload });
+    },
     async createWarehouse(payload: CreateWarehousePayload) {
       return client.json("/bayaan/api/create_warehouse", {
         payload: {
@@ -135,10 +210,28 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
         },
       });
     },
+    async createStockItem(payload: CreateStockItemPayload) {
+      return client.json("/bayaan/api/create_stock_item", {
+        payload: {
+          name: payload.name,
+          code: payload.code,
+          category: payload.category,
+          uom: payload.uom,
+          supplier: payload.supplier,
+          unit_cost: payload.unitCost,
+          purchase_price: payload.purchasePrice,
+          consumption_mode: payload.consumptionMode,
+          available_in_pos: payload.availableInPos,
+        },
+      });
+    },
     async submitSale(sale: SaleRecord, kioskId: string) {
       return client.json("/bayaan/api/pos_sale", {
         payload: buildBayaanSalePayload(sale, kioskId),
       });
+    },
+    async submitKioskSale(payload: KioskSalePayload) {
+      return client.json("/bayaan/api/kiosk_sale", { payload });
     },
     async submitStockTransfer(payload: StockTransferPayload) {
       return client.json("/bayaan/api/stock_transfer", {
@@ -147,6 +240,19 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
           item: payload.itemId,
           qty: payload.qty,
           uom: payload.uom,
+          from_warehouse: payload.fromWarehouse,
+        },
+      });
+    },
+    async stockTransferAction(payload: StockTransferActionPayload) {
+      return client.json("/bayaan/api/stock_transfer_action", {
+        payload: {
+          transfer: payload.transfer,
+          action: payload.action,
+          items: payload.items?.map((item) => ({
+            item: item.itemId,
+            qty: item.qty,
+          })),
         },
       });
     },
@@ -154,12 +260,25 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
       return client.json("/bayaan/api/purchase_order", {
         payload: {
           supplier: payload.supplier,
+          warehouse: payload.warehouse,
           schedule_date: payload.scheduleDate,
           submit: payload.submit,
           items: payload.items.map((item) => ({
             item: item.itemId,
             qty: item.qty,
             rate: item.rate,
+          })),
+        },
+      });
+    },
+    async purchaseOrderAction(payload: PurchaseOrderActionPayload) {
+      return client.json("/bayaan/api/purchase_order_action", {
+        payload: {
+          po: payload.po,
+          action: payload.action,
+          items: payload.items?.map((item) => ({
+            item: item.itemId,
+            qty: item.qty,
           })),
         },
       });
@@ -189,6 +308,9 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
           estimated_cost: waste.cost,
         },
       });
+    },
+    async submitKioskWaste(payload: KioskWastePayload) {
+      return client.json("/bayaan/api/waste", { payload });
     },
     async submitShiftClose({ kioskId, cashier, shift, draft }: ShiftClosePayload) {
       const posOrders = shift.sales.map((sale) => sale.id);
@@ -238,25 +360,43 @@ function createNoopGateway() {
     async getPaymentGateways() {
       return { skipped: true };
     },
+    async openSession(_payload: OpenSessionPayload) {
+      return { id: undefined, state: "skipped" };
+    },
     async createWarehouse(_payload: CreateWarehousePayload) {
       return { skipped: true };
     },
     async createKiosk(_payload: CreateKioskPayload) {
       return { skipped: true };
     },
+    async createStockItem(_payload: CreateStockItemPayload) {
+      return { skipped: true };
+    },
     async submitSale(_sale: SaleRecord, _kioskId: string) {
+      return { skipped: true };
+    },
+    async submitKioskSale(_payload: KioskSalePayload) {
       return { skipped: true };
     },
     async submitStockTransfer(_payload: StockTransferPayload) {
       return { skipped: true };
     },
+    async stockTransferAction(_payload: StockTransferActionPayload) {
+      return { skipped: true };
+    },
     async submitPurchaseOrder(_payload: PurchaseOrderPayload) {
+      return { skipped: true };
+    },
+    async purchaseOrderAction(_payload: PurchaseOrderActionPayload) {
       return { skipped: true };
     },
     async submitRecipeVersion(_payload: RecipeVersionPayload) {
       return { skipped: true };
     },
     async submitWaste(_waste: WasteRecord, _kioskId: string) {
+      return { skipped: true };
+    },
+    async submitKioskWaste(_payload: KioskWastePayload) {
       return { skipped: true };
     },
     async submitShiftClose(_payload: ShiftClosePayload) {

@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+*.bin binary
+*.gz binary
+*.lottie binary
+*.png binary
+*.webp binary
+*.zip binary

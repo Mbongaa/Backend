@@ -25,6 +25,10 @@ async function main() {
   }
   try {
     const page = await browser.newPage({ viewport: { width: 1800, height: 980 }, deviceScaleFactor: 1 });
+    await page.addInitScript(() => {
+      window.localStorage.setItem("bayaan.mode.v1", "demo");
+      window.localStorage.setItem("bayaan.kiosk.v1", "K-01");
+    });
     const consoleErrors = [];
     const pageErrors = [];
 
@@ -41,6 +45,8 @@ async function main() {
 
     await page.goto(baseUrl, { waitUntil: "networkidle", timeout: 30_000 });
     await expectText(page, "Maqha");
+    // The BayaanProvider mode badge — Demo by default when no VITE_ODOO_URL is set.
+    await expectText(page, "Demo mode");
     // New Overview is an always-on operations terminal (see design/exact-pos-v2/.../overview.jsx)
     await expectText(page, "STREAM ACTIVE");
     await expectText(page, "Top performers");
@@ -66,11 +72,11 @@ async function main() {
       ["Kiosks", "Active"],
       ["Sales & POS", ["Live POS orders", "Gateway providers", "Zain Cash", "FIB"], "exact-admin-sales-pos.png"],
       ["Warehouses", "Bayaan warehouse topology"],
-      ["Stock & Allocation", "Suggested", "exact-admin-stock-allocation.png"],
+      ["Stock & Allocation", "Kiosk live stock needs", "exact-admin-stock-allocation.png"],
       ["Products & Recipes", ["Recipe cost and margin control", "Demo persistence"], "exact-admin-products-recipes.png"],
       ["Daily Close", ["Variance loop", "Today's closes", "Digital payments", "Investigation"], "exact-admin-daily-close.png"],
       ["Waste & Loss", ["Waste reason control", "Pattern detected"]],
-      ["Purchases & Suppliers", ["Open purchase orders", "Active suppliers"]],
+      ["Purchases & Suppliers", ["Open purchase orders", "Supplier item catalog", "Suppliers"]],
       ["Staff", ["Cashier performance", "Roster"]],
       ["Reports", ["Management report pack", "Payment methods", "Iraqi gateway settlement", "Zain Cash", "FIB", "Profit & loss", "Export pack"]],
     ]) {
@@ -105,6 +111,9 @@ async function main() {
       if (nav === "Stock & Allocation") {
         await expectText(page, "Create transfer");
         await page.getByRole("button", { name: /Create transfer/ }).first().click();
+        await expectText(page, /Review suggested transfer before creating/);
+        await expectText(page, "New stock transfer");
+        await page.locator("[role='dialog']").getByRole("button", { name: /Create transfer/ }).click();
         await expectText(page, /Draft transfer prepared/);
         await expectText(page, /DRAFT-K-04-oat-milk-1l/);
         await page.waitForTimeout(3800);
@@ -136,8 +145,15 @@ async function main() {
     await page.screenshot({ path: filePath("exact-pos-login.png"), fullPage: true });
 
     await page.getByRole("button", { name: /Maya Ahmed/ }).click();
+    // Type a wrong PIN first to assert validation kicks in (was a fake-PIN flow before).
+    for (const digit of ["9", "9", "9", "9"]) {
+      await clickExactButton(page, digit);
+    }
+    await page.getByRole("button", { name: /Start shift/ }).click();
+    await expectText(page, "Incorrect PIN");
+    // Now the correct demo PIN for Maya Ahmed (1234) — see DEMO_STAFF in ExactKioskApp.jsx.
     for (const digit of ["1", "2", "3", "4"]) {
-      await page.getByRole("button", { name: digit, exact: true }).click();
+      await clickExactButton(page, digit);
     }
     await page.getByRole("button", { name: /Start shift/ }).click();
     await expectText(page, "Current order");
@@ -158,6 +174,9 @@ async function main() {
     await page.getByRole("button", { name: /^Card\b/ }).click();
     await page.getByText("Payment complete").waitFor({ state: "visible", timeout: 10_000 });
     await expectText(page, "Thank you");
+    // The new wiring records the sale via BayaanProvider; in demo mode this
+    // resolves to ok and a "Recorded" badge appears next to "Payment complete".
+    await expectText(page, "Recorded");
     await page.screenshot({ path: filePath("exact-pos-payment-complete.png"), fullPage: true });
 
     await page.getByRole("button", { name: /New order/ }).click();
@@ -395,6 +414,22 @@ async function expectText(page, text) {
     return;
   }
   await page.getByText(text, { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
+}
+
+async function clickExactButton(page, name) {
+  let lastError;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await page.getByRole("button", { name, exact: true }).click({ timeout: 5_000 });
+      return;
+    } catch (error) {
+      lastError = error;
+      const message = String(error?.message || error);
+      if (!/detached from the DOM|Timeout/i.test(message)) throw error;
+      await page.waitForTimeout(120);
+    }
+  }
+  throw lastError;
 }
 
 async function assertNoVisibleOdoo(page) {

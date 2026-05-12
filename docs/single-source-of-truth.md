@@ -5,16 +5,18 @@
 Odoo POS, Bayaan Admin, and Bayaan AI reports must all use the same Odoo database.
 
 ```text
-Customized Odoo POS
+Bayaan cashier UI / Bayaan admin UI
         |
         v
 Odoo Community + Bayaan Odoo addon
         ^
         |
-Bayaan Admin / AI Dashboard
+Bayaan reports / AI summaries
 ```
 
 Bayaan must not keep a separate accounting database. Bayaan may keep custom operational models inside Odoo, but official sales, payments, stock, purchases, suppliers, sessions, and accounting records remain in Odoo.
+
+The Bayaan UI can be the production cashier interface, but it must not become a second POS/accounting engine. A sale is official only after Odoo creates the `pos.order`, `pos.payment`, and `pos.session` records and the Bayaan addon posts recipe consumption into Odoo stock/ledger tables.
 
 ## What This Repo Provides
 
@@ -42,6 +44,8 @@ Bayaan API routes:
 - `/bayaan/api/create_warehouse`
 - `/bayaan/api/create_kiosk`
 - `/bayaan/api/pos_sale`
+- `/bayaan/api/open_session`
+- `/bayaan/api/kiosk_sale`
 - `/bayaan/api/stock_transfer`
 - `/bayaan/api/purchase_order`
 - `/bayaan/api/recipe_version`
@@ -100,9 +104,11 @@ Production shape:
 
 ## Sync Rules
 
-Odoo POS should create the official `pos.order` for cashier sales.
+Odoo must create the official `pos.order` for cashier sales.
 
-The custom `/bayaan/api/pos_sale` route is not the production cashier engine. It exists as a guardrail for integrations and returns `engine: odoo_pos` so all real sales stay inside Odoo POS.
+The legacy `/bayaan/api/pos_sale` route is not the production cashier engine. It exists as a guardrail for integrations and returns `engine: odoo_pos`.
+
+The Bayaan cashier UI may use `/bayaan/api/open_session` and `/bayaan/api/kiosk_sale`, but those routes must create real Odoo POS records, validate configured Odoo payment methods, and let the existing `pos.order` recipe hook post stock consumption. The frontend may queue network failures, but it must not queue or hide Odoo validation/configuration errors such as missing products, missing recipes, or unconfigured payment methods.
 
 Bayaan Admin should call `/bayaan/api/stock_transfer` for warehouse-to-kiosk allocations.
 

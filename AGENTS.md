@@ -2,6 +2,25 @@
 
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
+`CLAUDE.md` is the mirror file Claude Code reads. **Keep AGENTS.md and CLAUDE.md in sync.** When one is updated, the other must be updated in the same change. If they disagree, the code is the tie-breaker; the file that contradicts the code is the stale one and must be fixed before continuing.
+
+## Ground Truth Rule (read before any answer)
+
+**Every load-bearing claim about this codebase must be grounded in a verified read/grep/run before stating it.** Cite the evidence inline as `path:line`. Never speak from cached belief, pattern-matched assumption, or a doc that might be stale.
+
+- "Function/route/field `X` exists" → grep for it before claiming. Re-grep when in doubt.
+- "`path:line` does Y" → `Read` the file at that range in this session before citing.
+- "Command `Z` does W" → run it (read-only) or read the source. Don't predict from name.
+- "The other agent did/built X" → read the actual file and `docs/hourly-reports/` before asserting.
+- "Test/build/smoke is green" → run `npm run verify` and the addon test gate. Don't infer.
+- "AGENTS.md and CLAUDE.md agree" → `diff` them. They have diverged before.
+- "Memory says X" → memory is point-in-time. Re-verify against current code before acting.
+- For questions a `grep` answers in one line, do the `grep` instead of asking the user.
+
+Verification is optional only for genuinely universal facts (Python/JS syntax, math, well-known stable APIs). For anything specific to this codebase, this client, this deal, or the current state of work — verify first.
+
+The "be brief and concise" guidance below applies to *style* (don't pad, don't summarize what the diff already shows). It does **not** apply to *verification* — never skip a read to save tokens. Token-cheap wrong answers are worse than token-expensive right ones.
+
 ## Product Positioning (read first)
 
 Bayaan is sold as a custom F&B kiosk operating system for an Iraqi client (Baghdad, ~10 coffee/juice/cake stalls scaling toward 100+). **Odoo Community 19.0 is the hidden transaction/POS engine — never sell or expose it as the product.** All Bayaan logic lives in `backend/bayaan_odoo_addons/`; do not edit Odoo core under `backend/odoo/`.
@@ -71,14 +90,15 @@ Addon manifest is `backend/bayaan_odoo_addons/bayaan_fnb_kiosk/__manifest__.py`.
 
 There must be exactly one backend database. Bayaan must not run a second accounting store. Concretely:
 
-- **Cashier sales go through customized Odoo POS** — never through the React POS in production. The `/bayaan/api/pos_sale` controller deliberately returns `engine: odoo_pos` and refuses to be a parallel sale path; this is a guardrail, not a TODO.
-- The React/Vite POS in `apps/kiosk-pos/` is **demo + design-review only** for Phase 1. It must not become a second production POS engine.
+- **The architectural rule is single-engine, not single-UI.** Cashier sales may use the Bayaan React POS UI **or** the customized Odoo Owl POS UI — but both must submit into the Bayaan Odoo addon so that Odoo creates the real `pos.session`, `pos.order`, and `pos.payment` records. The UI must never maintain a second official sale/payment/accounting ledger.
+- The live Bayaan UI cashier path is `/bayaan/api/open_session` + `/bayaan/api/kiosk_sale`. Those routes must validate Odoo POS catalog products and configured Odoo `pos.payment.method` rows before an order becomes official.
+- The legacy `/bayaan/api/pos_sale` controller is kept as a guardrail returning `engine: odoo_pos` — it is not a sale path.
 - When a `pos.order` is paid, the Bayaan addon's `pos_order.py` extension hooks `_process_saved_order` to: resolve `bayaan.kiosk` from `pos.config` → look up the active `bayaan.recipe` **at sale time** (not the currently-active recipe) → create `stock.scrap` from the kiosk `stock.location` → write immutable `bayaan.consumption.ledger` rows.
 - **Recipe versioning is non-negotiable.** `bayaan.recipe` has versions with effective dates because if the orange-juice recipe changes today, yesterday's variance reports must still resolve against yesterday's recipe. Don't "simplify" by removing version history or by reading live recipe lines from the consumption ledger.
 - Failure must be visible: paid orders without a recipe are flagged `missing_recipe`; posting failures are flagged `failed` with the error on the chatter. Silent failure is not allowed.
 
 Bayaan API routes (in `backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py`):
-`/bayaan/api/chain_bootstrap`, `/pos_sale` (guardrail), `/stock_transfer`, `/purchase_order`, `/recipe_version`, `/waste`, `/shift_close`.
+`/bayaan/api/chain_bootstrap`, `/warehouse_setup`, `/payment_gateways`, `/create_warehouse`, `/create_kiosk`, `/recipe_version`, `/pos_sale` (guardrail), `/open_session`, `/kiosk_sale`, `/waste`, `/stock_transfer`, `/stock_transfer_action`, `/purchase_order`, `/purchase_order_action`, `/shift_close`, `/shift_close_review`. **Re-grep before quoting this list — Codex adds routes regularly.**
 
 ## Architecture: Product Consumption Modes
 
@@ -105,15 +125,23 @@ When adding a new sellable product, picking the wrong mode silently breaks accou
 - AI usage is a recurring cost separate from the implementation fee. Features must be designed with frequency tiers (daily-only / daily+weekly / full chat / alerts-only) and a configurable per-tenant token budget — built in from day one, not bolted on. Pre-aggregate metrics server-side and feed compact JSON to the model; never paginate raw `pos.order` rows into the LLM.
 - Default to scheduled non-conversational summaries before adding chat. Chat is the most expensive tier.
 
-## Phase 1 Intentional Gaps
+## Project Phase (post-2026-05-12): Production Gap Closure
 
-These are deliberate simplifications for the 10-kiosk pilot, not bugs. **Don't refactor toward them speculatively.**
+The demo gate is green (`npm run verify` + Bayaan addon test gate). The project is now in **production-readiness phase**, closing the gaps in `docs/production-gap-plan.md`. That file is the authoritative backlog; verify the current state of each item against the code before claiming any of them is still "deferred."
 
-- **Flat kiosk model** — no Company → City/Region → Area → Kiosk hierarchy. Add only when a multi-city deployment is committed.
-- **One-shot `/bayaan/api/stock_transfer`** — creates the `stock.picking` immediately. The intended state machine is Draft → Approved → Picked → Dispatched → Received → Completed; deferred until pilot data justifies it.
-- **No real auth / kiosk scoping** — cashiers are not yet restricted to their assigned kiosk. Required before live production but not before pilot demo.
-- **Iraqi chart of accounts not mapped** — needs the client's accountant. Tax rules are simple; not blocking the pilot.
-- **No offline POS hardening beyond what Odoo POS provides** — kiosk-internet edge cases (sync conflicts, queued sales reconciliation) are not yet tested.
+P0 items currently being worked (verify status before acting):
+
+- **Auth, roles, kiosk scoping** — owner / manager / warehouse / cashier / accountant. Cashier limited to assigned kiosk; manager approves closes/transfers/adjustments. Server-side enforcement, not UI hiding.
+- **Stock transfer state machine** — Draft → Approved → Picked → Dispatched → Received → Completed; multi-line transfers; kiosk-receive confirmation; partial/damaged lines. Backend `/stock_transfer_action` exists; UI wiring in progress.
+- **Purchase receiving** — PO → partial/full receipt → warehouse stock increases. Backend `/purchase_order_action` exists; UI receive modal being added.
+- **Full daily-close operator flow** — manager approve/reject/note (via `/shift_close_review`), lock-after-approval, missing-recipe/failed-consumption blocks clean approval.
+- **Real payment gateway adapters** — Zain Cash, FIB, FastPay, NassWallet, AsiaHawala, Qi Card. Webhook idempotency, sandbox tests, no browser-exposed merchant secrets.
+- **HR/payroll backend persistence** — dashboard surface exists; persistence (employees, attendance, payroll runs, advances, deductions) still pending.
+- **Deployment / backups / monitoring / restore drill / SSL / secrets** — required before pilot go-live.
+
+P1+ items (also in the gap plan): supplier price catalog, warehouse setup flow, waste/inventory adjustment separation, deterministic finance reports + PDF, AI insights layer with traceable source refs, offline POS hardening, hardware, CI test automation.
+
+**Outside scope:** Iraqi chart of accounts validation needs the client's accountant — external blocker. Hardware procurement is separate. Phase 2/3 scale (100+ kiosks, multi-city hierarchy, advanced BI) is post-pilot.
 
 ## Conventions
 

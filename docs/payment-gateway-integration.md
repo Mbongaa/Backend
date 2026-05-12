@@ -24,6 +24,9 @@ Bayaan treats payment gateways as configurable settlement providers behind POS p
 - `pos.payment.method.bayaan_gateway_settlement_window` stores expected settlement timing.
 - `/bayaan/api/payment_gateways` returns the catalog and configured POS payment methods.
 - `/bayaan/api/chain_bootstrap` returns `summary.payments.by_provider` alongside the existing cash/card/QR/wallet/manual category totals.
+- `/bayaan/api/payment_transaction` creates a Bayaan gateway transaction record. In `mock: true` mode it returns sandbox-safe FIB/ZainCash-style payloads for UI and webhook testing. Without mock mode it refuses to run until server-side merchant credentials are configured.
+- `/bayaan/api/payment_transaction_action` polls or updates a transaction status, and protects cancel/refund actions by role.
+- `/bayaan/payment/webhook/<provider>` records provider callbacks with an idempotent event key and a transaction-specific callback secret. Duplicate callbacks do not double-count payment status.
 - Direct gateway credentials, such as ZainCash or FIB client secrets, must be stored server-side only. Do not put payment secrets in `VITE_*` variables or browser code.
 
 If `bayaan_gateway_provider` is empty, Bayaan falls back to POS payment metadata and method-name aliases. This keeps the pilot usable while still giving production a deterministic configuration point.
@@ -70,6 +73,13 @@ The adapter should support:
 - Every provider payment attempt needs a Bayaan transaction record with provider, external reference, provider transaction ID, status, amount, currency, kiosk, order/session/payment link, and latest provider payload reference.
 - Duplicate callbacks/webhooks must be safe.
 - Missing credentials are an external blocker only after the adapter contracts, mocked tests, and activation checklist exist.
+
+Current implementation status:
+
+- Provider catalog and POS payment-method classification are implemented.
+- Bayaan transaction and webhook-event models are implemented.
+- Mock FIB and ZainCash transaction payloads are implemented for deterministic tests.
+- Live FIB/ZainCash calls are deliberately blocked until merchant sandbox/production credentials are configured server-side and verified.
 
 ## Reporting Rules
 

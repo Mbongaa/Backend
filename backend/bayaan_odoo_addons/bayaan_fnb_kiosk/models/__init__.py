@@ -6,3 +6,6 @@ from . import bayaan_consumption
 from . import bayaan_shift_close
 from . import bayaan_waste
 from . import pos_order
+from . import stock_picking
+from . import bayaan_payment_transaction
+from . import bayaan_hr_payroll

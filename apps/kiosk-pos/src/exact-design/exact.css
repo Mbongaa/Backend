@@ -14,7 +14,7 @@
   /* Hairlines — single tonal scale */
   --line: #E7E5DE;
   --line-strong: #D6D3CA;
-  --line-soft: #EFEDE6;
+  --line-soft: #E2E0D8;
 
   /* Ink — warm near-black to soft */
   --ink: #15161A;
@@ -258,7 +258,19 @@ table { border-collapse: collapse; width: 100%; }
   outline: none;
   transition: border-color 80ms ease, box-shadow 80ms ease;
 }
-.input:focus { border-color: var(--ink-2); box-shadow: 0 0 0 3px rgba(35,66,216,0.08); }
+.input:focus { border-color: var(--ink-2); }
+.input:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px rgba(35, 66, 216, 0.55);
+  outline: none;
+}
+.btn:focus-visible,
+.seg-btn:focus-visible,
+.nav-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(35, 66, 216, 0.22);
+}
 
 /* ---------- Tables ---------- */
 .tbl { width: 100%; }
@@ -283,18 +295,15 @@ table { border-collapse: collapse; width: 100%; }
   position: relative;
   overflow: hidden;
 }
-.watch-tile::before {
-  content: "";
-  position: absolute;
-  inset-inline-start: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--line);
+.watch-tile.watch-pos { border-color: var(--line); }
+.watch-tile.watch-warn {
+  border-color: rgba(166, 107, 0, 0.34);
+  background: var(--warn-soft);
 }
-.watch-pos::before { background: var(--pos); }
-.watch-warn::before { background: var(--warn); }
-.watch-crit::before { background: var(--crit); }
+.watch-tile.watch-crit {
+  border-color: rgba(179, 51, 39, 0.38);
+  background: var(--crit-soft);
+}
 .kiosk-toolbar {
   padding: 0 2px;
   gap: 12px;
@@ -384,8 +393,9 @@ table { border-collapse: collapse; width: 100%; }
   transform: translateY(-1px);
 }
 .kiosk-card:focus-visible {
-  outline: 3px solid rgba(35, 66, 216, 0.16);
-  outline-offset: 2px;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px rgba(35, 66, 216, 0.22);
 }
 .kiosk-good { border-color: var(--line); }
 .kiosk-warn { border-color: rgba(166, 107, 0, 0.34); }
@@ -569,30 +579,34 @@ table { border-collapse: collapse; width: 100%; }
   25%  { background-color: rgba(57, 177, 122, 0.16); box-shadow: 0 0 0 3px rgba(57, 177, 122, 0.18); }
   100% { background-color: transparent; box-shadow: none; }
 }
+/* AI card transitions: transform + opacity only — no layout-property animations.
+   The collapse-on-exit happens via React unmount in a single layout pass after
+   the keyframe finishes; scaleY + transform-origin: top gives the visual
+   "collapsing upward" cue without forcing per-frame reflow. */
 @keyframes ai-card-collapse {
-  0%   { opacity: 1; transform: none; max-height: 800px; margin-block-end: 14px; padding-block: 18px; border-color: var(--line); }
+  0%   { opacity: 1; transform: none; border-color: var(--line); }
   18%  { opacity: 1; transform: translateX(-2px); border-color: rgba(57, 177, 122, 0.6); }
-  60%  { opacity: 0.4; transform: translateX(-10px) scale(0.985); max-height: 200px; }
-  100% { opacity: 0; transform: translateX(-18px) scale(0.98); max-height: 0; margin-block-end: 0; padding-block: 0; border-color: transparent; }
+  60%  { opacity: 0.4; transform: translateX(-10px) scaleY(0.5); }
+  100% { opacity: 0; transform: translateX(-18px) scaleY(0); border-color: transparent; }
 }
 @keyframes ai-card-reject {
-  0%   { opacity: 1; transform: none; max-height: 800px; margin-block-end: 14px; padding-block: 18px; }
-  100% { opacity: 0; transform: translateX(36px) scale(0.97); max-height: 0; margin-block-end: 0; padding-block: 0; }
+  0%   { opacity: 1; transform: none; }
+  100% { opacity: 0; transform: translateX(36px) scaleY(0); }
 }
 @keyframes ai-card-enter {
-  0%   { opacity: 0; transform: translateY(-14px) scale(0.97); max-height: 0; }
-  60%  { opacity: 1; max-height: 800px; }
-  100% { opacity: 1; transform: none; max-height: 800px; }
+  0%   { opacity: 0; transform: translateY(-14px) scaleY(0); }
+  60%  { opacity: 1; transform: translateY(-2px) scaleY(0.96); }
+  100% { opacity: 1; transform: none; }
 }
 @keyframes ai-audit-enter {
-  0%   { opacity: 0; transform: translateY(-12px); max-height: 0; padding-block: 0; }
-  60%  { opacity: 1; }
-  100% { opacity: 1; transform: none; max-height: 200px; padding-block: 10px; }
+  0%   { opacity: 0; transform: translateY(-12px) scaleY(0); }
+  60%  { opacity: 1; transform: translateY(-2px) scaleY(0.92); }
+  100% { opacity: 1; transform: none; }
 }
 @keyframes ai-alert-resolve {
-  0%   { opacity: 1; transform: none; max-height: 600px; padding-block: 14px; }
+  0%   { opacity: 1; transform: none; }
   35%  { opacity: 1; transform: scale(0.99); background-color: rgba(57, 177, 122, 0.10); }
-  100% { opacity: 0; transform: translateY(-10px); max-height: 0; padding-block: 0; }
+  100% { opacity: 0; transform: translateY(-10px) scaleY(0); }
 }
 @keyframes ai-pulse-glow {
   0%, 100% { box-shadow: 0 0 0 3px rgba(35, 66, 216, 0.22), 0 0 14px rgba(35, 66, 216, 0.18); }
@@ -609,14 +623,33 @@ table { border-collapse: collapse; width: 100%; }
   100% { opacity: 1; transform: none; }
 }
 
+[data-motion]                  { transform-origin: top; will-change: transform, opacity; }
 [data-motion="approving"]      { animation: ai-approve-flash 520ms ease both; }
 [data-motion="leaving-approve"]{ animation: ai-card-collapse 360ms cubic-bezier(0.4, 0, 0.2, 1) both; pointer-events: none; overflow: hidden; }
 [data-motion="leaving-reject"] { animation: ai-card-reject 320ms cubic-bezier(0.4, 0, 0.2, 1) both; pointer-events: none; overflow: hidden; }
 [data-motion="leaving-resolve"]{ animation: ai-alert-resolve 380ms cubic-bezier(0.4, 0, 0.2, 1) both; pointer-events: none; overflow: hidden; }
 [data-motion="entering"]       { animation: ai-card-enter 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 [data-motion="entering-audit"] { animation: ai-audit-enter 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
-[data-motion="fresh"]          { animation: ai-pulse-glow 1.7s ease-in-out 2; border-color: var(--accent) !important; }
+[data-motion="fresh"]          { animation: ai-pulse-glow 1.4s ease-in-out 1; border-color: var(--accent) !important; }
 [data-motion="navigating"]     { animation: ai-approve-flash 360ms ease both; }
+
+@media (prefers-reduced-motion: reduce) {
+  [data-motion="approving"],
+  [data-motion="leaving-approve"],
+  [data-motion="leaving-reject"],
+  [data-motion="leaving-resolve"],
+  [data-motion="entering"],
+  [data-motion="entering-audit"],
+  [data-motion="fresh"],
+  [data-motion="navigating"] {
+    animation: none !important;
+  }
+  [data-motion="leaving-approve"],
+  [data-motion="leaving-reject"],
+  [data-motion="leaving-resolve"] { opacity: 0; }
+  .ai-toast { animation: none !important; }
+  .health-fill { transition: none !important; }
+}
 
 /* ---------- View transitions for canvas / artifact swap ---------- */
 ::view-transition-old(canvas-content),
@@ -670,6 +703,15 @@ table { border-collapse: collapse; width: 100%; }
 
 /* ---------- Numeric helpers ---------- */
 .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+
+/* ---------- Touch targets (coarse pointer / tablet) ---------- */
+@media (pointer: coarse) {
+  .btn { height: 40px; padding: 0 14px; }
+  .btn-lg { height: 44px; }
+  .nav-item { height: 40px; padding: 0 12px; }
+  .seg-btn { height: 32px; padding: 0 12px; }
+  .input { height: 40px; }
+}
 
 /* ---------- RTL nudges ---------- */
 [dir="rtl"] .nav-item { flex-direction: row; }

@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <record id="group_bayaan_cashier" model="res.groups">
+            <field name="name">Bayaan / Cashier</field>
+            <field name="comment">Cashier on a kiosk POS. Can record sales, waste, and counted-stock at close. Sees only their assigned kiosks.</field>
+            <field name="implied_ids" eval="[(4, ref('base.group_user')), (4, ref('point_of_sale.group_pos_user'))]"/>
+        </record>
+
+        <record id="group_bayaan_supervisor" model="res.groups">
+            <field name="name">Bayaan / Supervisor</field>
+            <field name="comment">Supervisor over a region. Can review variance, approve transfers, and override cashier blocks. Sees only their assigned kiosks.</field>
+            <field name="implied_ids" eval="[(4, ref('group_bayaan_cashier'))]"/>
+        </record>
+
+        <record id="group_bayaan_manager" model="res.groups">
+            <field name="name">Bayaan / Manager</field>
+            <field name="comment">Manager / owner. Full access to every kiosk, recipe, ledger, and shift close.</field>
+            <field name="implied_ids" eval="[(4, ref('group_bayaan_supervisor'))]"/>
+        </record>
+
+        <!-- Record rules -->
+        <!-- Bayaan Kiosk: cashier sees only kiosks they're assigned to. Manager sees all. -->
+        <record id="rule_bayaan_kiosk_cashier" model="ir.rule">
+            <field name="name">Bayaan Kiosk: cashier scope</field>
+            <field name="model_id" ref="model_bayaan_kiosk"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_cashier'))]"/>
+            <field name="domain_force">['|', '|',
+                ('manager_user_id', '=', user.id),
+                ('supervisor_user_id', '=', user.id),
+                ('cashier_user_ids', 'in', [user.id])]</field>
+            <field name="perm_read">1</field>
+            <field name="perm_write">0</field>
+            <field name="perm_create">0</field>
+            <field name="perm_unlink">0</field>
+        </record>
+
+        <record id="rule_bayaan_kiosk_supervisor_write" model="ir.rule">
+            <field name="name">Bayaan Kiosk: supervisor write scope</field>
+            <field name="model_id" ref="model_bayaan_kiosk"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_supervisor'))]"/>
+            <field name="domain_force">['|',
+                ('supervisor_user_id', '=', user.id),
+                ('manager_user_id', '=', user.id)]</field>
+            <field name="perm_read">0</field>
+            <field name="perm_write">1</field>
+            <field name="perm_create">0</field>
+            <field name="perm_unlink">0</field>
+        </record>
+
+        <record id="rule_bayaan_kiosk_manager" model="ir.rule">
+            <field name="name">Bayaan Kiosk: manager full access</field>
+            <field name="model_id" ref="model_bayaan_kiosk"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <!-- Consumption ledger: scope by kiosk_id->cashier_user_ids -->
+        <record id="rule_bayaan_consumption_cashier" model="ir.rule">
+            <field name="name">Bayaan Consumption Ledger: cashier scope</field>
+            <field name="model_id" ref="model_bayaan_consumption_ledger"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_cashier'))]"/>
+            <field name="domain_force">['|', '|',
+                ('kiosk_id.manager_user_id', '=', user.id),
+                ('kiosk_id.supervisor_user_id', '=', user.id),
+                ('kiosk_id.cashier_user_ids', 'in', [user.id])]</field>
+            <field name="perm_read">1</field>
+            <field name="perm_write">0</field>
+            <field name="perm_create">0</field>
+            <field name="perm_unlink">0</field>
+        </record>
+
+        <record id="rule_bayaan_consumption_manager" model="ir.rule">
+            <field name="name">Bayaan Consumption Ledger: manager full access</field>
+            <field name="model_id" ref="model_bayaan_consumption_ledger"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <!-- Waste entry: cashier can see + create on their kiosks; supervisor can edit; manager full -->
+        <record id="rule_bayaan_waste_cashier" model="ir.rule">
+            <field name="name">Bayaan Waste: cashier scope</field>
+            <field name="model_id" ref="model_bayaan_waste_entry"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_cashier'))]"/>
+            <field name="domain_force">['|', '|',
+                ('kiosk_id.manager_user_id', '=', user.id),
+                ('kiosk_id.supervisor_user_id', '=', user.id),
+                ('kiosk_id.cashier_user_ids', 'in', [user.id])]</field>
+        </record>
+
+        <record id="rule_bayaan_waste_manager" model="ir.rule">
+            <field name="name">Bayaan Waste: manager full access</field>
+            <field name="model_id" ref="model_bayaan_waste_entry"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <!-- Shift close: cashier creates own; supervisor reviews; manager approves -->
+        <record id="rule_bayaan_shift_close_cashier" model="ir.rule">
+            <field name="name">Bayaan Shift Close: cashier scope</field>
+            <field name="model_id" ref="model_bayaan_shift_close"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_cashier'))]"/>
+            <field name="domain_force">['|', '|',
+                ('kiosk_id.manager_user_id', '=', user.id),
+                ('kiosk_id.supervisor_user_id', '=', user.id),
+                ('kiosk_id.cashier_user_ids', 'in', [user.id])]</field>
+        </record>
+
+        <record id="rule_bayaan_shift_close_manager" model="ir.rule">
+            <field name="name">Bayaan Shift Close: manager full access</field>
+            <field name="model_id" ref="model_bayaan_shift_close"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <record id="rule_bayaan_shift_close_line_cashier" model="ir.rule">
+            <field name="name">Bayaan Shift Close Line: cashier scope</field>
+            <field name="model_id" ref="model_bayaan_shift_close_line"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_cashier'))]"/>
+            <field name="domain_force">['|', '|',
+                ('shift_close_id.kiosk_id.manager_user_id', '=', user.id),
+                ('shift_close_id.kiosk_id.supervisor_user_id', '=', user.id),
+                ('shift_close_id.kiosk_id.cashier_user_ids', 'in', [user.id])]</field>
+        </record>
+
+        <record id="rule_bayaan_shift_close_line_manager" model="ir.rule">
+            <field name="name">Bayaan Shift Close Line: manager full access</field>
+            <field name="model_id" ref="model_bayaan_shift_close_line"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <record id="rule_bayaan_shift_close_ing_cashier" model="ir.rule">
+            <field name="name">Bayaan Shift Close Ingredient Line: cashier scope</field>
+            <field name="model_id" ref="model_bayaan_shift_close_ingredient_line"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_cashier'))]"/>
+            <field name="domain_force">['|', '|',
+                ('shift_close_id.kiosk_id.manager_user_id', '=', user.id),
+                ('shift_close_id.kiosk_id.supervisor_user_id', '=', user.id),
+                ('shift_close_id.kiosk_id.cashier_user_ids', 'in', [user.id])]</field>
+        </record>
+
+        <record id="rule_bayaan_shift_close_ing_manager" model="ir.rule">
+            <field name="name">Bayaan Shift Close Ingredient Line: manager full access</field>
+            <field name="model_id" ref="model_bayaan_shift_close_ingredient_line"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <!-- Payment gateway transactions: cashier/supervisor scope by kiosk; manager sees all. -->
+        <record id="rule_bayaan_payment_transaction_cashier" model="ir.rule">
+            <field name="name">Bayaan Payment Transaction: cashier scope</field>
+            <field name="model_id" ref="model_bayaan_payment_transaction"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_cashier'))]"/>
+            <field name="domain_force">['|', '|', '|',
+                ('kiosk_id', '=', False),
+                ('kiosk_id.manager_user_id', '=', user.id),
+                ('kiosk_id.supervisor_user_id', '=', user.id),
+                ('kiosk_id.cashier_user_ids', 'in', [user.id])]</field>
+        </record>
+
+        <record id="rule_bayaan_payment_transaction_manager" model="ir.rule">
+            <field name="name">Bayaan Payment Transaction: manager full access</field>
+            <field name="model_id" ref="model_bayaan_payment_transaction"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <record id="rule_bayaan_payment_event_cashier" model="ir.rule">
+            <field name="name">Bayaan Payment Webhook Event: cashier scope</field>
+            <field name="model_id" ref="model_bayaan_payment_webhook_event"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_cashier'))]"/>
+            <field name="domain_force">['|', '|', '|',
+                ('transaction_id.kiosk_id', '=', False),
+                ('transaction_id.kiosk_id.manager_user_id', '=', user.id),
+                ('transaction_id.kiosk_id.supervisor_user_id', '=', user.id),
+                ('transaction_id.kiosk_id.cashier_user_ids', 'in', [user.id])]</field>
+        </record>
+
+        <record id="rule_bayaan_payment_event_manager" model="ir.rule">
+            <field name="name">Bayaan Payment Webhook Event: manager full access</field>
+            <field name="model_id" ref="model_bayaan_payment_webhook_event"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <!-- HR/payroll: staff visibility follows kiosk assignment; payroll approval is manager-only. -->
+        <record id="rule_bayaan_employee_cashier" model="ir.rule">
+            <field name="name">Bayaan Employee: kiosk scope</field>
+            <field name="model_id" ref="model_bayaan_employee"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_cashier'))]"/>
+            <field name="domain_force">['|', '|', '|',
+                ('kiosk_id', '=', False),
+                ('kiosk_id.manager_user_id', '=', user.id),
+                ('kiosk_id.supervisor_user_id', '=', user.id),
+                ('kiosk_id.cashier_user_ids', 'in', [user.id])]</field>
+        </record>
+
+        <record id="rule_bayaan_employee_manager" model="ir.rule">
+            <field name="name">Bayaan Employee: manager full access</field>
+            <field name="model_id" ref="model_bayaan_employee"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <record id="rule_bayaan_attendance_cashier" model="ir.rule">
+            <field name="name">Bayaan Attendance: kiosk scope</field>
+            <field name="model_id" ref="model_bayaan_attendance"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_cashier'))]"/>
+            <field name="domain_force">['|', '|', '|',
+                ('employee_id.kiosk_id', '=', False),
+                ('employee_id.kiosk_id.manager_user_id', '=', user.id),
+                ('employee_id.kiosk_id.supervisor_user_id', '=', user.id),
+                ('employee_id.kiosk_id.cashier_user_ids', 'in', [user.id])]</field>
+        </record>
+
+        <record id="rule_bayaan_attendance_manager" model="ir.rule">
+            <field name="name">Bayaan Attendance: manager full access</field>
+            <field name="model_id" ref="model_bayaan_attendance"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <record id="rule_bayaan_payroll_adjustment_manager" model="ir.rule">
+            <field name="name">Bayaan Payroll Adjustment: manager full access</field>
+            <field name="model_id" ref="model_bayaan_payroll_adjustment"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <record id="rule_bayaan_payroll_adjustment_supervisor" model="ir.rule">
+            <field name="name">Bayaan Payroll Adjustment: supervisor scope</field>
+            <field name="model_id" ref="model_bayaan_payroll_adjustment"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_supervisor'))]"/>
+            <field name="domain_force">['|',
+                ('employee_id.kiosk_id.supervisor_user_id', '=', user.id),
+                ('employee_id.kiosk_id.manager_user_id', '=', user.id)]</field>
+        </record>
+
+        <record id="rule_bayaan_payroll_run_manager" model="ir.rule">
+            <field name="name">Bayaan Payroll Run: manager full access</field>
+            <field name="model_id" ref="model_bayaan_payroll_run"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <record id="rule_bayaan_payroll_line_manager" model="ir.rule">
+            <field name="name">Bayaan Payroll Line: manager full access</field>
+            <field name="model_id" ref="model_bayaan_payroll_line"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+
+        <!-- Recipe & recipe lines: cashiers read-only, managers full -->
+        <record id="rule_bayaan_recipe_user_read" model="ir.rule">
+            <field name="name">Bayaan Recipe: read for all bayaan users</field>
+            <field name="model_id" ref="model_bayaan_recipe"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_cashier'))]"/>
+            <field name="domain_force">[('company_id', 'in', user.company_ids.ids)]</field>
+            <field name="perm_read">1</field>
+            <field name="perm_write">0</field>
+            <field name="perm_create">0</field>
+            <field name="perm_unlink">0</field>
+        </record>
+
+        <record id="rule_bayaan_recipe_manager" model="ir.rule">
+            <field name="name">Bayaan Recipe: manager full access</field>
+            <field name="model_id" ref="model_bayaan_recipe"/>
+            <field name="groups" eval="[(4, ref('group_bayaan_manager'))]"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+        </record>
+    </data>
+</odoo>
