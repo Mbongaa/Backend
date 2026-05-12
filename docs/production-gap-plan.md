@@ -8,8 +8,8 @@ This plan traces what is still missing before Bayaan can be called production-re
 
 | Gate | Status | Evidence |
 | --- | --- | --- |
-| Frontend release gate | Green | `npm run verify` passed: Vitest, production build, Playwright smoke |
-| Odoo addon test gate | Green | Temp DB `bayaan_codex_full_20260512185244`, Bayaan addon post-tests: 27 tests, 0 failed, 0 errors |
+| Frontend release gate | Green | `npm run verify` passed on 2026-05-12: 36 Vitest tests, production build, Playwright smoke |
+| Odoo addon test gate | Green | Temp DB `bayaan_codex_full_202605122125`, Bayaan addon post-tests: 37 tests, 0 failed, 0 errors; stats: 53 tests |
 | Odoo local runtime | Green for development | Local Odoo 19 is running on `127.0.0.1:8069` through WSL |
 | Docker local stack | Red | Docker Desktop Linux engine is stopped/unavailable |
 | Full production gate | Red | Live payment credentials/API activation, deployment, hardware, accounting validation, backups/restore, and ops hardening are incomplete |
@@ -26,6 +26,9 @@ Latest production slice completed:
 - Cashier/supervisor/manager tests verify assigned-kiosk sales, blocked unassigned sales, blocked cashier transfers, assigned supervisor transfers, manager-only purchase orders, and scoped `chain_bootstrap`.
 - Payment gateway transaction and webhook-event models now exist for FIB/ZainCash-style reconciliation.
 - Mock FIB and ZainCash transactions, credential blocking, callback-secret enforcement, and duplicate webhook idempotency are covered by Odoo HTTP tests.
+- HR/payroll backend models and routes now persist employees, attendance, approved adjustments, payroll runs, approval, and paid state.
+- Daily close approval is now manager-only, blocks missing/failed recipe consumption, requires notes for variance/rejection, and locks approved close records/count lines.
+- Odoo 19 `_read_group` is used in the touched variance/reporting aggregation paths, removing the previous local deprecation warnings there.
 
 ## Release Gate Definition
 
@@ -102,13 +105,14 @@ Acceptance:
 Current state:
 - Variance model and tests exist.
 - Dashboard shows daily close/variance and manager actions.
+- `/bayaan/api/shift_close_review` enforces manager-only approve/reject, locks approved closes, and blocks clean approval when linked POS orders have missing or failed recipe consumption.
+- Approved shift closes and their stock/ingredient count lines cannot be edited or deleted through normal model writes.
 
 Needed:
 - Cashier close flow: counted cash, counted digital evidence, counted stock, notes.
-- Manager approve/reject/request recount.
-- Lock closed shift after approval.
+- Request recount workflow.
 - Difference posting policy: waste, unknown loss, cash shortage, investigation.
-- Missing recipe and failed consumption rows must block clean approval.
+- UI should surface the backend lock/block reasons directly in the close review panel.
 
 Acceptance:
 - Closing K-07 with missing orange stock and cash shortage remains unresolved until a manager records decision and note.
@@ -191,13 +195,12 @@ Acceptance:
 ### 10. HR And Payroll Backend
 
 Current state:
-- UI concept exists.
-- Payroll/staff data is still mostly frontend/demo-level.
+- Backend models and HTTP routes exist for employees, attendance, payroll adjustments, payroll runs, payroll lines, approval, and paid state.
+- Payroll approval blocks draft adjustments, and cash-shortage deductions require approval before they affect net pay.
 
 Needed:
-- Backend models for employees, assignments, attendance, payroll periods, advances, deductions, expenses.
-- Salary rules by role/month/hour.
-- Cash shortage deductions need manager approval.
+- Live UI wiring for staff create/edit, attendance, adjustments, payroll run review, approval, and paid state.
+- Final salary rules by role/month/hour with accountant/client validation.
 - Payroll export/report.
 - Audit trail for payroll changes.
 
@@ -334,4 +337,4 @@ This should make Odoo installs/tests faster and reduce file-lock/sync weirdness.
 
 ## Current Verdict
 
-Bayaan is now a strong pilot foundation with passing frontend and Odoo addon gates. It is not yet live-production-ready because deployment, backups/restore, hardware, accountant validation, and live payment merchant activation are still outside this local repo. The physical stock loop is verified end-to-end in Odoo, role/kiosk scoping is enforced server-side, and payment gateway reconciliation now has deterministic transaction/webhook records with mocked FIB/ZainCash tests.
+Bayaan is now green for the local release gate: frontend verify passes and the Bayaan Odoo addon test gate passes on a clean database. It is not yet green for real production release because deployment, backups/restore, hardware, accountant validation, and live FIB/ZainCash merchant activation are outside this local repo. The stock loop is verified end-to-end in Odoo, role/kiosk scoping is enforced server-side, daily close approval is locked and manager-controlled, HR/payroll now persists in backend models, and payment gateway reconciliation has deterministic transaction/webhook records with mocked FIB/ZainCash tests.
