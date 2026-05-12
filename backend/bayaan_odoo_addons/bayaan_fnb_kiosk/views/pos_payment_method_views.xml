@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="pos_payment_method_bayaan_gateway_view_form" model="ir.ui.view">
+        <field name="name">pos.payment.method.bayaan.gateway.form</field>
+        <field name="model">pos.payment.method</field>
+        <field name="inherit_id" ref="point_of_sale.pos_payment_method_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='payment_method_type']" position="after">
+                <field name="bayaan_gateway_provider"/>
+                <field name="bayaan_gateway_external_id" invisible="not bayaan_gateway_provider or bayaan_gateway_provider == 'cash'"/>
+                <field name="bayaan_gateway_settlement_window" invisible="not bayaan_gateway_provider or bayaan_gateway_provider == 'cash'"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="pos_payment_method_bayaan_gateway_view_tree" model="ir.ui.view">
+        <field name="name">pos.payment.method.bayaan.gateway.list</field>
+        <field name="model">pos.payment.method</field>
+        <field name="inherit_id" ref="point_of_sale.pos_payment_method_view_tree"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='name']" position="after">
+                <field name="bayaan_gateway_provider" optional="show"/>
+                <field name="bayaan_gateway_settlement_window" optional="hide"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="pos_payment_method_bayaan_gateway_view_search" model="ir.ui.view">
+        <field name="name">pos.payment.method.bayaan.gateway.search</field>
+        <field name="model">pos.payment.method</field>
+        <field name="inherit_id" ref="point_of_sale.pos_payment_method_view_search"/>
+        <field name="arch" type="xml">
+            <xpath expr="//group" position="inside">
+                <filter name="group_by_bayaan_gateway_provider" string="Bayaan Gateway Provider" domain="[]" context="{'group_by':'bayaan_gateway_provider'}"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

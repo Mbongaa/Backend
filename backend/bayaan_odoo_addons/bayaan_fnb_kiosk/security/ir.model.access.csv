@@ -1,0 +1,8 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_bayaan_kiosk_user,bayaan.kiosk user,model_bayaan_kiosk,base.group_user,1,1,1,0
+access_bayaan_recipe_user,bayaan.recipe user,model_bayaan_recipe,base.group_user,1,1,1,0
+access_bayaan_recipe_line_user,bayaan.recipe.line user,model_bayaan_recipe_line,base.group_user,1,1,1,0
+access_bayaan_consumption_ledger_user,bayaan.consumption.ledger user,model_bayaan_consumption_ledger,base.group_user,1,1,1,0
+access_bayaan_waste_entry_user,bayaan.waste.entry user,model_bayaan_waste_entry,base.group_user,1,1,1,0
+access_bayaan_shift_close_user,bayaan.shift.close user,model_bayaan_shift_close,base.group_user,1,1,1,0
+access_bayaan_shift_close_line_user,bayaan.shift.close.line user,model_bayaan_shift_close_line,base.group_user,1,1,1,0

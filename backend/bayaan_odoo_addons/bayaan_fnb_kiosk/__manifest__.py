@@ -1,0 +1,31 @@
+{
+    "name": "Bayaan F&B Kiosk Ops",
+    "version": "19.0.1.0.0",
+    "category": "Sales/Point of Sale",
+    "summary": "F&B kiosk recipes, ingredient consumption, waste, and Bayaan dashboard API on top of Odoo POS.",
+    "author": "Bayaan.ai",
+    "license": "LGPL-3",
+    "depends": [
+        "account",
+        "point_of_sale",
+        "purchase",
+        "stock",
+    ],
+    "data": [
+        "security/ir.model.access.csv",
+        "views/product_template_views.xml",
+        "views/pos_payment_method_views.xml",
+        "views/bayaan_kiosk_views.xml",
+        "views/bayaan_recipe_views.xml",
+        "views/bayaan_consumption_views.xml",
+        "views/bayaan_waste_views.xml",
+        "views/bayaan_shift_close_views.xml",
+    ],
+    "assets": {
+        "point_of_sale.assets_prod": [
+            "bayaan_fnb_kiosk/static/src/pos/bayaan_pos.scss",
+        ],
+    },
+    "application": False,
+    "installable": True,
+}

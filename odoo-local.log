@@ -1,0 +1,288 @@
+2026-05-12 01:15:40,888 2611613 INFO ? odoo: Odoo version 19.0 
+2026-05-12 01:15:40,889 2611613 INFO ? odoo: addons paths: _NamespacePath(['/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/addons', '/home/hassa/.local/share/Odoo/addons/19.0', '/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/addons', '/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons']) 
+2026-05-12 01:15:40,889 2611613 INFO ? odoo: database: hassa@default:default 
+2026-05-12 01:15:41,922 2611613 INFO ? odoo.service.server: HTTP service (werkzeug) running on localhost:8069 
+2026-05-12 01:15:41,948 2611613 INFO bayaan odoo.modules.loading: loading 1 modules... 
+2026-05-12 01:15:41,951 2611613 INFO bayaan odoo.modules.loading: 1 modules loaded in 0.00s, 0 queries (+0 extra) 
+2026-05-12 01:15:42,085 2611613 INFO bayaan odoo.modules.loading: loading 62 modules... 
+2026-05-12 01:15:48,607 2611613 INFO bayaan odoo.modules.loading: 62 modules loaded in 6.52s, 0 queries (+0 extra) 
+2026-05-12 01:15:48,708 2611613 INFO bayaan odoo.modules.loading: Modules loaded. 
+2026-05-12 01:15:48,748 2611613 INFO bayaan odoo.registry: Registry loaded in 6.825s 
+2026-05-12 01:15:50,197 2611613 INFO bayaan odoo.service.server: Initiating server reload 
+2026-05-12 01:15:50,430 2611613 INFO bayaan odoo.sql_db: ConnectionPool(read/write;used=0/count=0/max=64): Closed 3 connections  
+2026-05-12 01:15:50,433 2611613 INFO ? odoo.service.server: cron0 max age (0s) reached, releasing connection. 
+2026-05-12 01:15:51,149 2611613 INFO ? odoo: Odoo version 19.0 
+2026-05-12 01:15:51,150 2611613 INFO ? odoo: addons paths: _NamespacePath(['/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/addons', '/home/hassa/.local/share/Odoo/addons/19.0', '/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/addons', '/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons']) 
+2026-05-12 01:15:51,150 2611613 INFO ? odoo: database: hassa@default:default 
+2026-05-12 01:15:52,252 2611613 INFO ? odoo.service.server: HTTP service (werkzeug) running on localhost:8069 
+2026-05-12 01:15:52,275 2611613 INFO bayaan odoo.modules.loading: loading 1 modules... 
+2026-05-12 01:15:52,278 2611613 INFO bayaan odoo.modules.loading: 1 modules loaded in 0.00s, 0 queries (+0 extra) 
+2026-05-12 01:15:52,445 2611613 INFO bayaan odoo.modules.loading: loading 62 modules... 
+2026-05-12 01:16:01,389 2611613 INFO bayaan odoo.modules.loading: 62 modules loaded in 8.94s, 0 queries (+0 extra) 
+2026-05-12 01:16:01,500 2611613 INFO bayaan odoo.modules.loading: Modules loaded. 
+2026-05-12 01:16:01,530 2611613 INFO bayaan odoo.registry: Registry loaded in 9.277s 
+2026-05-12 01:16:01,532 2611613 INFO bayaan odoo.addons.base.models.ir_http: Generating routing map for key None 
+2026-05-12 01:16:01,864 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 01:16:01,905 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 01:16:01] "POST /web/session/authenticate HTTP/1.1" 200 - 75 0.024 0.856
+2026-05-12 01:16:01,945 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (i1wBR5ysp3DU6QwFuKazJC0mZ1oHmT9LL1hAERTPwP) 
+2026-05-12 01:16:01,980 2611613 WARNING bayaan py.warnings: /mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py:560: DeprecationWarning: Since 19.0, read_group is deprecated. Please use _read_group in the backend code or formatted_read_group for a complete formatted result
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2829, in __call__
+    response = request._serve_db()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2302, in _serve_db
+    return service_model.retrying(serve_func, env=self.env)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/service/model.py", line 188, in retrying
+    result = func()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2357, in _serve_ir_http
+    response = self.dispatcher.dispatch(rule.endpoint, args)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2572, in dispatch
+    result = self.request.registry['ir.http']._dispatch(endpoint)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/addons/base/models/ir_http.py", line 355, in _dispatch
+    result = endpoint(**request.params)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 811, in route_wrapper
+    result = endpoint(self, *args, **params_ok)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py", line 560, in chain_bootstrap
+    for row in PosOrder.read_group(sale_domain, ["amount_total:sum"], ["bayaan_kiosk_id"]):
+ 
+2026-05-12 01:16:01,988 2611613 WARNING bayaan py.warnings: /mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py:633: DeprecationWarning: Since 19.0, read_group is deprecated. Please use _read_group in the backend code or formatted_read_group for a complete formatted result
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2829, in __call__
+    response = request._serve_db()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2302, in _serve_db
+    return service_model.retrying(serve_func, env=self.env)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/service/model.py", line 188, in retrying
+    result = func()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2357, in _serve_ir_http
+    response = self.dispatcher.dispatch(rule.endpoint, args)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2572, in dispatch
+    result = self.request.registry['ir.http']._dispatch(endpoint)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/addons/base/models/ir_http.py", line 355, in _dispatch
+    result = endpoint(**request.params)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 811, in route_wrapper
+    result = endpoint(self, *args, **params_ok)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py", line 633, in chain_bootstrap
+    Payment.read_group(payment_domain, ["amount:sum"], ["payment_method_id"])
+ 
+2026-05-12 01:16:01,997 2611613 WARNING bayaan py.warnings: /mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py:454: DeprecationWarning: Since 19.0, read_group is deprecated. Please use _read_group in the backend code or formatted_read_group for a complete formatted result
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2829, in __call__
+    response = request._serve_db()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2302, in _serve_db
+    return service_model.retrying(serve_func, env=self.env)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/service/model.py", line 188, in retrying
+    result = func()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2357, in _serve_ir_http
+    response = self.dispatcher.dispatch(rule.endpoint, args)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2572, in dispatch
+    result = self.request.registry['ir.http']._dispatch(endpoint)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/addons/base/models/ir_http.py", line 355, in _dispatch
+    result = endpoint(**request.params)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 811, in route_wrapper
+    result = endpoint(self, *args, **params_ok)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py", line 635, in chain_bootstrap
+    consumption_cost = read_group_sum(Consumption, consumption_domain, "total_cost")
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py", line 454, in read_group_sum
+    rows = model.read_group(domain, ["%s:sum" % field_name], [])
+ 
+2026-05-12 01:16:02,008 2611613 WARNING bayaan py.warnings: /mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py:643: DeprecationWarning: Since 19.0, read_group is deprecated. Please use _read_group in the backend code or formatted_read_group for a complete formatted result
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2829, in __call__
+    response = request._serve_db()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2302, in _serve_db
+    return service_model.retrying(serve_func, env=self.env)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/service/model.py", line 188, in retrying
+    result = func()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2357, in _serve_ir_http
+    response = self.dispatcher.dispatch(rule.endpoint, args)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2572, in dispatch
+    result = self.request.registry['ir.http']._dispatch(endpoint)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/addons/base/models/ir_http.py", line 355, in _dispatch
+    result = endpoint(**request.params)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 811, in route_wrapper
+    result = endpoint(self, *args, **params_ok)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py", line 643, in chain_bootstrap
+    for row in ShiftClose.read_group(closing_domain + [("closed_at", "!=", False)], ["kiosk_id"], ["kiosk_id"])
+ 
+2026-05-12 01:16:02,018 2611613 WARNING bayaan py.warnings: /mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py:690: DeprecationWarning: Since 19.0, read_group is deprecated. Please use _read_group in the backend code or formatted_read_group for a complete formatted result
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2829, in __call__
+    response = request._serve_db()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2302, in _serve_db
+    return service_model.retrying(serve_func, env=self.env)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/service/model.py", line 188, in retrying
+    result = func()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2357, in _serve_ir_http
+    response = self.dispatcher.dispatch(rule.endpoint, args)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2572, in dispatch
+    result = self.request.registry['ir.http']._dispatch(endpoint)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/addons/base/models/ir_http.py", line 355, in _dispatch
+    result = endpoint(**request.params)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 811, in route_wrapper
+    result = endpoint(self, *args, **params_ok)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py", line 715, in chain_bootstrap
+    "daily": report_period_summary(today_start, today_end),
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py", line 690, in report_period_summary
+    Payment.read_group(period_payment_domain, ["amount:sum"], ["payment_method_id"])
+ 
+2026-05-12 01:16:02,061 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 01:16:02] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 90 0.030 0.089
+2026-05-12 01:16:28,231 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 01:16:28,247 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 01:16:28] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.007 0.291
+2026-05-12 01:16:28,283 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (VLflfuWHwlOR2npPU9NeVPQp3a7-UFTnsMz4dJHfhM) 
+2026-05-12 01:16:28,344 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 01:16:28] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.028 0.035
+2026-05-12 01:17:03,425 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Base: Auto-vacuum internal data' (1) starting 
+2026-05-12 01:17:03,806 2611613 INFO bayaan odoo.addons.base.models.res_users: GC'd 2 user log entries 
+2026-05-12 01:17:03,817 2611613 INFO bayaan odoo.addons.api_doc.models.ir_attachment: GC'd 0 /doc cached index 
+2026-05-12 01:17:03,827 2611613 INFO bayaan odoo.addons.base.models.res_users: GC 'auth_totp.device' delete 0 entries 
+2026-05-12 01:17:03,982 2611613 INFO bayaan odoo.addons.base.models.res_device: GC device logs delete 0 entries 
+2026-05-12 01:17:03,999 2611613 INFO bayaan odoo.addons.base.models.res_users: GC 'res.users.apikeys' delete 0 entries 
+2026-05-12 01:17:04,065 2611613 INFO bayaan odoo.addons.base.models.ir_attachment: filestore gc 0 checked, 0 removed 
+2026-05-12 01:17:04,134 2611613 INFO bayaan odoo.addons.sms.models.sms_sms: GC'd 0 sms marked for deletion 
+2026-05-12 01:17:04,140 2611613 INFO bayaan odoo.addons.base.models.res_device: GC device logs delete 0 entries 
+2026-05-12 01:17:04,258 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Base: Auto-vacuum internal data' (1) fully done (#loop 1; done 122; remaining 0; duration 0.83s) 
+2026-05-12 01:17:54,313 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 01:17:54,332 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 01:17:54] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.008 0.294
+2026-05-12 01:18:16,565 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 01:18:16,581 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 01:18:16] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.007 0.305
+2026-05-12 01:18:52,642 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 01:18:52,660 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 01:18:52] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.008 0.296
+2026-05-12 01:21:24,186 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 01:21:24,207 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 01:21:24] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.009 0.325
+2026-05-12 01:22:33,891 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 01:22:33,911 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 01:22:33] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.009 0.320
+2026-05-12 01:22:44,012 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 01:22:44,028 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 01:22:44] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.007 0.295
+2026-05-12 02:00:22,552 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) starting 
+2026-05-12 02:00:22,570 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) fully done (#loop 1; done 0; remaining 0; duration 0.02s) 
+2026-05-12 02:00:22,576 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) starting 
+2026-05-12 02:00:22,586 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) fully done (#loop 1; done 0; remaining 0; duration 0.01s) 
+2026-05-12 03:00:18,038 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) starting 
+2026-05-12 03:00:18,056 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) fully done (#loop 1; done 0; remaining 0; duration 0.02s) 
+2026-05-12 03:00:43,128 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) starting 
+2026-05-12 03:00:43,137 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) fully done (#loop 1; done 0; remaining 0; duration 0.01s) 
+2026-05-12 03:01:23,471 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Digest Emails' (14) starting 
+2026-05-12 03:01:23,590 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Digest Emails' (14) fully done (#loop 1; done 0; remaining 0; duration 0.12s) 
+2026-05-12 04:00:46,454 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) starting 
+2026-05-12 04:00:46,471 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) fully done (#loop 1; done 0; remaining 0; duration 0.02s) 
+2026-05-12 04:00:46,479 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) starting 
+2026-05-12 04:00:46,501 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) fully done (#loop 1; done 0; remaining 0; duration 0.02s) 
+2026-05-12 05:00:24,300 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) starting 
+2026-05-12 05:00:24,318 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) fully done (#loop 1; done 0; remaining 0; duration 0.02s) 
+2026-05-12 05:00:24,325 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) starting 
+2026-05-12 05:00:24,338 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) fully done (#loop 1; done 0; remaining 0; duration 0.01s) 
+2026-05-12 06:00:27,152 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) starting 
+2026-05-12 06:00:27,181 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) fully done (#loop 1; done 0; remaining 0; duration 0.03s) 
+2026-05-12 06:00:27,199 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) starting 
+2026-05-12 06:00:27,224 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) fully done (#loop 1; done 0; remaining 0; duration 0.02s) 
+2026-05-12 07:00:29,170 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) starting 
+2026-05-12 07:00:29,195 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) fully done (#loop 1; done 0; remaining 0; duration 0.03s) 
+2026-05-12 07:00:29,202 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) starting 
+2026-05-12 07:00:29,213 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) fully done (#loop 1; done 0; remaining 0; duration 0.01s) 
+2026-05-12 08:00:45,129 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) starting 
+2026-05-12 08:00:45,146 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) fully done (#loop 1; done 0; remaining 0; duration 0.02s) 
+2026-05-12 08:00:45,152 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) starting 
+2026-05-12 08:00:45,162 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) fully done (#loop 1; done 0; remaining 0; duration 0.01s) 
+2026-05-12 09:00:23,595 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) starting 
+2026-05-12 09:00:23,609 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) fully done (#loop 1; done 0; remaining 0; duration 0.01s) 
+2026-05-12 09:00:23,615 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) starting 
+2026-05-12 09:00:23,626 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) fully done (#loop 1; done 0; remaining 0; duration 0.01s) 
+2026-05-12 10:00:40,390 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) starting 
+2026-05-12 10:00:40,408 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) fully done (#loop 1; done 0; remaining 0; duration 0.02s) 
+2026-05-12 10:00:40,414 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) starting 
+2026-05-12 10:00:40,424 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) fully done (#loop 1; done 0; remaining 0; duration 0.01s) 
+2026-05-12 11:00:29,227 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) starting 
+2026-05-12 11:00:29,246 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Notification: Notify scheduled messages' (8) fully done (#loop 1; done 0; remaining 0; duration 0.02s) 
+2026-05-12 11:00:29,252 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) starting 
+2026-05-12 11:00:29,262 2611613 INFO bayaan odoo.addons.base.models.ir_cron: Job 'Mail: Email Queue Manager' (3) fully done (#loop 1; done 0; remaining 0; duration 0.01s) 
+2026-05-12 11:25:05,952 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 11:25:06,008 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:25:06] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.027 0.366
+2026-05-12 11:25:06,608 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (XJrXnTAF6N9vU4Q-HawlI6sJmw5G3GJAVAPrqssb3k) 
+2026-05-12 11:25:06,611 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (XJrXnTAF6N9vU4Q-HawlI6sJmw5G3GJAVAPrqssb3k) 
+2026-05-12 11:25:06,612 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (XJrXnTAF6N9vU4Q-HawlI6sJmw5G3GJAVAPrqssb3k) 
+2026-05-12 11:25:06,643 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (XJrXnTAF6N9vU4Q-HawlI6sJmw5G3GJAVAPrqssb3k) 
+2026-05-12 11:25:06,723 2611613 WARNING bayaan py.warnings: /mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py:123: DeprecationWarning: Since 19.0, read_group is deprecated. Please use _read_group in the backend code or formatted_read_group for a complete formatted result
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2829, in __call__
+    response = request._serve_db()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2302, in _serve_db
+    return service_model.retrying(serve_func, env=self.env)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/service/model.py", line 188, in retrying
+    result = func()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2357, in _serve_ir_http
+    response = self.dispatcher.dispatch(rule.endpoint, args)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 2572, in dispatch
+    result = self.request.registry['ir.http']._dispatch(endpoint)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/addons/base/models/ir_http.py", line 355, in _dispatch
+    result = endpoint(**request.params)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/odoo/odoo/http.py", line 811, in route_wrapper
+    result = endpoint(self, *args, **params_ok)
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py", line 195, in warehouse_setup
+    return self._serialize_warehouse_setup()
+  File "/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS/backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py", line 123, in _serialize_warehouse_setup
+    for row in Quant.read_group(
+ 
+2026-05-12 11:25:06,773 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:25:06] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 28 0.108 0.076
+2026-05-12 11:25:06,780 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:25:06] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.096 0.104
+2026-05-12 11:25:06,869 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:25:06] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.148 0.144
+2026-05-12 11:25:06,870 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:25:06] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.201 0.086
+2026-05-12 11:25:36,791 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 11:25:36,818 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:25:36] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.012 0.384
+2026-05-12 11:25:36,833 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (Vqq-w9UWznAFaofa_uiwISHBcAYVUTpYeVZJ3fjpwf) 
+2026-05-12 11:25:36,921 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:25:36] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.043 0.050
+2026-05-12 11:25:56,178 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 11:25:56,197 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:25:56] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.008 0.335
+2026-05-12 11:25:56,834 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (hDwOSNrpznQUfoEWBt8ld6DIv5m8pG_aBJruP1sDB0) 
+2026-05-12 11:25:56,839 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (hDwOSNrpznQUfoEWBt8ld6DIv5m8pG_aBJruP1sDB0) 
+2026-05-12 11:25:56,847 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (hDwOSNrpznQUfoEWBt8ld6DIv5m8pG_aBJruP1sDB0) 
+2026-05-12 11:25:56,859 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (hDwOSNrpznQUfoEWBt8ld6DIv5m8pG_aBJruP1sDB0) 
+2026-05-12 11:25:56,913 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:25:56] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.057 0.027
+2026-05-12 11:25:56,918 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:25:56] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.053 0.035
+2026-05-12 11:25:57,039 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:25:57] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.131 0.083
+2026-05-12 11:25:57,072 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:25:57] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.146 0.093
+2026-05-12 11:26:34,307 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 11:26:34,328 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:26:34] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.009 0.358
+2026-05-12 11:26:34,942 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (x_WsyeC4Sd9hLK0CZGk4wPst0pelgjnI3zdJEreCvf) 
+2026-05-12 11:26:34,945 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (x_WsyeC4Sd9hLK0CZGk4wPst0pelgjnI3zdJEreCvf) 
+2026-05-12 11:26:34,948 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (x_WsyeC4Sd9hLK0CZGk4wPst0pelgjnI3zdJEreCvf) 
+2026-05-12 11:26:34,955 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (x_WsyeC4Sd9hLK0CZGk4wPst0pelgjnI3zdJEreCvf) 
+2026-05-12 11:26:35,050 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:26:35] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.080 0.036
+2026-05-12 11:26:35,053 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:26:35] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.073 0.041
+2026-05-12 11:26:35,202 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:26:35] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.177 0.093
+2026-05-12 11:26:35,211 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:26:35] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.175 0.100
+2026-05-12 11:26:59,415 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 11:26:59,439 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:26:59] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.010 0.312
+2026-05-12 11:26:59,453 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (1fruldYTKLKv_y_Klfh6HhFivNo_o9Pkyn3-mr4zgY) 
+2026-05-12 11:26:59,539 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:26:59] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.041 0.048
+2026-05-12 11:27:30,199 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 11:27:30,243 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:27:30] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.007 0.335
+2026-05-12 11:27:30,742 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (dN14sn7JjEYsCMeQV5d-t7APpXL3BxryTmK_2nsHM0) 
+2026-05-12 11:27:30,748 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (dN14sn7JjEYsCMeQV5d-t7APpXL3BxryTmK_2nsHM0) 
+2026-05-12 11:27:30,758 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (dN14sn7JjEYsCMeQV5d-t7APpXL3BxryTmK_2nsHM0) 
+2026-05-12 11:27:30,765 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (dN14sn7JjEYsCMeQV5d-t7APpXL3BxryTmK_2nsHM0) 
+2026-05-12 11:27:30,840 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:27:30] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.061 0.038
+2026-05-12 11:27:30,846 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:27:30] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.066 0.031
+2026-05-12 11:27:30,937 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:27:30] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.137 0.063
+2026-05-12 11:27:30,939 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:27:30] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.124 0.068
+2026-05-12 11:34:32,530 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 11:34:32,555 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:34:32] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.012 0.313
+2026-05-12 11:34:33,147 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (svRDU9nLVvaiyuNwCNkJ0L1eERpaY55bR9RrpwY5pS) 
+2026-05-12 11:34:33,147 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (svRDU9nLVvaiyuNwCNkJ0L1eERpaY55bR9RrpwY5pS) 
+2026-05-12 11:34:33,151 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (svRDU9nLVvaiyuNwCNkJ0L1eERpaY55bR9RrpwY5pS) 
+2026-05-12 11:34:33,153 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (svRDU9nLVvaiyuNwCNkJ0L1eERpaY55bR9RrpwY5pS) 
+2026-05-12 11:34:33,232 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:34:33] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.061 0.031
+2026-05-12 11:34:33,234 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:34:33] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.056 0.042
+2026-05-12 11:34:33,332 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:34:33] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.128 0.071
+2026-05-12 11:34:33,335 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:34:33] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.122 0.075
+2026-05-12 11:39:28,105 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 11:39:28,123 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:39:28] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.008 0.307
+2026-05-12 11:39:28,675 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (k6Nd8prBrUqaLbB_vl3_J_cLrd7Z-60KVIUkIVkgId) 
+2026-05-12 11:39:28,677 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (k6Nd8prBrUqaLbB_vl3_J_cLrd7Z-60KVIUkIVkgId) 
+2026-05-12 11:39:28,681 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (k6Nd8prBrUqaLbB_vl3_J_cLrd7Z-60KVIUkIVkgId) 
+2026-05-12 11:39:28,684 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (k6Nd8prBrUqaLbB_vl3_J_cLrd7Z-60KVIUkIVkgId) 
+2026-05-12 11:39:28,722 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:39:28] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.032 0.020
+2026-05-12 11:39:28,724 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:39:28] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.028 0.023
+2026-05-12 11:39:28,827 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:39:28] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.099 0.059
+2026-05-12 11:39:28,830 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:39:28] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.098 0.061
+2026-05-12 11:42:03,789 2611613 INFO bayaan odoo.addons.base.models.res_users: Login successful for login:admin from 127.0.0.1 
+2026-05-12 11:42:03,809 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:42:03] "POST /web/session/authenticate HTTP/1.1" 200 - 31 0.010 0.317
+2026-05-12 11:42:04,366 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (zP5lQEXqXa5a-EsIFewQlhi59s2tSusaa61yCjdDuA) 
+2026-05-12 11:42:04,372 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (zP5lQEXqXa5a-EsIFewQlhi59s2tSusaa61yCjdDuA) 
+2026-05-12 11:42:04,381 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (zP5lQEXqXa5a-EsIFewQlhi59s2tSusaa61yCjdDuA) 
+2026-05-12 11:42:04,381 2611613 INFO bayaan odoo.addons.base.models.res_device: User 2 inserts device log (zP5lQEXqXa5a-EsIFewQlhi59s2tSusaa61yCjdDuA) 
+2026-05-12 11:42:04,431 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:42:04] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.044 0.024
+2026-05-12 11:42:04,441 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:42:04] "POST /bayaan/api/warehouse_setup HTTP/1.1" 200 - 24 0.045 0.029
+2026-05-12 11:42:04,525 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:42:04] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.108 0.057
+2026-05-12 11:42:04,529 2611613 INFO bayaan werkzeug: 127.0.0.1 - - [12/May/2026 11:42:04] "POST /bayaan/api/chain_bootstrap HTTP/1.1" 200 - 125 0.100 0.063

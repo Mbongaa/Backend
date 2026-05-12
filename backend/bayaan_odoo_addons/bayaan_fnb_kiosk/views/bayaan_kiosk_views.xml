@@ -1,0 +1,70 @@
+<odoo>
+  <record id="bayaan_kiosk_action" model="ir.actions.act_window">
+    <field name="name">Bayaan Kiosks</field>
+    <field name="res_model">bayaan.kiosk</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <record id="bayaan_kiosk_view_list" model="ir.ui.view">
+    <field name="name">bayaan.kiosk.list</field>
+    <field name="model">bayaan.kiosk</field>
+    <field name="arch" type="xml">
+      <list>
+        <field name="kiosk_code"/>
+        <field name="name"/>
+        <field name="city"/>
+        <field name="area"/>
+        <field name="pos_config_id"/>
+        <field name="stock_location_id"/>
+        <field name="stock_deduction_policy"/>
+        <field name="manager_user_id"/>
+        <field name="supervisor_user_id"/>
+        <field name="active"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="bayaan_kiosk_view_form" model="ir.ui.view">
+    <field name="name">bayaan.kiosk.form</field>
+    <field name="model">bayaan.kiosk</field>
+    <field name="arch" type="xml">
+      <form>
+        <sheet>
+          <group>
+            <group>
+              <field name="name"/>
+              <field name="kiosk_code"/>
+              <field name="active"/>
+              <field name="opening_date"/>
+              <field name="stock_deduction_policy"/>
+            </group>
+            <group>
+              <field name="pos_config_id"/>
+              <field name="stock_location_id"/>
+              <field name="manager_user_id"/>
+              <field name="supervisor_user_id"/>
+              <field name="cashier_user_ids" widget="many2many_tags"/>
+            </group>
+          </group>
+          <group string="Location">
+            <group>
+              <field name="country_id"/>
+              <field name="city"/>
+              <field name="area"/>
+              <field name="street"/>
+            </group>
+            <group>
+              <field name="latitude"/>
+              <field name="longitude"/>
+              <field name="last_stock_transfer_at"/>
+              <field name="last_daily_close_at"/>
+            </group>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <menuitem id="bayaan_root_menu" name="Bayaan F&amp;B" sequence="25"/>
+  <menuitem id="bayaan_kiosk_menu" name="Kiosks" parent="bayaan_root_menu" action="bayaan_kiosk_action" sequence="10"/>
+</odoo>

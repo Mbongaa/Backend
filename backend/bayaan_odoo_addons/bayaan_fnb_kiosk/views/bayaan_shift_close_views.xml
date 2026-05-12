@@ -1,0 +1,71 @@
+<odoo>
+  <record id="bayaan_shift_close_action" model="ir.actions.act_window">
+    <field name="name">Shift Close</field>
+    <field name="res_model">bayaan.shift.close</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <record id="bayaan_shift_close_view_list" model="ir.ui.view">
+    <field name="name">bayaan.shift.close.list</field>
+    <field name="model">bayaan.shift.close</field>
+    <field name="arch" type="xml">
+      <list decoration-danger="cash_variance &lt; 0" decoration-warning="cash_variance &gt; 0">
+        <field name="opened_at"/>
+        <field name="closed_at"/>
+        <field name="kiosk_id"/>
+        <field name="cashier_id"/>
+        <field name="expected_cash"/>
+        <field name="actual_cash"/>
+        <field name="cash_variance"/>
+        <field name="manager_review_state"/>
+        <field name="investigation_status"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="bayaan_shift_close_view_form" model="ir.ui.view">
+    <field name="name">bayaan.shift.close.form</field>
+    <field name="model">bayaan.shift.close</field>
+    <field name="arch" type="xml">
+      <form>
+        <sheet>
+          <group>
+            <group>
+              <field name="kiosk_id"/>
+              <field name="cashier_id"/>
+              <field name="opened_at"/>
+              <field name="closed_at"/>
+            </group>
+            <group>
+              <field name="opening_cash"/>
+              <field name="expected_cash"/>
+              <field name="actual_cash"/>
+              <field name="cash_variance"/>
+            </group>
+            <group string="Manager Review">
+              <field name="manager_review_state"/>
+              <field name="investigation_status"/>
+              <field name="manager_reviewed_by_id"/>
+              <field name="manager_reviewed_at"/>
+            </group>
+          </group>
+          <field name="manager_note"/>
+          <field name="pos_order_ids"/>
+          <field name="stock_count_line_ids">
+            <list editable="bottom" decoration-danger="variance_qty &lt; 0" decoration-warning="variance_qty &gt; 0">
+              <field name="product_id"/>
+              <field name="uom_id"/>
+              <field name="expected_qty"/>
+              <field name="actual_qty"/>
+              <field name="variance_qty"/>
+              <field name="note"/>
+            </list>
+          </field>
+          <field name="stock_count_json"/>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <menuitem id="bayaan_shift_close_menu" name="Shift Close" parent="bayaan_root_menu" action="bayaan_shift_close_action" sequence="40"/>
+</odoo>

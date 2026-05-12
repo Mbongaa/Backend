@@ -1,0 +1,58 @@
+<odoo>
+  <record id="bayaan_recipe_action" model="ir.actions.act_window">
+    <field name="name">F&amp;B Recipes</field>
+    <field name="res_model">bayaan.recipe</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <record id="bayaan_recipe_view_list" model="ir.ui.view">
+    <field name="name">bayaan.recipe.list</field>
+    <field name="model">bayaan.recipe</field>
+    <field name="arch" type="xml">
+      <list decoration-success="state == 'active'" decoration-muted="state == 'archived'">
+        <field name="product_id"/>
+        <field name="version_label"/>
+        <field name="effective_from"/>
+        <field name="waste_allowance_percent"/>
+        <field name="estimated_unit_cost"/>
+        <field name="state"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="bayaan_recipe_view_form" model="ir.ui.view">
+    <field name="name">bayaan.recipe.form</field>
+    <field name="model">bayaan.recipe</field>
+    <field name="arch" type="xml">
+      <form>
+        <header>
+          <button name="action_activate" type="object" string="Activate" class="btn-primary" invisible="state == 'active'"/>
+          <field name="state" widget="statusbar"/>
+        </header>
+        <sheet>
+          <group>
+            <group>
+              <field name="product_id"/>
+              <field name="version_label"/>
+              <field name="effective_from"/>
+            </group>
+            <group>
+              <field name="waste_allowance_percent"/>
+              <field name="estimated_unit_cost"/>
+              <field name="company_id"/>
+            </group>
+          </group>
+          <field name="line_ids">
+            <list editable="bottom">
+              <field name="ingredient_id"/>
+              <field name="qty"/>
+              <field name="uom_id"/>
+            </list>
+          </field>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <menuitem id="bayaan_recipe_menu" name="Recipes" parent="bayaan_root_menu" action="bayaan_recipe_action" sequence="20"/>
+</odoo>

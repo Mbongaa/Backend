@@ -1,0 +1,12 @@
+<odoo>
+  <record id="bayaan_product_template_form_inherit" model="ir.ui.view">
+    <field name="name">bayaan.product.template.form.inherit</field>
+    <field name="model">product.template</field>
+    <field name="inherit_id" ref="product.product_template_only_form_view"/>
+    <field name="arch" type="xml">
+      <xpath expr="//field[@name='type']" position="after">
+        <field name="bayaan_consumption_mode"/>
+      </xpath>
+    </field>
+  </record>
+</odoo>

@@ -1,0 +1,73 @@
+<odoo>
+  <record id="bayaan_consumption_action" model="ir.actions.act_window">
+    <field name="name">Ingredient Consumption</field>
+    <field name="res_model">bayaan.consumption.ledger</field>
+    <field name="view_mode">list,form</field>
+  </record>
+
+  <record id="bayaan_consumption_view_list" model="ir.ui.view">
+    <field name="name">bayaan.consumption.ledger.list</field>
+    <field name="model">bayaan.consumption.ledger</field>
+    <field name="arch" type="xml">
+      <list decoration-danger="state == 'failed'">
+        <field name="consumed_at"/>
+        <field name="kiosk_id"/>
+        <field name="pos_order_id"/>
+        <field name="product_id"/>
+        <field name="product_qty"/>
+        <field name="recipe_id"/>
+        <field name="ingredient_id"/>
+        <field name="ingredient_qty"/>
+        <field name="uom_id"/>
+        <field name="unit_cost"/>
+        <field name="total_cost"/>
+        <field name="state"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="bayaan_consumption_view_form" model="ir.ui.view">
+    <field name="name">bayaan.consumption.ledger.form</field>
+    <field name="model">bayaan.consumption.ledger</field>
+    <field name="arch" type="xml">
+      <form>
+        <sheet>
+          <group>
+            <group>
+              <field name="name"/>
+              <field name="state"/>
+              <field name="consumed_at"/>
+              <field name="kiosk_id"/>
+              <field name="cashier_id"/>
+            </group>
+            <group>
+              <field name="pos_order_id"/>
+              <field name="pos_order_line_id"/>
+              <field name="pos_session_id"/>
+              <field name="pos_config_id"/>
+              <field name="stock_scrap_id"/>
+            </group>
+          </group>
+          <group>
+            <group>
+              <field name="product_id"/>
+              <field name="product_qty"/>
+              <field name="recipe_id"/>
+              <field name="recipe_line_id"/>
+            </group>
+            <group>
+              <field name="ingredient_id"/>
+              <field name="ingredient_qty"/>
+              <field name="uom_id"/>
+              <field name="unit_cost"/>
+              <field name="total_cost"/>
+            </group>
+          </group>
+          <field name="failure_reason" invisible="not failure_reason"/>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <menuitem id="bayaan_consumption_menu" name="Ingredient Consumption" parent="bayaan_root_menu" action="bayaan_consumption_action" sequence="25"/>
+</odoo>
