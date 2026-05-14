@@ -20,9 +20,23 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
     def _qty(self, product, location):
         return self.env["stock.quant"].sudo()._get_available_quantity(product, location)
 
+    def _create_cashier_user(self):
+        group = self.env.ref("bayaan_fnb_kiosk.group_bayaan_cashier")
+        return self.env["res.users"].sudo().create({
+            "name": "Procurement Cashier",
+            "login": "bayaan_procurement_cashier",
+            "email": "bayaan_procurement_cashier@example.test",
+            "password": "test",
+            "company_id": self.company.id,
+            "company_ids": [(6, 0, [self.company.id])],
+            "group_ids": [(6, 0, [group.id])],
+        })
+
     def setUp(self):
         super().setUp()
         self.authenticate("admin", "admin")
+        self.cashier = self._create_cashier_user()
+        self.kiosk.cashier_user_ids = [(4, self.cashier.id)]
         cash_method = self.env["pos.payment.method"].sudo().search([
             ("is_cash_count", "=", True),
             ("company_id", "=", self.company.id),
@@ -39,10 +53,14 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
             })
         self.pos_config.payment_method_ids = [(4, cash_method.id)]
 
-    def test_purchase_order_send_and_receive_moves_stock_into_warehouse(self):
+    def test_purchase_order_receive_moves_stock_into_warehouse(self):
         before = self._qty(self.ingredient_orange, self.warehouse.lot_stock_id)
         created = self._jsonrpc("/bayaan/api/purchase_order", {
             "supplier": "Baghdad Test Produce",
+            "invoice_ref": "INV-BD-TEST",
+            "invoice_name": "invoice-test.pdf",
+            "invoice_file": "JVBERi0xLjQK",
+            "invoice_mimetype": "application/pdf",
             "items": [{
                 "item": "ING-ORANGE",
                 "qty": 12.0,
@@ -52,14 +70,16 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
         if "error" in created:
             self.fail("purchase_order errored: %s" % created["error"])
         order_name = created["result"]["name"]
+        order = self.env["purchase.order"].sudo().search([("name", "=", order_name)], limit=1)
+        self.assertEqual(order.partner_ref, "INV-BD-TEST")
+        attachment = self.env["ir.attachment"].sudo().search([
+            ("res_model", "=", "purchase.order"),
+            ("res_id", "=", order.id),
+            ("name", "=", "invoice-test.pdf"),
+        ], limit=1)
+        self.assertTrue(attachment)
 
-        sent = self._jsonrpc("/bayaan/api/purchase_order_action", {
-            "po": order_name,
-            "action": "send",
-        })
-        if "error" in sent:
-            self.fail("purchase_order_action send errored: %s" % sent["error"])
-        self.assertEqual(sent["result"]["state"], "sent")
+        self.assertEqual(created["result"]["state"], "purchase")
 
         received = self._jsonrpc("/bayaan/api/purchase_order_action", {
             "po": order_name,
@@ -72,6 +92,69 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
             self._qty(self.ingredient_orange, self.warehouse.lot_stock_id) - before,
             12.0,
         )
+
+    def test_create_supplier_persists_partner_setup_fields(self):
+        response = self._jsonrpc("/bayaan/api/create_supplier", {
+            "name": "Baghdad Dairy Setup",
+            "address": "Karrada, Baghdad",
+            "category": "Dairy",
+            "delivery_category": "Same day",
+        })
+        if "error" in response:
+            self.fail("create_supplier errored: %s" % response["error"])
+
+        supplier = response["result"]["supplier"]
+        self.assertEqual(supplier["name"], "Baghdad Dairy Setup")
+        self.assertEqual(supplier["category"], "Dairy")
+        self.assertEqual(supplier["deliveryCategory"], "Same day")
+        partner = self.env["res.partner"].sudo().browse(supplier["id"])
+        self.assertEqual(partner.supplier_rank, 1)
+        self.assertEqual(partner.street, "Karrada, Baghdad")
+        self.assertEqual(partner.bayaan_supplier_category, "Dairy")
+        self.assertEqual(partner.bayaan_delivery_category, "Same day")
+
+    def test_recurring_purchase_run_creates_confirmed_purchase_order(self):
+        created = self._jsonrpc("/bayaan/api/recurring_purchase", {
+            "name": "Monday fresh produce",
+            "supplier": "Baghdad Weekly Produce",
+            "warehouse": self.warehouse.name,
+            "frequency": "weekly",
+            "weekday": "0",
+            "next_date": "2026-05-18",
+            "items": [{
+                "item": "ING-ORANGE",
+                "qty": 14.0,
+                "rate": 1450.0,
+            }],
+        })
+        if "error" in created:
+            self.fail("recurring_purchase create errored: %s" % created["error"])
+        plan = created["result"]["recurring_purchase"]
+        self.assertEqual(plan["supplier"], "Baghdad Weekly Produce")
+        self.assertEqual(plan["warehouse"], self.warehouse.name)
+        self.assertEqual(len(plan["lines"]), 1)
+
+        run = self._jsonrpc("/bayaan/api/recurring_purchase", {
+            "id": plan["id"],
+            "action": "run",
+        })
+        if "error" in run:
+            self.fail("recurring_purchase run errored: %s" % run["error"])
+        self.assertEqual(len(run["result"]["purchase_orders"]), 1)
+
+        order = self.env["purchase.order"].sudo().browse(run["result"]["purchase_orders"][0]["id"])
+        self.assertTrue(order.exists())
+        self.assertEqual(order.state, "purchase")
+        self.assertEqual(order.partner_id.name, "Baghdad Weekly Produce")
+        self.assertEqual(order.picking_type_id, self.warehouse.in_type_id)
+        self.assertEqual(order.order_line.product_id.default_code, "ING-ORANGE")
+        self.assertAlmostEqual(order.order_line.product_qty, 14.0)
+
+        bootstrap = self._jsonrpc("/bayaan/api/chain_bootstrap", {})
+        if "error" in bootstrap:
+            self.fail("chain_bootstrap errored: %s" % bootstrap["error"])
+        plan_ids = {row["id"] for row in bootstrap["result"]["recurring_purchases"]}
+        self.assertIn(plan["id"], plan_ids)
 
     def test_purchase_order_partial_receive_records_shortage(self):
         before = self._qty(self.ingredient_orange, self.warehouse.lot_stock_id)
@@ -133,6 +216,15 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
             self.fail("stock_transfer_action approve errored: %s" % approved["error"])
         self.assertIn(approved["result"]["state"], ("confirmed", "assigned", "partially_available"))
 
+        dispatched = self._jsonrpc("/bayaan/api/stock_transfer_action", {
+            "transfer": transfer_name,
+            "action": "dispatch",
+        })
+        if "error" in dispatched:
+            self.fail("stock_transfer_action dispatch errored: %s" % dispatched["error"])
+        self.assertEqual(dispatched["result"]["bayaan_state"], "dispatched")
+
+        self.authenticate("bayaan_procurement_cashier", "test")
         received = self._jsonrpc("/bayaan/api/stock_transfer_action", {
             "transfer": transfer_name,
             "action": "receive",
@@ -164,6 +256,14 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
             self.fail("stock_transfer multiline errored: %s" % created["error"])
         self.assertEqual(len(created["result"]["lines"]), 2)
 
+        dispatched = self._jsonrpc("/bayaan/api/stock_transfer_action", {
+            "transfer": created["result"]["name"],
+            "action": "dispatch",
+        })
+        if "error" in dispatched:
+            self.fail("stock_transfer_action dispatch errored: %s" % dispatched["error"])
+
+        self.authenticate("bayaan_procurement_cashier", "test")
         received = self._jsonrpc("/bayaan/api/stock_transfer_action", {
             "transfer": created["result"]["name"],
             "action": "receive",
@@ -217,6 +317,13 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
         })
         if "error" in transfer:
             self.fail("stock_transfer errored: %s" % transfer["error"])
+        dispatched_transfer = self._jsonrpc("/bayaan/api/stock_transfer_action", {
+            "transfer": transfer["result"]["name"],
+            "action": "dispatch",
+        })
+        if "error" in dispatched_transfer:
+            self.fail("stock_transfer_action dispatch errored: %s" % dispatched_transfer["error"])
+        self.authenticate("bayaan_procurement_cashier", "test")
         received_transfer = self._jsonrpc("/bayaan/api/stock_transfer_action", {
             "transfer": transfer["result"]["name"],
             "action": "receive",

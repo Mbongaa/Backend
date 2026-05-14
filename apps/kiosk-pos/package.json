@@ -4,13 +4,15 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 5174",
+    "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run --pool threads",
     "smoke": "node scripts/smoke.mjs",
     "smoke:live": "node scripts/live-odoo-smoke.mjs",
-    "verify": "npm test && npm run build && npm run smoke"
+    "gate:wiring": "node scripts/wiring-gate.mjs",
+    "verify": "npm test && npm run gate:wiring && npm run build && npm run smoke",
+    "verify:live": "npm run verify && npm run smoke:live"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",

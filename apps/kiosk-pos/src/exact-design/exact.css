@@ -505,13 +505,17 @@ table { border-collapse: collapse; width: 100%; }
 .theme-switch button:hover { color: #fff; background: rgba(255,255,255,0.08); }
 .theme-switch button.on { background: #FBFBF8; color: #15161A; }
 
-/* Customer display standby animation should read as a white mark on the dark POS screen. */
+/* Customer display standby animation should read as a white mark on the dark POS screen.
+   The Juice.json lottie is a black-stroke + white-fill line illustration; invert flips
+   black strokes to white, and screen blending drops the (now-black) fills so we see a
+   clean white line drawing instead of a solid white blob. */
 .customer-standby-lottie {
   width: 180px;
   height: 180px;
   margin-bottom: 8px;
   color: var(--terminal-ink);
-  filter: brightness(0) invert(1);
+  filter: invert(1);
+  mix-blend-mode: screen;
 }
 
 /* ---------- Tablet bezel for POS ---------- */

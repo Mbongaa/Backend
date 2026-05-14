@@ -19,7 +19,7 @@ help:
 > @echo "  make build     — type-check and build the dashboard"
 > @echo "  make test      — run frontend domain tests"
 > @echo "  make smoke     — run the Playwright smoke test"
-> @echo "  make verify    — full release gate: test + build + smoke"
+> @echo "  make verify    — full release gate: frontend verify + Odoo addon tests"
 > @echo ""
 > @echo "Docker / live stack:"
 > @echo "  make up        — bring up Postgres + Odoo + frontend nginx"
@@ -46,6 +46,7 @@ smoke: build
 
 verify: install
 > cd $(APP_DIR) && npm run verify
+> $(MAKE) odoo-test
 
 up:
 > $(DC) up -d db

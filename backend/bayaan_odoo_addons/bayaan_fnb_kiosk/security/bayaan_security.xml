@@ -13,10 +13,33 @@
             <field name="implied_ids" eval="[(4, ref('group_bayaan_cashier'))]"/>
         </record>
 
+        <record id="group_bayaan_logistics" model="res.groups">
+            <field name="name">Bayaan / Logistics</field>
+            <field name="comment">Warehouse and purchasing operator. Can create stock items, purchase orders, and warehouse-to-kiosk transfers. Does not get POS selling or payroll approval rights.</field>
+            <field name="implied_ids" eval="[
+                (4, ref('base.group_user')),
+                (4, ref('stock.group_stock_user')),
+                (4, ref('purchase.group_purchase_user'))
+            ]"/>
+        </record>
+
+        <record id="group_bayaan_accountant" model="res.groups">
+            <field name="name">Bayaan / Accountant</field>
+            <field name="comment">Finance and reporting user. Can read verified sales, purchases, cash, payment, and payroll data without changing operational stock or recipes.</field>
+            <field name="implied_ids" eval="[
+                (4, ref('base.group_user')),
+                (4, ref('account.group_account_readonly'))
+            ]"/>
+        </record>
+
         <record id="group_bayaan_manager" model="res.groups">
             <field name="name">Bayaan / Manager</field>
             <field name="comment">Manager / owner. Full access to every kiosk, recipe, ledger, and shift close.</field>
-            <field name="implied_ids" eval="[(4, ref('group_bayaan_supervisor'))]"/>
+            <field name="implied_ids" eval="[
+                (4, ref('group_bayaan_supervisor')),
+                (4, ref('group_bayaan_logistics')),
+                (4, ref('group_bayaan_accountant'))
+            ]"/>
         </record>
 
         <!-- Record rules -->

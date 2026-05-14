@@ -1,8 +1,8 @@
-# AGENTS.md
+# Bayaan Agent Instructions
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides guidance to AI coding agents when working with code in this repository.
 
-`CLAUDE.md` is the mirror file Claude Code reads. **Keep AGENTS.md and CLAUDE.md in sync.** When one is updated, the other must be updated in the same change. If they disagree, the code is the tie-breaker; the file that contradicts the code is the stale one and must be fixed before continuing.
+`AGENTS.md` and `CLAUDE.md` are mirror files. **Keep AGENTS.md and CLAUDE.md in sync.** When one is updated, the other must be updated in the same change. If they disagree, the code is the tie-breaker; the file that contradicts the code is the stale one and must be fixed before continuing.
 
 ## Ground Truth Rule (read before any answer)
 
@@ -49,7 +49,7 @@ Everything in the codebase exists to make that loop trustworthy: deterministic r
 - `apps/kiosk-pos/` — React 19 + Vite frontend. The active runtime entrypoint is `src/main.tsx` → `src/exact-design/ExactKioskApp.jsx` (the ported Anthropic design bundle). The older Bayaan admin/POS prototype in `src/App.tsx` is **kept as integration reference only** — it is not the active runtime.
 - `backend/odoo/` — vendored Odoo Community 19.0 source. Treat as read-only.
 - `backend/bayaan_odoo_addons/bayaan_fnb_kiosk/` — the only place to add backend logic. Models, controllers, views, and POS asset patches live here.
-- `design/exact-pos/kiosk-pos/` — fetched Anthropic design handoff bundle. The pixel reference for the exact UI; `apps/kiosk-pos/src/exact-design/` is its mechanical Vite port.
+- `design/exact-pos-v2/kiosk-pos/` — fetched Anthropic design handoff bundle. The current pixel reference for the exact UI; `apps/kiosk-pos/src/exact-design/` is its mechanical Vite port.
 - `docs/` — authoritative integration plans (`single-source-of-truth.md`, `odoo-pos-engine-wiring.md`, `backend-integration.md`, `production-readiness.md`, `demo-script.md`).
 - `HANDOFF.md` — project brief, run commands, and current readiness.
 
@@ -63,7 +63,7 @@ npm run dev        # vite on http://127.0.0.1:5174 (port is hardcoded)
 npm run build      # tsc + vite build
 npm test           # vitest run (deterministic domain tests)
 npm run smoke      # Playwright browser smoke against the running/ensured dev server
-npm run verify     # full release gate: test + build + smoke
+npm run verify     # frontend gate: test + wiring gate + build + smoke
 ```
 
 Run a single vitest file: `npx vitest run src/domain/pos.test.ts`.
@@ -84,7 +84,7 @@ python odoo-bin --addons-path=addons,../bayaan_odoo_addons -d bayaan \
   -i point_of_sale,stock,purchase,account,bayaan_fnb_kiosk
 ```
 
-Addon manifest is `backend/bayaan_odoo_addons/bayaan_fnb_kiosk/__manifest__.py`. It depends on `account`, `point_of_sale`, `purchase`, `stock`.
+Addon manifest is `backend/bayaan_odoo_addons/bayaan_fnb_kiosk/__manifest__.py`. It depends on `account`, `bus`, `hr`, `hr_attendance`, `pos_hr`, `point_of_sale`, `purchase`, `stock`.
 
 ## Architecture: The Single-Source-of-Truth Rule
 
@@ -119,6 +119,17 @@ When adding a new sellable product, picking the wrong mode silently breaks accou
 - `src/services/bootstrapAdapter.ts` — hydrates `ChainState` from `/bayaan/api/chain_bootstrap` so the same admin/POS screens work against either mock data or live Odoo.
 - `src/exact-design/ExactKioskApp.jsx` + `exact.css` — the active runtime, a mechanical port of the design HTML. Treat as the pixel-fidelity layer.
 
+## Architecture: Production Realtime Streaming
+
+Realtime dashboard/POS updates are now a production release gate. The production read path is: initial `/bayaan/api/chain_bootstrap` snapshot, then an authenticated scoped realtime event subscription. Manual refresh and polling are recovery/development fallbacks, not the normal operator workflow.
+
+- Odoo/Bayaan remains the deterministic source of truth. Streams never create official numbers and never replace Odoo writes.
+- Emit realtime events only after the backend write succeeds and the official Odoo/Bayaan records exist.
+- Required event families: POS order created/updated, payment transaction status, recipe consumption posted/missing/failed, waste posted, stock transfer state changes, purchase receipt, shift close submit/review, and audit/security events.
+- Events must be scoped by company, role, and kiosk. Cashiers subscribe only to assigned kiosk channels; managers/owners/accountants get only the channels their role allows.
+- Frontend state must update from the stream for dashboard and POS views, with reconnect recovery that resyncs from `/bayaan/api/chain_bootstrap`.
+- Release smoke must prove that a backend sale/transfer/waste/close event appears on the relevant dashboard/POS surface without manual browser refresh.
+
 ## AI Layer Rules
 
 - AI never computes official numbers. It reads deterministic Odoo/Bayaan reports and writes summaries, anomalies, forecasts, recommendations. Every numeric claim in an AI output must trace back to a source query — a summary like "Kiosk 04 had 12% higher orange consumption" must link to the exact `bayaan.consumption.ledger` rows.
@@ -131,12 +142,13 @@ The demo gate is green (`npm run verify` + Bayaan addon test gate). The project 
 
 P0 items currently being worked (verify status before acting):
 
+- **Realtime dashboard/POS streaming** — initial bootstrap plus scoped backend event stream; dashboard and POS update without manual refresh. Polling/manual refresh is allowed only as fallback/recovery.
 - **Auth, roles, kiosk scoping** — owner / manager / warehouse / cashier / accountant. Cashier limited to assigned kiosk; manager approves closes/transfers/adjustments. Server-side enforcement, not UI hiding.
 - **Stock transfer state machine** — Draft → Approved → Picked → Dispatched → Received → Completed; multi-line transfers; kiosk-receive confirmation; partial/damaged lines. Backend `/stock_transfer_action` exists; UI wiring in progress.
 - **Purchase receiving** — PO → partial/full receipt → warehouse stock increases. Backend `/purchase_order_action` exists; UI receive modal being added.
 - **Full daily-close operator flow** — manager approve/reject/note (via `/shift_close_review`), lock-after-approval, missing-recipe/failed-consumption blocks clean approval.
 - **Real payment gateway adapters** — Zain Cash, FIB, FastPay, NassWallet, AsiaHawala, Qi Card. Webhook idempotency, sandbox tests, no browser-exposed merchant secrets.
-- **HR/payroll backend persistence** — dashboard surface exists; persistence (employees, attendance, payroll runs, advances, deductions) still pending.
+- **HR kiosk scheduling + payroll UI wiring** — employee, attendance, payroll adjustment, and payroll run persistence exists; current focus is Odoo HR/attendance linking, live Staff screen wiring, per-kiosk work-week plans, dated shift assignments, and missing-person coverage gaps.
 - **Deployment / backups / monitoring / restore drill / SSL / secrets** — required before pilot go-live.
 
 P1+ items (also in the gap plan): supplier price catalog, warehouse setup flow, waste/inventory adjustment separation, deterministic finance reports + PDF, AI insights layer with traceable source refs, offline POS hardening, hardware, CI test automation.

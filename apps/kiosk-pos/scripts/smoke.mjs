@@ -157,6 +157,13 @@ async function main() {
     }
     await page.getByRole("button", { name: /Start shift/ }).click();
     await expectText(page, "Current order");
+    await page.waitForSelector('button.card img[src="/products/latte.webp"]', { timeout: 10_000 });
+    const brokenProductImages = await page.locator("button.card img").evaluateAll((imgs) =>
+      imgs
+        .filter((img) => img.naturalWidth === 0 || img.naturalHeight === 0)
+        .map((img) => img.getAttribute("src")),
+    );
+    assert(brokenProductImages.length === 0, `Broken product images: ${brokenProductImages.join(", ")}`);
 
     await page.locator("button.card", { hasText: "Latte" }).first().click();
     await page.getByRole("button", { name: "Juice" }).click();
@@ -195,6 +202,10 @@ async function main() {
     await page.screenshot({ path: filePath("exact-arabic-pos.png"), fullPage: true });
 
     const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+    await mobile.addInitScript(() => {
+      window.localStorage.setItem("bayaan.mode.v1", "demo");
+      window.localStorage.setItem("bayaan.kiosk.v1", "K-01");
+    });
     await mobile.goto(baseUrl, { waitUntil: "networkidle", timeout: 30_000 });
     const mobileText = (await mobile.textContent("body"))?.trim() ?? "";
     assert(mobileText.length > 200, "Mobile render is blank or near blank");

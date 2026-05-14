@@ -79,15 +79,41 @@ class PosOrder(models.Model):
                 )
             )
 
+    def _bayaan_publish_consumption_event(self, kiosk):
+        self.ensure_one()
+        state = self.bayaan_consumption_state or "pending"
+        severity = "success" if state in ("posted", "not_required") else "warning"
+        try:
+            self.env["bayaan.realtime"].sudo().publish_event(
+                "recipe",
+                "recipe.consumption.%s" % state,
+                "Recipe consumption %s: %s" % (state.replace("_", " "), self.name),
+                self.bayaan_consumption_error or "",
+                record=self,
+                kiosk=kiosk,
+                severity=severity,
+                payload={
+                    "order": self.name,
+                    "amount_total": self.amount_total,
+                    "consumption_state": state,
+                    "consumption_error": self.bayaan_consumption_error or "",
+                },
+                company=self.company_id,
+            )
+        except Exception:
+            _logger.exception("Could not publish Bayaan recipe realtime event for POS order %s", self.name)
+
     def _bayaan_post_recipe_consumption(self):
         Ledger = self.env["bayaan.consumption.ledger"]
         Recipe = self.env["bayaan.recipe"]
         StockScrap = self.env["stock.scrap"]
 
         for order in self:
+            kiosk = order.bayaan_kiosk_id
             try:
                 if order.bayaan_consumption_ledger_ids:
                     order.bayaan_consumption_state = "posted"
+                    order._bayaan_publish_consumption_event(kiosk or order._bayaan_resolve_kiosk())
                     continue
 
                 kiosk = order._bayaan_resolve_kiosk()
@@ -171,16 +197,19 @@ class PosOrder(models.Model):
                         "bayaan_consumption_error": message,
                     })
                     order.message_post(body=message)
+                    order._bayaan_publish_consumption_event(kiosk)
                 elif posted_count:
                     order.write({
                         "bayaan_consumption_state": "posted",
                         "bayaan_consumption_error": False,
                     })
+                    order._bayaan_publish_consumption_event(kiosk)
                 else:
                     order.write({
                         "bayaan_consumption_state": "not_required",
                         "bayaan_consumption_error": False,
                     })
+                    order._bayaan_publish_consumption_event(kiosk)
 
             except Exception as exc:
                 _logger.exception("Bayaan recipe consumption failed for POS order %s", order.name)
@@ -190,6 +219,7 @@ class PosOrder(models.Model):
                     "bayaan_consumption_error": message,
                 })
                 order.message_post(body="Bayaan ingredient consumption failed: %s" % message)
+                order._bayaan_publish_consumption_event(kiosk)
 
 
 class PosOrderLine(models.Model):

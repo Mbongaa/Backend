@@ -11,7 +11,7 @@ Start with `HANDOFF.md` for the project brief, active workspace path, run comman
 - `backend/odoo` contains the official Odoo Community 19.0 source.
 - `backend/bayaan_odoo_addons/bayaan_fnb_kiosk` contains the Bayaan-specific Odoo addon.
 - `apps/kiosk-pos` contains the React/Vite frontend now running the exact fetched admin + POS + customer-facing display design.
-- `design/exact-pos/kiosk-pos` contains the fetched Anthropic design handoff bundle used as the pixel reference.
+- `design/exact-pos-v2/kiosk-pos` contains the fetched Anthropic design handoff bundle used as the current pixel reference.
 - `docs/backend-integration.md` describes the Odoo backend mapping.
 - `docs/odoo-pos-engine-wiring.md` describes the production POS transaction flow.
 - `docs/single-source-of-truth.md` describes how Odoo POS, Bayaan Admin, and Bayaan APIs share one backend.
@@ -74,8 +74,14 @@ npm run smoke
 
 The smoke flow verifies the exact admin shell, admin sections, POS login, cashier sale flow, paired customer-facing display, payment prompt, payment completion, waste entry, Arabic RTL, and narrow-screen rendering.
 
-Run the full frontend release gate:
+Run the frontend release gate:
 
 ```bash
 npm run verify
+```
+
+Run the full local release gate from the repository root:
+
+```bash
+make verify
 ```

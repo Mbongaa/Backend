@@ -71,13 +71,57 @@ export function clearCatalog(): void {
   window.localStorage.removeItem(STORAGE_KEY);
 }
 
-export function makeEmptyCatalog(seed: Product[]): CatalogState {
+export function makeEmptyCatalog(
+  seed: Product[],
+  seedRecipes: Record<number, ProductRecipe> = {},
+): CatalogState {
   return {
     version: CATALOG_VERSION,
     updatedAt: new Date().toISOString(),
     products: seed,
-    recipes: {},
+    recipes: seedRecipes,
     imagesBySlug: {},
+  };
+}
+
+export function reconcileCatalogWithSeed(
+  saved: CatalogState | null,
+  seed: Product[],
+  seedRecipes: Record<number, ProductRecipe> = {},
+): CatalogState {
+  if (!saved) return makeEmptyCatalog(seed, seedRecipes);
+
+  const seedById = new Map(seed.map((product) => [product.id, product]));
+  const seedImageSlugs = new Set(seed.map((product) => product.image).filter(Boolean));
+  const imagesBySlug = saved.imagesBySlug ?? {};
+  const seen = new Set<number>();
+
+  const products = saved.products.map((product) => {
+    seen.add(product.id);
+    const seedProduct = seedById.get(product.id);
+    if (!seedProduct) return product;
+
+    const hasUploadedOverride = Boolean(product.image && imagesBySlug[product.image]);
+    const hasKnownStaticImage = Boolean(product.image && seedImageSlugs.has(product.image));
+    return {
+      ...seedProduct,
+      ...product,
+      category: product.category || seedProduct.category,
+      sizes: product.sizes?.length ? product.sizes : seedProduct.sizes,
+      image: hasUploadedOverride || hasKnownStaticImage ? product.image : seedProduct.image,
+    };
+  });
+
+  for (const product of seed) {
+    if (!seen.has(product.id)) products.push(product);
+  }
+
+  return {
+    ...saved,
+    version: CATALOG_VERSION,
+    products,
+    recipes: { ...seedRecipes, ...(saved.recipes ?? {}) },
+    imagesBySlug,
   };
 }
 

@@ -54,14 +54,14 @@ AI comes at the end as a report/insight layer that explains, forecasts, and flag
 - `backend/odoo`: official Odoo Community 19.0 foundation.
 - `backend/bayaan_odoo_addons/bayaan_fnb_kiosk`: custom Bayaan Odoo addon for kiosks, recipe versioning, product consumption mode, POS ingredient ledger, waste/loss, shift close, stock-count variance, and API routes.
 - `apps/kiosk-pos`: React/Vite frontend for the exact design demo/admin review. Production cashier transactions should use the customized Odoo POS engine, not this demo POS engine.
-- `design/exact-pos/kiosk-pos`: fetched Anthropic design handoff bundle for the exact admin/POS/customer-display UI.
+- `design/exact-pos-v2/kiosk-pos`: fetched Anthropic design handoff bundle for the exact admin/POS/customer-display UI.
 - `docs/backend-integration.md`: backend mapping and integration plan.
 - `docs/single-source-of-truth.md`: how Odoo POS, Bayaan Admin, and Bayaan API routes share one backend.
 - `docs/production-readiness.md`: honest launch-readiness checklist.
 
 Current frontend runtime includes:
 
-- Exact Vite port of `design/exact-pos/kiosk-pos/project/Kiosk POS.html` and its imported JSX/CSS.
+- Exact Vite port of `design/exact-pos-v2/kiosk-pos/project/Kiosk POS.html` and its imported JSX/CSS.
 - Minimal admin shell with overview, AI insights, kiosks, inventory, waste/loss, suppliers, staff, and reports.
 - Admin Warehouses section for source-of-truth setup. It reads Odoo `stock.warehouse`, `stock.location`, `pos.config`, and `bayaan.kiosk` records, and can create central warehouses plus synced kiosk locations/POS configs through Bayaan Odoo controllers.
 - Kiosk POS with staff selection, PIN entry, product sale, payment choice, payment completion, and waste entry.
@@ -77,6 +77,7 @@ Still present for backend/domain integration work:
 - Previous Bayaan admin/POS prototype retained in `apps/kiosk-pos/src/App.tsx` as integration reference, but it is not the active runtime entrypoint.
 - Optional Odoo sync gateway using `VITE_ODOO_URL`, `VITE_ODOO_TARGET`, and `VITE_ODOO_TOKEN`. For local development, prefer `VITE_ODOO_URL=/odoo` so Vite proxies same-origin browser calls to Odoo.
 - Bootstrap adapter that can hydrate the frontend chain state from `get_chain_bootstrap`, so live backend stock/sales/waste snapshots feed the same admin and POS screens.
+- Production release gate now requires initial `chain_bootstrap` plus scoped realtime streaming for dashboard/POS updates. Manual refresh and polling are fallback/recovery paths, not the normal production workflow.
 
 Bayaan Odoo API routes now include:
 
@@ -138,6 +139,12 @@ cd "C:\Users\hassa\OneDrive\Desktop\Bayaan.ai\bayaan POS\apps\kiosk-pos"
 npm run verify
 ```
 
+Run the full local release gate from the repository root:
+
+```powershell
+make verify
+```
+
 Run smoke against a specific local port:
 
 ```powershell
@@ -161,9 +168,8 @@ Ready for a serious client demo and pilot planning.
 Not ready for live business production until:
 
 - Odoo Community is installed and configured.
-- Real authentication, roles, and kiosk permissions are wired.
-- A real Odoo database is connected to the existing `chain_bootstrap` adapter and validated against production-like data.
-- Odoo POS paid orders are tested end-to-end to verify `bayaan.consumption.ledger`, ingredient scraps, missing-recipe flags, and kiosk stock movement.
-- Stock transfer, purchase order, waste, and shift close APIs are tested end-to-end against a real Odoo site.
+- Production authentication users, roles, and kiosk permissions are provisioned for the actual client org.
+- The real pilot Odoo database is connected to the existing `chain_bootstrap` adapter and validated against production-like data.
+- Broader live smoke covers transfer, waste, and close realtime updates in addition to the sale no-refresh proof.
 - Offline sync, receipt printers, cash drawers, backups, monitoring, and deployment are validated.
 - Iraqi accounting/reporting format is confirmed with the client's accountant.

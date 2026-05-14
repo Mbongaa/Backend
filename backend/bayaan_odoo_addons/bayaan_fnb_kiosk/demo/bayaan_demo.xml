@@ -5,9 +5,9 @@
             Bayaan demo dataset.
 
             Loads when the database is created with demo data (Odoo's default).
-            Provides 3 kiosks, 8 ingredients, 5 menu items with recipes, and
-            starting kiosk stock so the dashboard's variance loop has data
-            to show without manual setup.
+            Provides 3 kiosks plus a realistic F&B catalog seed: suppliers,
+            stock items, menu products, recipes, starting stock, and variance
+            rows so the dashboard's loop has data to show without manual setup.
 
             For a fresh production install: run with the without_demo=all
             option (see Odoo CLI flag) to skip this file.
@@ -33,10 +33,11 @@
             <field name="bayaan_consumption_mode">none</field>
         </record>
         <record id="prod_ing_milk" model="product.product">
-            <field name="name">Whole Milk 1L</field>
+            <field name="name">Milk (whole) 1L</field>
             <field name="default_code">ING-MILK-1L</field>
             <field name="type">consu</field>
             <field name="is_storable">True</field>
+            <field name="uom_id" ref="uom.product_uom_litre"/>
             <field name="standard_price">3500.0</field>
             <field name="bayaan_consumption_mode">none</field>
         </record>
@@ -142,7 +143,7 @@
             <field name="effective_from" eval="(DateTime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')"/>
             <field name="line_ids" eval="[
                 (0, 0, {'ingredient_id': ref('prod_ing_coffee'), 'qty': 0.018, 'uom_id': ref('uom.product_uom_kgm')}),
-                (0, 0, {'ingredient_id': ref('prod_ing_milk'), 'qty': 1.0, 'uom_id': ref('uom.product_uom_unit')}),
+                (0, 0, {'ingredient_id': ref('prod_ing_milk'), 'qty': 0.22, 'uom_id': ref('uom.product_uom_litre')}),
                 (0, 0, {'ingredient_id': ref('prod_ing_cup12'), 'qty': 1.0, 'uom_id': ref('uom.product_uom_unit')}),
             ]"/>
             <field name="state">draft</field>
@@ -153,7 +154,7 @@
             <field name="effective_from" eval="(DateTime.now() - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S')"/>
             <field name="line_ids" eval="[
                 (0, 0, {'ingredient_id': ref('prod_ing_coffee'), 'qty': 0.022, 'uom_id': ref('uom.product_uom_kgm')}),
-                (0, 0, {'ingredient_id': ref('prod_ing_milk'), 'qty': 1.0, 'uom_id': ref('uom.product_uom_unit')}),
+                (0, 0, {'ingredient_id': ref('prod_ing_milk'), 'qty': 0.20, 'uom_id': ref('uom.product_uom_litre')}),
                 (0, 0, {'ingredient_id': ref('prod_ing_ice'), 'qty': 0.15, 'uom_id': ref('uom.product_uom_kgm')}),
                 (0, 0, {'ingredient_id': ref('prod_ing_cup16'), 'qty': 1.0, 'uom_id': ref('uom.product_uom_unit')}),
             ]"/>
@@ -208,6 +209,57 @@
             <field name="name">K-03 Erbil Mall POS</field>
         </record>
 
+        <!-- Bayaan role test accounts. Password for all: test -->
+        <record id="user_bayaan_superadmin" model="res.users">
+            <field name="name">Bayaan Superadmin</field>
+            <field name="login">superadmin@bayaan.test</field>
+            <field name="email">superadmin@bayaan.test</field>
+            <field name="password">test</field>
+            <field name="company_id" ref="base.main_company"/>
+            <field name="company_ids" eval="[(4, ref('base.main_company'))]"/>
+            <field name="group_ids" eval="[(6, 0, [ref('base.group_system'), ref('bayaan_fnb_kiosk.group_bayaan_manager')])]"/>
+        </record>
+
+        <record id="user_bayaan_manager" model="res.users">
+            <field name="name">Bayaan Manager</field>
+            <field name="login">manager@bayaan.test</field>
+            <field name="email">manager@bayaan.test</field>
+            <field name="password">test</field>
+            <field name="company_id" ref="base.main_company"/>
+            <field name="company_ids" eval="[(4, ref('base.main_company'))]"/>
+            <field name="group_ids" eval="[(6, 0, [ref('bayaan_fnb_kiosk.group_bayaan_manager')])]"/>
+        </record>
+
+        <record id="user_bayaan_logistics" model="res.users">
+            <field name="name">Bayaan Logistics</field>
+            <field name="login">logistics@bayaan.test</field>
+            <field name="email">logistics@bayaan.test</field>
+            <field name="password">test</field>
+            <field name="company_id" ref="base.main_company"/>
+            <field name="company_ids" eval="[(4, ref('base.main_company'))]"/>
+            <field name="group_ids" eval="[(6, 0, [ref('bayaan_fnb_kiosk.group_bayaan_logistics')])]"/>
+        </record>
+
+        <record id="user_bayaan_accountant" model="res.users">
+            <field name="name">Bayaan Accountant</field>
+            <field name="login">accountant@bayaan.test</field>
+            <field name="email">accountant@bayaan.test</field>
+            <field name="password">test</field>
+            <field name="company_id" ref="base.main_company"/>
+            <field name="company_ids" eval="[(4, ref('base.main_company'))]"/>
+            <field name="group_ids" eval="[(6, 0, [ref('bayaan_fnb_kiosk.group_bayaan_accountant')])]"/>
+        </record>
+
+        <record id="user_bayaan_cashier" model="res.users">
+            <field name="name">Bayaan Cashier K-01</field>
+            <field name="login">cashier@bayaan.test</field>
+            <field name="email">cashier@bayaan.test</field>
+            <field name="password">test</field>
+            <field name="company_id" ref="base.main_company"/>
+            <field name="company_ids" eval="[(4, ref('base.main_company'))]"/>
+            <field name="group_ids" eval="[(6, 0, [ref('bayaan_fnb_kiosk.group_bayaan_cashier')])]"/>
+        </record>
+
         <record id="kiosk_k01" model="bayaan.kiosk">
             <field name="name">Karrada Center</field>
             <field name="kiosk_code">K-01</field>
@@ -215,6 +267,8 @@
             <field name="area">Karrada</field>
             <field name="pos_config_id" ref="pos_config_k01"/>
             <field name="stock_location_id" ref="loc_kiosk_k01"/>
+            <field name="manager_user_id" ref="user_bayaan_manager"/>
+            <field name="cashier_user_ids" eval="[(4, ref('user_bayaan_cashier'))]"/>
             <field name="stock_deduction_policy">warning</field>
             <field name="opening_date" eval="(DateTime.now() - timedelta(days=120)).strftime('%Y-%m-%d')"/>
         </record>
@@ -274,5 +328,7 @@
             eval="[ref('prod_ing_cup12'), ref('loc_kiosk_k03'), 700.0]"/>
         <function model="stock.quant" name="_update_available_quantity"
             eval="[ref('prod_ing_cup16'), ref('loc_kiosk_k03'), 500.0]"/>
+
+        <function model="bayaan.demo.seed" name="seed_full_catalog"/>
     </data>
 </odoo>

@@ -1,19 +1,32 @@
 export type OdooClientOptions = {
   baseUrl: string;
   token?: string;
+  db?: string;
 };
 
 export class OdooClient {
   private baseUrl: string;
   private token?: string;
+  private db: string;
 
   constructor(options: OdooClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.token = options.token;
+    this.db = options.db || "bayaan";
+  }
+
+  routeUrl(route: string) {
+    return `${this.baseUrl}${route}`;
+  }
+
+  websocketUrl(route: string) {
+    const url = new URL(this.routeUrl(route), window.location.origin);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    return url.toString();
   }
 
   async json<T = unknown>(route: string, params: Record<string, unknown> = {}) {
-    const response = await fetch(`${this.baseUrl}${route}`, {
+    const response = await fetch(this.routeUrl(route), {
       method: "POST",
       credentials: "include",
       headers: {
@@ -38,6 +51,14 @@ export class OdooClient {
     }
 
     return data.result as T;
+  }
+
+  async authenticate<T = unknown>(login: string, password: string) {
+    return this.json<T>("/web/session/authenticate", {
+      db: this.db,
+      login,
+      password,
+    });
   }
 }
 

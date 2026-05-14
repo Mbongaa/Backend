@@ -6,3 +6,4 @@ from . import test_procurement_flow_api
 from . import test_api_security_scope
 from . import test_payment_gateway_api
 from . import test_hr_payroll_api
+from . import test_realtime_api

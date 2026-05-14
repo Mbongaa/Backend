@@ -50,20 +50,17 @@ class TestApiSecurityScope(BayaanTestBase, HttpCase):
     def setUp(self):
         super().setUp()
         self.authenticate("admin", "admin")
-        cash_method = self.env["pos.payment.method"].sudo().search([
-            ("is_cash_count", "=", True),
-            ("company_id", "=", self.company.id),
-        ], limit=1)
-        if not cash_method:
-            cash_journal = self.env["account.journal"].sudo().search([
-                ("type", "=", "cash"),
-                ("company_id", "=", self.company.id),
-            ], limit=1)
-            cash_method = self.env["pos.payment.method"].sudo().create({
-                "name": "Cash",
-                "journal_id": cash_journal.id if cash_journal else False,
-                "company_id": self.company.id,
-            })
+        cash_journal = self.env["account.journal"].sudo().create({
+            "name": "Cash Scope %s" % self.pos_config.id,
+            "code": ("CS%s" % self.pos_config.id)[-5:],
+            "type": "cash",
+            "company_id": self.company.id,
+        })
+        cash_method = self.env["pos.payment.method"].sudo().create({
+            "name": "Cash Scope %s" % self.pos_config.id,
+            "journal_id": cash_journal.id,
+            "company_id": self.company.id,
+        })
         self.pos_config.payment_method_ids = [(4, cash_method.id)]
 
         self.cashier = self._create_user(
@@ -73,6 +70,18 @@ class TestApiSecurityScope(BayaanTestBase, HttpCase):
         self.supervisor = self._create_user(
             "bayaan_supervisor_scope",
             "bayaan_fnb_kiosk.group_bayaan_supervisor",
+        )
+        self.logistics = self._create_user(
+            "bayaan_logistics_scope",
+            "bayaan_fnb_kiosk.group_bayaan_logistics",
+        )
+        self.accountant = self._create_user(
+            "bayaan_accountant_scope",
+            "bayaan_fnb_kiosk.group_bayaan_accountant",
+        )
+        self.manager = self._create_user(
+            "bayaan_manager_scope",
+            "bayaan_fnb_kiosk.group_bayaan_manager",
         )
         self.other_kiosk = self._create_other_kiosk()
         self.kiosk.cashier_user_ids = [(4, self.cashier.id)]
@@ -150,6 +159,15 @@ class TestApiSecurityScope(BayaanTestBase, HttpCase):
             self.fail("admin transfer dispatch errored: %s" % dispatched["error"])
 
         self.authenticate("bayaan_cashier_scope", "test")
+        bootstrap = self._jsonrpc("/bayaan/api/chain_bootstrap", {})
+        if "error" in bootstrap:
+            self.fail("cashier chain_bootstrap errored: %s" % bootstrap["error"])
+        transfer_rows = bootstrap["result"]["transfers"]
+        transfer_row = next(
+            row for row in transfer_rows
+            if row["name"] == created["result"]["name"]
+        )
+        self.assertEqual(transfer_row["bayaan_state"], "dispatched")
         received = self._jsonrpc("/bayaan/api/stock_transfer_action", {
             "transfer": created["result"]["name"],
             "action": "receive",
@@ -187,6 +205,65 @@ class TestApiSecurityScope(BayaanTestBase, HttpCase):
         self.assertIn("error", received)
         self.assertIn("not allowed", str(received["error"]))
 
+    def test_manager_cannot_receive_on_behalf_of_kiosk(self):
+        self.env["stock.quant"].sudo()._update_available_quantity(
+            self.ingredient_orange,
+            self.warehouse.lot_stock_id,
+            3.0,
+        )
+        created = self._jsonrpc("/bayaan/api/stock_transfer", {
+            "kiosk": "K-TEST",
+            "item": "ING-ORANGE",
+            "qty": 1.0,
+            "from_warehouse": self.warehouse.name,
+        })
+        if "error" in created:
+            self.fail("admin transfer create errored: %s" % created["error"])
+        dispatched = self._jsonrpc("/bayaan/api/stock_transfer_action", {
+            "transfer": created["result"]["name"],
+            "action": "dispatch",
+        })
+        if "error" in dispatched:
+            self.fail("admin transfer dispatch errored: %s" % dispatched["error"])
+
+        self.authenticate("bayaan_manager_scope", "test")
+        received = self._jsonrpc("/bayaan/api/stock_transfer_action", {
+            "transfer": created["result"]["name"],
+            "action": "receive",
+        })
+        self.assertIn("error", received)
+        self.assertIn("not allowed", str(received["error"]))
+
+    def test_superadmin_can_receive_transfer_for_pos_testing(self):
+        self.env["stock.quant"].sudo()._update_available_quantity(
+            self.ingredient_orange,
+            self.warehouse.lot_stock_id,
+            3.0,
+        )
+        created = self._jsonrpc("/bayaan/api/stock_transfer", {
+            "kiosk": "K-TEST",
+            "item": "ING-ORANGE",
+            "qty": 1.0,
+            "from_warehouse": self.warehouse.name,
+        })
+        if "error" in created:
+            self.fail("admin transfer create errored: %s" % created["error"])
+        dispatched = self._jsonrpc("/bayaan/api/stock_transfer_action", {
+            "transfer": created["result"]["name"],
+            "action": "dispatch",
+        })
+        if "error" in dispatched:
+            self.fail("admin transfer dispatch errored: %s" % dispatched["error"])
+
+        self.authenticate("admin", "admin")
+        received = self._jsonrpc("/bayaan/api/stock_transfer_action", {
+            "transfer": created["result"]["name"],
+            "action": "receive",
+        })
+        if "error" in received:
+            self.fail("superadmin receive errored: %s" % received["error"])
+        self.assertEqual(received["result"]["bayaan_state"], "received")
+
     def test_cashier_cannot_create_purchase_order(self):
         self.authenticate("bayaan_cashier_scope", "test")
         response = self._jsonrpc("/bayaan/api/purchase_order", {
@@ -194,7 +271,67 @@ class TestApiSecurityScope(BayaanTestBase, HttpCase):
             "items": [{"item": "ING-ORANGE", "qty": 1.0, "rate": 1500.0}],
         })
         self.assertIn("error", response)
-        self.assertIn("Only Bayaan managers", str(response["error"]))
+        self.assertIn("Only Bayaan logistics or managers", str(response["error"]))
+
+    def test_logistics_can_create_purchase_order(self):
+        self.authenticate("bayaan_logistics_scope", "test")
+        response = self._jsonrpc("/bayaan/api/purchase_order", {
+            "supplier": "Baghdad Fruit Test",
+            "items": [{"item": "ING-ORANGE", "qty": 1.0, "rate": 1500.0}],
+        })
+        if "error" in response:
+            self.fail("logistics purchase order errored: %s" % response["error"])
+        self.assertTrue(response["result"]["name"])
+
+    def test_logistics_can_create_transfer_for_any_kiosk(self):
+        self.env["stock.quant"].sudo()._update_available_quantity(
+            self.ingredient_orange,
+            self.warehouse.lot_stock_id,
+            3.0,
+        )
+        self.authenticate("bayaan_logistics_scope", "test")
+        response = self._jsonrpc("/bayaan/api/stock_transfer", {
+            "kiosk": "K-OTHER",
+            "item": "ING-ORANGE",
+            "qty": 1.0,
+            "from_warehouse": self.warehouse.name,
+        })
+        if "error" in response:
+            self.fail("logistics transfer errored: %s" % response["error"])
+        self.assertTrue(response["result"]["name"])
+        dispatched = self._jsonrpc("/bayaan/api/stock_transfer_action", {
+            "transfer": response["result"]["name"],
+            "action": "dispatch",
+        })
+        if "error" in dispatched:
+            self.fail("logistics dispatch errored: %s" % dispatched["error"])
+        received = self._jsonrpc("/bayaan/api/stock_transfer_action", {
+            "transfer": response["result"]["name"],
+            "action": "receive",
+        })
+        self.assertIn("error", received)
+        self.assertIn("not allowed", str(received["error"]))
+
+    def test_logistics_cannot_post_pos_sale(self):
+        self.authenticate("bayaan_logistics_scope", "test")
+        response = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-LOGISTICS-SALE-BLOCKED",
+            "items": [{"product": "MENU-OJ", "name": "Orange Juice", "qty": 1, "price_unit": 5500.0}],
+            "payments": [{"method": "cash", "amount": 5500.0}],
+        })
+        self.assertIn("error", response)
+        self.assertIn("not allowed", str(response["error"]))
+
+    def test_accountant_cannot_create_stock_transfer(self):
+        self.authenticate("bayaan_accountant_scope", "test")
+        response = self._jsonrpc("/bayaan/api/stock_transfer", {
+            "kiosk": "K-TEST",
+            "item": "ING-ORANGE",
+            "qty": 1.0,
+        })
+        self.assertIn("error", response)
+        self.assertIn("not allowed", str(response["error"]))
 
     def test_chain_bootstrap_is_scoped_to_assigned_kiosks(self):
         self.authenticate("bayaan_cashier_scope", "test")
@@ -203,6 +340,37 @@ class TestApiSecurityScope(BayaanTestBase, HttpCase):
             self.fail("chain_bootstrap errored: %s" % response["error"])
         kiosk_codes = {row["kiosk_code"] for row in response["result"]["kiosks"]}
         self.assertEqual(kiosk_codes, {"K-TEST"})
+
+    def test_chain_bootstrap_includes_roles_for_accountant(self):
+        self.authenticate("bayaan_accountant_scope", "test")
+        response = self._jsonrpc("/bayaan/api/chain_bootstrap", {})
+        if "error" in response:
+            self.fail("accountant chain_bootstrap errored: %s" % response["error"])
+        self.assertEqual(response["result"]["current_user"]["primaryRole"], "accountant")
+        kiosk_codes = {row["kiosk_code"] for row in response["result"]["kiosks"]}
+        self.assertIn("K-TEST", kiosk_codes)
+        self.assertIn("K-OTHER", kiosk_codes)
+
+    def test_auth_status_reports_current_bayaan_role(self):
+        self.authenticate("bayaan_logistics_scope", "test")
+        response = self._jsonrpc("/bayaan/api/auth_status", {})
+        if "error" in response:
+            self.fail("auth_status errored: %s" % response["error"])
+        self.assertTrue(response["result"]["authenticated"])
+        self.assertEqual(response["result"]["user"]["primaryRole"], "logistics")
+        self.assertIn("inventory", response["result"]["user"]["allowedNav"])
+
+    def test_superadmin_auth_status_can_open_pos_for_any_kiosk(self):
+        self.authenticate("admin", "admin")
+        response = self._jsonrpc("/bayaan/api/auth_status", {})
+        if "error" in response:
+            self.fail("superadmin auth_status errored: %s" % response["error"])
+        user = response["result"]["user"]
+        self.assertEqual(user["primaryRole"], "superadmin")
+        self.assertTrue(user["allowedPanels"]["pos"])
+        kiosk_codes = {row["kioskCode"] for row in user["assignedKiosks"]}
+        self.assertIn("K-TEST", kiosk_codes)
+        self.assertIn("K-OTHER", kiosk_codes)
 
     def test_supervisor_cannot_approve_daily_close(self):
         close = self.env["bayaan.shift.close"].sudo().create({

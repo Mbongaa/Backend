@@ -9,6 +9,7 @@ import {
   loadCatalog,
   makeEmptyCatalog,
   nextProductId,
+  reconcileCatalogWithSeed,
   resizeToWebp,
   saveCatalog,
   slugify,
@@ -48,7 +49,7 @@ function useTweenedNumber(value, durationMs = 700) {
   return display;
 }
 
-/* This file is a mechanical Vite port of design/exact-pos/kiosk-pos/project/Kiosk POS.html and its imports. */
+/* This file is a mechanical Vite port of design/exact-pos-v2/kiosk-pos/project/Kiosk POS.html and its imports. */
 
 /* ===== data.jsx ===== */
 
@@ -127,16 +128,40 @@ const MOCK = {
   ],
 
   inventory: [
-    { item: "Milk (whole) 1L", category: "Dairy", stock: 42, unit: "ctn", reorder: 60, days: 1.2, supplier: "Baghdad Dairy", status: "low" },
+    { item: "Milk (whole) 1L", category: "Dairy", stock: 504, unit: "L", reorder: 720, days: 1.2, supplier: "Baghdad Dairy", status: "low" },
+    { item: "Oat milk 1L", category: "Dairy", stock: 336, unit: "L", reorder: 288, days: 3.1, supplier: "Baghdad Dairy", status: "ok" },
+    { item: "Condensed milk", category: "Dairy", stock: 7.2, unit: "kg", reorder: 9.6, days: 1.9, supplier: "Baghdad Dairy", status: "low" },
     { item: "Espresso beans - house", category: "Coffee", stock: 86, unit: "kg", reorder: 50, days: 9.4, supplier: "Babel Roasters", status: "ok" },
+    { item: "Cold brew concentrate", category: "Coffee", stock: 18, unit: "L", reorder: 16, days: 4.1, supplier: "Babel Roasters", status: "ok" },
     { item: "Pistachio paste", category: "Bakery", stock: 4, unit: "kg", reorder: 12, days: 0.8, supplier: "Mesopotamia Foods", status: "crit" },
-    { item: "Oat milk 1L", category: "Dairy alt", stock: 28, unit: "ctn", reorder: 24, days: 3.1, supplier: "Tigris Bakery", status: "ok" },
-    { item: "Croissant - frozen", category: "Bakery", stock: 124, unit: "pc", reorder: 100, days: 2.8, supplier: "Tigris Bakery", status: "ok" },
-    { item: "Vanilla syrup 750ml", category: "Syrups", stock: 11, unit: "btl", reorder: 18, days: 2.0, supplier: "Erbil Syrups", status: "low" },
+    { item: "Chocolate - 70%", category: "Bakery", stock: 22, unit: "kg", reorder: 18, days: 6.4, supplier: "Mesopotamia Foods", status: "ok" },
+    { item: "Chocolate sauce 1L", category: "Syrups", stock: 14, unit: "L", reorder: 12, days: 5.2, supplier: "Erbil Syrups", status: "ok" },
+    { item: "Vanilla syrup 750ml", category: "Syrups", stock: 8.25, unit: "L", reorder: 13.5, days: 2.0, supplier: "Erbil Syrups", status: "low" },
+    { item: "Sugar", category: "Pantry", stock: 68, unit: "kg", reorder: 40, days: 12.8, supplier: "Mesopotamia Foods", status: "ok" },
+    { item: "Ice", category: "Prep", stock: 180, unit: "kg", reorder: 120, days: 3.4, supplier: "Baghdad Dairy", status: "ok" },
+    { item: "Oranges", category: "Produce", stock: 92, unit: "kg", reorder: 80, days: 2.8, supplier: "Najaf Fresh", status: "ok" },
+    { item: "Mango pulp", category: "Produce", stock: 30, unit: "kg", reorder: 36, days: 1.7, supplier: "Najaf Fresh", status: "low" },
+    { item: "Strawberry puree", category: "Produce", stock: 26, unit: "kg", reorder: 30, days: 1.9, supplier: "Najaf Fresh", status: "low" },
+    { item: "Avocado", category: "Produce", stock: 34, unit: "kg", reorder: 28, days: 2.6, supplier: "Najaf Fresh", status: "ok" },
     { item: "Lemons", category: "Produce", stock: 38, unit: "kg", reorder: 30, days: 4.2, supplier: "Najaf Fresh", status: "ok" },
     { item: "Mint - fresh", category: "Produce", stock: 6, unit: "kg", reorder: 10, days: 1.4, supplier: "Najaf Fresh", status: "low" },
+    { item: "Honey", category: "Pantry", stock: 12, unit: "kg", reorder: 10, days: 5.8, supplier: "Mesopotamia Foods", status: "ok" },
     { item: "Cups 12oz", category: "Packaging", stock: 4200, unit: "pc", reorder: 3000, days: 11.0, supplier: "Iraq Pack", status: "ok" },
-    { item: "Chocolate - 70%", category: "Bakery", stock: 22, unit: "kg", reorder: 18, days: 6.4, supplier: "Mesopotamia Foods", status: "ok" },
+    { item: "Cups 16oz", category: "Packaging", stock: 3600, unit: "pc", reorder: 3000, days: 8.7, supplier: "Iraq Pack", status: "ok" },
+    { item: "Straws", category: "Packaging", stock: 5200, unit: "pc", reorder: 3500, days: 10.2, supplier: "Iraq Pack", status: "ok" },
+    { item: "Croissant - frozen", category: "Bakery", stock: 124, unit: "pc", reorder: 100, days: 2.8, supplier: "Tigris Bakery", status: "ok" },
+    { item: "Croissant - chocolate frozen", category: "Bakery", stock: 96, unit: "pc", reorder: 90, days: 2.4, supplier: "Tigris Bakery", status: "ok" },
+    { item: "Croissant - almond frozen", category: "Bakery", stock: 74, unit: "pc", reorder: 80, days: 1.8, supplier: "Tigris Bakery", status: "low" },
+    { item: "Cinnamon roll - frozen", category: "Bakery", stock: 88, unit: "pc", reorder: 70, days: 3.0, supplier: "Tigris Bakery", status: "ok" },
+    { item: "Za'atar manakeesh - frozen", category: "Bakery", stock: 64, unit: "pc", reorder: 60, days: 2.2, supplier: "Tigris Bakery", status: "ok" },
+    { item: "Pistachio cake base", category: "Cake", stock: 46, unit: "slice", reorder: 40, days: 2.1, supplier: "Mesopotamia Foods", status: "ok" },
+    { item: "Chocolate fondant base", category: "Cake", stock: 38, unit: "slice", reorder: 36, days: 2.0, supplier: "Mesopotamia Foods", status: "ok" },
+    { item: "Cheesecake base", category: "Cake", stock: 42, unit: "slice", reorder: 36, days: 2.3, supplier: "Mesopotamia Foods", status: "ok" },
+    { item: "Carrot cake base", category: "Cake", stock: 30, unit: "slice", reorder: 30, days: 1.9, supplier: "Mesopotamia Foods", status: "low" },
+    { item: "Tiramisu cup", category: "Cake", stock: 34, unit: "pc", reorder: 32, days: 2.1, supplier: "Mesopotamia Foods", status: "ok" },
+    { item: "Lotus cake base", category: "Cake", stock: 36, unit: "slice", reorder: 32, days: 2.4, supplier: "Mesopotamia Foods", status: "ok" },
+    { item: "Lotus biscuit spread", category: "Cake", stock: 10, unit: "kg", reorder: 8, days: 4.5, supplier: "Mesopotamia Foods", status: "ok" },
+    { item: "Cream cheese", category: "Cake", stock: 16, unit: "kg", reorder: 14, days: 4.0, supplier: "Mesopotamia Foods", status: "ok" },
   ],
 
   waste: [
@@ -326,7 +351,7 @@ const MOCK = {
           recommendationAr: "تعديل الوصفة إلى ٩غ (المتوسط) — يستعيد ~٤٫٥ نقطة هامش بدون تأثير ملموس على الطعم",
         } },
       { qEn: "What stock should I send to Kiosk 07 tomorrow?", qAr: "ما المخزون الذي يجب إرساله لـ K-07 غداً؟",
-        aEn: "Based on the last 14 days at K-07 and the +6% Friday forecast: 14 kg oranges, 5 kg pistachio paste (urgent), 0.4 ctn whole milk, 600 cups 12oz, and 0.5 kg mint. The pistachio paste is already in pending action PA-1 awaiting approval.",
+        aEn: "Based on the last 14 days at K-07 and the +6% Friday forecast: 14 kg oranges, 5 kg pistachio paste (urgent), 5 L whole milk, 600 cups 12oz, and 0.5 kg mint. The pistachio paste is already in pending action PA-1 awaiting approval.",
         aAr: "بناءً على آخر ١٤ يوماً والتوقع +٦٪ للجمعة: ١٤ كغ برتقال، ٥ كغ معجون فستق (عاجل)، ٦٠٠ كوب.",
         sources: ["bayaan.consumption.ledger", "stock.quant", "weather.forecast"],
         generated: {
@@ -338,11 +363,11 @@ const MOCK = {
           lines: [
             { item: "Oranges", qty: 14, unit: "kg", value: 980_000, urgency: "normal", coverDays: 1.2 },
             { item: "Pistachio paste", qty: 5, unit: "kg", value: 1_312_500, urgency: "urgent", coverDays: 0.5, note: "in pending action PA-1" },
-            { item: "Milk (whole) 1L", qty: 4, unit: "ctn", value: 56_000, urgency: "normal", coverDays: 2.0 },
+            { item: "Milk (whole) 1L", qty: 5, unit: "L", value: 17_500, urgency: "normal", coverDays: 2.0 },
             { item: "Cups 12oz", qty: 600, unit: "pc", value: 4_200, urgency: "normal", coverDays: 1.4 },
             { item: "Mint - fresh", qty: 0.5, unit: "kg", value: 87_500, urgency: "normal", coverDays: 1.5 },
           ],
-          totalValue: 2_440_200,
+          totalValue: 2_401_700,
           actionEn: "Create stock transfer",
           actionAr: "إنشاء تحويل مخزون",
         } },
@@ -390,7 +415,7 @@ const MOCK = {
       wasteCost: 8_400, status: "approved", notes: "Cash and stock matched. Approved by Layla.",
       stock: [
         { item: "Espresso beans - house", unit: "kg", expected: 6.4, actual: 6.4, variance: 0, value: 0 },
-        { item: "Milk (whole) 1L", unit: "ctn", expected: 18, actual: 18, variance: 0, value: 0 },
+        { item: "Milk (whole) 1L", unit: "L", expected: 18, actual: 18, variance: 0, value: 0 },
         { item: "Cups 12oz", unit: "pc", expected: 412, actual: 410, variance: -2, value: -1_400 },
       ],
     },
@@ -414,7 +439,7 @@ const MOCK = {
       wasteCost: 58_800, status: "issue", notes: "Orange and cup variance requires cashier explanation.",
       stock: [
         { item: "Oranges", unit: "kg", expected: 28.0, actual: 26.6, variance: -1.4, value: -98_000 },
-        { item: "Milk (whole) 1L", unit: "ctn", expected: 12, actual: 9, variance: -3, value: -42_000 },
+        { item: "Milk (whole) 1L", unit: "L", expected: 12, actual: 9, variance: -3, value: -10_500 },
         { item: "Cups 12oz", unit: "pc", expected: 267, actual: 251, variance: -16, value: -11_200 },
         { item: "Pistachio paste", unit: "kg", expected: 0.4, actual: 0.2, variance: -0.2, value: -52_500 },
       ],
@@ -464,32 +489,32 @@ const MOCK = {
       { item: "Cups 12oz", unit: "pc", opening: 640, received: 400, consumed: 412, waste: 4, expected: 624, actual: 622, variance: -2, status: "watch" },
       { item: "Straws", unit: "pc", opening: 720, received: 300, consumed: 118, waste: 0, expected: 902, actual: 902, variance: 0, status: "ok" },
       { item: "Espresso beans - house", unit: "kg", opening: 9.4, received: 0, consumed: 3.0, waste: 0, expected: 6.4, actual: 6.4, variance: 0, status: "ok" },
-      { item: "Milk (whole) 1L", unit: "ctn", opening: 24, received: 12, consumed: 18, waste: 0, expected: 18, actual: 18, variance: 0, status: "ok" },
+      { item: "Milk (whole) 1L", unit: "L", opening: 24, received: 12, consumed: 18, waste: 0, expected: 18, actual: 18, variance: 0, status: "ok" },
     ],
     "K-04": [
       { item: "Oranges", unit: "kg", opening: 18, received: 10, consumed: 11.9, waste: 0.7, expected: 15.4, actual: 14.7, variance: -0.7, status: "issue" },
       { item: "Sugar", unit: "kg", opening: 4.0, received: 0, consumed: 0.34, waste: 0, expected: 3.66, actual: 3.66, variance: 0, status: "ok" },
       { item: "Cups 12oz", unit: "pc", opening: 360, received: 200, consumed: 298, waste: 6, expected: 256, actual: 248, variance: -8, status: "watch" },
       { item: "Straws", unit: "pc", opening: 420, received: 0, consumed: 94, waste: 0, expected: 326, actual: 326, variance: 0, status: "ok" },
-      { item: "Oat milk 1L", unit: "ctn", opening: 9, received: 0, consumed: 6, waste: 0, expected: 3, actual: 3, variance: 0, status: "watch" },
+      { item: "Oat milk 1L", unit: "L", opening: 9, received: 0, consumed: 6, waste: 0, expected: 3, actual: 3, variance: 0, status: "watch" },
     ],
     "K-07": [
       { item: "Oranges", unit: "kg", opening: 40, received: 0, consumed: 10.5, waste: 1.5, expected: 28.0, actual: 26.6, variance: -1.4, status: "issue" },
-      { item: "Milk (whole) 1L", unit: "ctn", opening: 16, received: 0, consumed: 4, waste: 0, expected: 12, actual: 9, variance: -3, status: "issue" },
+      { item: "Milk (whole) 1L", unit: "L", opening: 16, received: 0, consumed: 4, waste: 0, expected: 12, actual: 9, variance: -3, status: "issue" },
       { item: "Cups 12oz", unit: "pc", opening: 640, received: 0, consumed: 267, waste: 106, expected: 267, actual: 251, variance: -16, status: "issue" },
       { item: "Pistachio paste", unit: "kg", opening: 3.0, received: 0, consumed: 2.4, waste: 0.2, expected: 0.4, actual: 0.2, variance: -0.2, status: "issue" },
     ],
   },
 
   pendingTransfers: [
-    { id: "TR-2040", from: "Main Warehouse", to: "K-01 Karrada Center", eta: "15:10", status: "dispatched", items: "Milk 12 ctn, cups 400 pc", value: 782_000 },
-    { id: "TR-2041", from: "Main Warehouse", to: "K-04 Zayouna Plaza", eta: "17:30", status: "picked", items: "Oat milk 12 ctn, cups 400 pc", value: 612_000 },
+    { id: "TR-2040", from: "Main Warehouse", to: "K-01 Karrada Center", eta: "15:10", status: "dispatched", items: "Milk 12 L, cups 400 pc", value: 782_000 },
+    { id: "TR-2041", from: "Main Warehouse", to: "K-04 Zayouna Plaza", eta: "17:30", status: "picked", items: "Oat milk 12 L, cups 400 pc", value: 612_000 },
     { id: "TR-2042", from: "Main Warehouse", to: "K-07 Majidi Mall", eta: "Tomorrow 07:00", status: "approved", items: "Pistachio paste 5 kg, cups 600 pc", value: 1_316_700 },
     { id: "TR-2043", from: "Baghdad Area Warehouse", to: "K-02 Mansour District", eta: "16:45", status: "draft", items: "Mint 4 kg, lemons 12 kg", value: 356_000 },
   ],
 
   transferSuggestions: [
-    { kiosk: "K-04 Zayouna Plaza", item: "Oat milk 1L", qty: "12 ctn", cover: "1.1 days", reason: "low stock before evening rush" },
+    { kiosk: "K-04 Zayouna Plaza", item: "Oat milk 1L", qty: "12 L", cover: "1.1 days", reason: "low stock before evening rush" },
     { kiosk: "K-07 Majidi Mall", item: "Pistachio paste", qty: "5 kg", cover: "0.4 days", reason: "critical plus open variance" },
     { kiosk: "K-02 Mansour District", item: "Mint - fresh", qty: "4 kg", cover: "1.4 days", reason: "lemonade mix above forecast" },
   ],
@@ -561,11 +586,156 @@ const flattenSeed = () =>
     })),
   );
 
+const recipeLine = (ingredient, qty, unit) => ({ ingredient, qty, unit });
+
+const flattenSeedRecipes = () => ({
+  1: { productId: 1, lines: [
+    recipeLine("Espresso beans - house", 0.018, "kg"),
+    recipeLine("Cups 12oz", 1, "pc"),
+  ] },
+  2: { productId: 2, lines: [
+    recipeLine("Espresso beans - house", 0.02, "kg"),
+    recipeLine("Cups 12oz", 1, "pc"),
+  ] },
+  3: { productId: 3, lines: [
+    recipeLine("Espresso beans - house", 0.018, "kg"),
+    recipeLine("Milk (whole) 1L", 0.18, "L"),
+    recipeLine("Cups 12oz", 1, "pc"),
+  ] },
+  4: { productId: 4, lines: [
+    recipeLine("Espresso beans - house", 0.018, "kg"),
+    recipeLine("Milk (whole) 1L", 0.22, "L"),
+    recipeLine("Cups 12oz", 1, "pc"),
+  ] },
+  5: { productId: 5, lines: [
+    recipeLine("Espresso beans - house", 0.018, "kg"),
+    recipeLine("Milk (whole) 1L", 0.18, "L"),
+    recipeLine("Cups 12oz", 1, "pc"),
+  ] },
+  6: { productId: 6, lines: [
+    recipeLine("Espresso beans - house", 0.018, "kg"),
+    recipeLine("Milk (whole) 1L", 0.08, "L"),
+    recipeLine("Cups 12oz", 1, "pc"),
+  ] },
+  7: { productId: 7, lines: [
+    recipeLine("Espresso beans - house", 0.018, "kg"),
+    recipeLine("Milk (whole) 1L", 0.18, "L"),
+    recipeLine("Chocolate sauce 1L", 0.03, "L"),
+    recipeLine("Cups 12oz", 1, "pc"),
+  ] },
+  8: { productId: 8, lines: [
+    recipeLine("Espresso beans - house", 0.018, "kg"),
+    recipeLine("Milk (whole) 1L", 0.16, "L"),
+    recipeLine("Condensed milk", 0.025, "kg"),
+    recipeLine("Cups 12oz", 1, "pc"),
+  ] },
+  11: { productId: 11, lines: [
+    recipeLine("Espresso beans - house", 0.02, "kg"),
+    recipeLine("Ice", 0.18, "kg"),
+    recipeLine("Cups 16oz", 1, "pc"),
+  ] },
+  12: { productId: 12, lines: [
+    recipeLine("Espresso beans - house", 0.018, "kg"),
+    recipeLine("Milk (whole) 1L", 0.24, "L"),
+    recipeLine("Ice", 0.16, "kg"),
+    recipeLine("Cups 16oz", 1, "pc"),
+  ] },
+  13: { productId: 13, lines: [
+    recipeLine("Espresso beans - house", 0.018, "kg"),
+    recipeLine("Milk (whole) 1L", 0.2, "L"),
+    recipeLine("Chocolate sauce 1L", 0.04, "L"),
+    recipeLine("Ice", 0.16, "kg"),
+    recipeLine("Cups 16oz", 1, "pc"),
+  ] },
+  14: { productId: 14, lines: [
+    recipeLine("Cold brew concentrate", 0.12, "L"),
+    recipeLine("Ice", 0.18, "kg"),
+    recipeLine("Cups 16oz", 1, "pc"),
+  ] },
+  15: { productId: 15, lines: [
+    recipeLine("Espresso beans - house", 0.018, "kg"),
+    recipeLine("Milk (whole) 1L", 0.2, "L"),
+    recipeLine("Condensed milk", 0.03, "kg"),
+    recipeLine("Ice", 0.16, "kg"),
+    recipeLine("Cups 16oz", 1, "pc"),
+  ] },
+  21: { productId: 21, lines: [
+    recipeLine("Oranges", 0.35, "kg"),
+    recipeLine("Sugar", 0.02, "kg"),
+    recipeLine("Cups 16oz", 1, "pc"),
+    recipeLine("Straws", 1, "pc"),
+  ] },
+  22: { productId: 22, lines: [
+    recipeLine("Mango pulp", 0.25, "kg"),
+    recipeLine("Sugar", 0.02, "kg"),
+    recipeLine("Cups 16oz", 1, "pc"),
+    recipeLine("Straws", 1, "pc"),
+  ] },
+  23: { productId: 23, lines: [
+    recipeLine("Strawberry puree", 0.24, "kg"),
+    recipeLine("Sugar", 0.02, "kg"),
+    recipeLine("Cups 16oz", 1, "pc"),
+    recipeLine("Straws", 1, "pc"),
+  ] },
+  24: { productId: 24, lines: [
+    recipeLine("Avocado", 0.28, "kg"),
+    recipeLine("Milk (whole) 1L", 0.2, "L"),
+    recipeLine("Honey", 0.02, "kg"),
+    recipeLine("Cups 16oz", 1, "pc"),
+    recipeLine("Straws", 1, "pc"),
+  ] },
+  25: { productId: 25, lines: [
+    recipeLine("Lemons", 0.18, "kg"),
+    recipeLine("Mint - fresh", 0.02, "kg"),
+    recipeLine("Sugar", 0.03, "kg"),
+    recipeLine("Cups 16oz", 1, "pc"),
+    recipeLine("Straws", 1, "pc"),
+  ] },
+  31: { productId: 31, lines: [
+    recipeLine("Pistachio cake base", 1, "slice"),
+    recipeLine("Pistachio paste", 0.012, "kg"),
+    recipeLine("Cream cheese", 0.04, "kg"),
+  ] },
+  32: { productId: 32, lines: [
+    recipeLine("Chocolate fondant base", 1, "slice"),
+    recipeLine("Chocolate - 70%", 0.08, "kg"),
+  ] },
+  33: { productId: 33, lines: [
+    recipeLine("Cheesecake base", 1, "slice"),
+    recipeLine("Cream cheese", 0.06, "kg"),
+  ] },
+  34: { productId: 34, lines: [
+    recipeLine("Carrot cake base", 1, "slice"),
+  ] },
+  35: { productId: 35, lines: [
+    recipeLine("Tiramisu cup", 1, "pc"),
+  ] },
+  36: { productId: 36, lines: [
+    recipeLine("Lotus cake base", 1, "slice"),
+    recipeLine("Lotus biscuit spread", 0.04, "kg"),
+  ] },
+  41: { productId: 41, lines: [
+    recipeLine("Croissant - frozen", 1, "pc"),
+  ] },
+  42: { productId: 42, lines: [
+    recipeLine("Croissant - chocolate frozen", 1, "pc"),
+  ] },
+  43: { productId: 43, lines: [
+    recipeLine("Croissant - almond frozen", 1, "pc"),
+  ] },
+  44: { productId: 44, lines: [
+    recipeLine("Cinnamon roll - frozen", 1, "pc"),
+  ] },
+  45: { productId: 45, lines: [
+    recipeLine("Za'atar manakeesh - frozen", 1, "pc"),
+  ] },
+});
+
 const CatalogContext = React.createContext(null);
 
 function CatalogProvider({ children }) {
   const [state, setState] = React.useState(
-    () => loadCatalog() ?? makeEmptyCatalog(flattenSeed()),
+    () => reconcileCatalogWithSeed(loadCatalog(), flattenSeed(), flattenSeedRecipes()),
   );
 
   // Functional persist: atomically reads the *current* state, applies the
@@ -617,7 +787,7 @@ function CatalogProvider({ children }) {
       }),
       resetAll: () => {
         clearCatalog();
-        setState(makeEmptyCatalog(flattenSeed()));
+        setState(makeEmptyCatalog(flattenSeed(), flattenSeedRecipes()));
       },
       nextId: () => nextProductId(state.products),
       menuByCategory: () => {
@@ -862,9 +1032,8 @@ const Avatar = ({ name, size = 24, color }) => {
 
 // ---------- ProductImage ----------
 // Product thumbnail with first-letter fallback. Resolves /products/<slug>.webp.
-// Until any real image files exist in apps/kiosk-pos/public/products/, every
-// tile renders the fallback — no broken image icons. Drop a webp in with the
-// matching slug and it appears next reload, no code change.
+// If a slug has no static file or uploaded override, the tile renders a
+// first-letter fallback — no broken image icons.
 const ProductImage = ({ slug, name, size = 36, radius = 8, fill = false }) => {
   const [errored, setErrored] = React.useState(false);
   const catalog = React.useContext(CatalogContext);
@@ -1022,6 +1191,91 @@ const compactError = (error) => {
   const message = error.message || String(error);
   return message.length > 120 ? `${message.slice(0, 117)}...` : message;
 };
+
+const isSuperadminAuth = (auth) => (
+  auth?.user?.primaryRole === "superadmin" || auth?.user?.roles?.includes("superadmin")
+);
+
+const auditSeverityClass = (severity) => {
+  if (severity === "critical") return "badge-crit";
+  if (severity === "warning") return "badge-warn";
+  if (severity === "success") return "badge-pos";
+  return "";
+};
+
+const auditDotClass = (severity) => {
+  if (severity === "critical") return "crit";
+  if (severity === "warning") return "warn";
+  if (severity === "success") return "pos";
+  return "";
+};
+
+const auditTimeLabel = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" });
+};
+
+const normalizeAuditEvents = (payload) => {
+  const data = unwrapOdoo(payload);
+  const rows = Array.isArray(data?.events) ? data.events : [];
+  return rows.map((event) => ({
+    id: event.id,
+    title: event.title || event.action || "System event",
+    detail: event.detail || event.message || "",
+    actor: event.actor || "Bayaan",
+    action: event.action || "",
+    eventType: event.eventType || event.event_type || "",
+    severity: event.severity || "info",
+    reference: event.reference || event.ref || "",
+    model: event.model || event.modelName || "",
+    kiosk: event.kiosk || event.kioskName || "",
+    occurredAt: event.occurredAt || event.occurred_at || event.at || "",
+  }));
+};
+
+const normalizeRealtimeAuditEvent = (event) => ({
+  id: `rt-${event.id || Date.now()}`,
+  title: event.title || event.action || "Realtime event",
+  detail: event.detail || "",
+  actor: "Bayaan stream",
+  action: event.action || event.type || "",
+  eventType: event.eventType || "",
+  severity: event.severity || "info",
+  reference: event.reference || "",
+  model: event.model || "",
+  kiosk: event.kiosk || event.kioskName || "",
+  occurredAt: event.occurredAt || new Date().toISOString(),
+});
+
+const demoAuditEvents = () => (MOCK.ai?.auditLog || []).map((event) => ({
+  id: event.id,
+  title: event.actionEn,
+  detail: event.detailEn,
+  actor: event.actor,
+  action: "demo.audit",
+  eventType: "demo",
+  severity: event.approver ? "success" : "info",
+  reference: event.ref,
+  model: event.ref,
+  kiosk: "",
+  occurredAt: event.at,
+}));
+
+const readFileAsBase64 = (file) => new Promise((resolve, reject) => {
+  if (!file) {
+    resolve("");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const result = String(reader.result || "");
+    resolve(result.includes(",") ? result.split(",").pop() || "" : result);
+  };
+  reader.onerror = () => reject(reader.error || new Error("Could not read file"));
+  reader.readAsDataURL(file);
+});
 
 function Modal({ open, onClose, title, sub, width = 460, children }) {
   useEffect(() => {
@@ -1361,6 +1615,119 @@ const odooKioskStockReconciliationRows = (bootstrap, kiosk) => {
   });
 };
 
+const movementTimeLabel = (value) => auditTimeLabel(value) || "--:--";
+const movementSortValue = (value) => {
+  const date = new Date(value || "");
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+};
+const movementQtyLabel = (qty, uom) => {
+  const value = Number(qty || 0).toLocaleString("en", { maximumFractionDigits: 2 });
+  return uom ? `${value} ${uom}` : value;
+};
+const movementLineSummary = (lines = []) => {
+  const visible = lines.slice(0, 3).map((line) => {
+    const qty = Number(line.doneQty || line.qty || 0).toLocaleString("en", { maximumFractionDigits: 2 });
+    return `${cleanDisplayName(line.product || "Item")} x ${qty}${line.uom ? ` ${line.uom}` : ""}`;
+  });
+  if (lines.length > 3) visible.push(`+${lines.length - 3} more`);
+  return visible.join(", ");
+};
+const transferMovementAction = (transfer, selectedKiosk) => {
+  const status = String(transfer.bayaan_state || transfer.bayaanState || transfer.state || "draft").toLowerCase();
+  const incoming = matchesKiosk(transfer.toKioskId || transfer.to || transfer.location_dest, selectedKiosk);
+  if (incoming && ["received", "done", "completed"].includes(status)) return "Transfer received";
+  if (incoming && status === "dispatched") return "Transfer expected";
+  if (incoming) return `Transfer ${status}`;
+  if (["received", "done", "completed"].includes(status)) return "Transfer completed";
+  if (status === "dispatched") return "Transfer dispatched";
+  return `Transfer ${status}`;
+};
+const odooKioskStockMovementRows = (bootstrap, kiosk) => {
+  const snapshot = unwrapOdoo(bootstrap);
+  if (!snapshot) return [];
+  const rows = [];
+  const addRow = (row) => {
+    const at = row.at || "";
+    rows.push({
+      id: row.id || `${row.source}-${row.action}-${at}-${rows.length}`,
+      time: movementTimeLabel(at),
+      sortAt: movementSortValue(at),
+      ...row,
+    });
+  };
+
+  (snapshot.closings || [])
+    .filter((close) => matchesKiosk(close.kioskId || close.kioskName, kiosk))
+    .forEach((close) => {
+      const lineCount = close.stock?.length || close.ingredientVariance?.length || 0;
+      if (close.openedAt) {
+        addRow({
+          id: `${close.name || close.id}-opening`,
+          at: close.openedAt,
+          action: "Opening stock baseline",
+          detail: `${lineCount || "Shift"} stock lines opened by ${close.cashier || "cashier"}`,
+          source: "bayaan.shift.close",
+        });
+      }
+      if (close.closedAt) {
+        addRow({
+          id: `${close.name || close.id}-closing`,
+          at: close.closedAt,
+          action: "Closing stock count",
+          detail: `${lineCount || "Shift"} stock lines counted - ${close.status || "pending"}`,
+          source: "bayaan.shift.close",
+        });
+      }
+    });
+
+  (snapshot.transfers || [])
+    .filter((transfer) => (
+      matchesKiosk(transfer.toKioskId || transfer.to || transfer.location_dest, kiosk)
+      || matchesKiosk(transfer.from || transfer.location_src, kiosk)
+    ))
+    .forEach((transfer) => {
+      const lines = movementLineSummary(transfer.lines || []);
+      addRow({
+        id: transfer.name || `transfer-${transfer.id}`,
+        at: transfer.doneAt || transfer.scheduledAt || transfer.createdAt,
+        action: transferMovementAction(transfer, kiosk),
+        detail: `${transfer.name ? `${transfer.name} - ` : ""}${transfer.from || "Warehouse"} -> ${transfer.toKioskId || transfer.to || "Kiosk"}${lines ? ` - ${lines}` : ""}`,
+        source: "stock.picking",
+      });
+    });
+
+  (snapshot.today?.consumption || [])
+    .filter((line) => matchesKiosk(line.kiosk, kiosk))
+    .forEach((line, index) => {
+      const ingredient = cleanDisplayName(line.ingredient || "Ingredient");
+      const product = cleanDisplayName(line.sold_product || line.product || "POS sale");
+      const order = line.order ? ` (${line.order})` : "";
+      addRow({
+        id: `consumption-${line.id || index}`,
+        at: line.consumed_at || line.create_date,
+        action: "Recipe deduction",
+        detail: `${movementQtyLabel(line.qty, line.uom)} ${ingredient} for ${product}${order}`,
+        source: "bayaan.consumption.ledger",
+      });
+    });
+
+  (snapshot.today?.waste || [])
+    .filter((entry) => matchesKiosk(entry.kiosk, kiosk))
+    .forEach((entry, index) => {
+      addRow({
+        id: `waste-${entry.id || index}`,
+        at: entry.create_date,
+        action: "Waste recorded",
+        detail: `${movementQtyLabel(entry.qty, entry.uom)} ${cleanDisplayName(entry.product || "Waste item")} - ${entry.reason || entry.state || "recorded"}`,
+        source: "bayaan.waste.entry",
+      });
+    });
+
+  return rows
+    .sort((a, b) => b.sortAt - a.sortAt)
+    .slice(0, 80);
+};
+
 const PAYMENT_GATEWAY_PROVIDERS = [
   { id: "cash", label: "Cash", category: "cash", kind: "cash_drawer", settlement: "drawer_count", aliases: ["cash"] },
   { id: "bank_card", label: "Bank card terminal", category: "card", kind: "card_terminal", settlement: "bank_batch", aliases: ["card", "visa", "mastercard", "master card", "terminal", "pos terminal"] },
@@ -1605,6 +1972,70 @@ const odooRecipeMarginRows = (bootstrap) => {
   });
 };
 
+const productCategoryLabel = (category = "", mode = "") => {
+  const text = String(category || "").split("/").pop()?.trim();
+  if (text && text !== "All") return text;
+  if (mode === "recipe") return "Recipe products";
+  if (mode === "hybrid") return "Hybrid products";
+  if (mode === "finished") return "Finished goods";
+  return "Products";
+};
+
+const odooProductCatalogRows = (bootstrap) => {
+  const snapshot = unwrapOdoo(bootstrap);
+  const rows = snapshot?.products || [];
+  if (!rows.length) return canUseDemoFallback(bootstrap) ? null : [];
+  return rows
+    .filter((product) => product.available_in_pos || ["recipe", "finished", "hybrid"].includes(product.consumption_mode))
+    .map((product, index) => ({
+      id: product.id || index + 1,
+      odooId: product.id,
+      code: product.default_code || "",
+      category: productCategoryLabel(product.category, product.consumption_mode),
+      name: cleanDisplayName(product.name || product.default_code || "Product"),
+      image: slugify(product.default_code || product.name || `product-${product.id || index}`),
+      price: Number(product.list_price || 0),
+      standardPrice: Number(product.standard_price || 0),
+      sizes: ["S"],
+      consumptionMode: product.consumption_mode || "finished",
+      availableInPos: Boolean(product.available_in_pos),
+      uom: product.uom || "Units",
+    }));
+};
+
+const odooIngredientOptions = (bootstrap) => {
+  const snapshot = unwrapOdoo(bootstrap);
+  const rows = snapshot?.products || [];
+  if (!rows.length && canUseDemoFallback(bootstrap)) {
+    return MOCK.inventory.map((it) => ({ value: it.item, label: it.item, unit: it.unit }));
+  }
+  return rows
+    .filter((product) => !product.available_in_pos || !["recipe", "hybrid"].includes(product.consumption_mode))
+    .map((product) => ({
+      value: product.default_code || product.name,
+      label: cleanDisplayName(product.name || product.default_code),
+      unit: product.uom || "Units",
+    }))
+    .filter((option) => option.value);
+};
+
+const odooPosMenu = (bootstrap) => {
+  const products = (odooProductCatalogRows(bootstrap) || []).filter((product) => product.availableInPos);
+  const groups = new Map();
+  products.forEach((product) => {
+    const category = product.category || "Products";
+    if (!groups.has(category)) groups.set(category, { cat: category, items: [] });
+    groups.get(category).items.push({
+      id: product.code || product.name,
+      name: product.name,
+      image: product.image,
+      price: product.price,
+      sizes: product.sizes?.length ? product.sizes : ["S"],
+    });
+  });
+  return Array.from(groups.values()).filter((group) => group.items.length > 0);
+};
+
 const odooPurchaseOrderRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
   const rows = snapshot?.purchase_orders || [];
@@ -1626,6 +2057,40 @@ const odooPurchaseOrderRows = (bootstrap) => {
     value: Number(order.amount_total || 0),
     status: order.receipt_state === "done" ? "received" : "created",
     receiptState: order.receipt_state || "none",
+  }));
+};
+
+const odooSupplierRows = (bootstrap) => {
+  const snapshot = unwrapOdoo(bootstrap);
+  const rows = snapshot?.suppliers || [];
+  if (!rows.length) return canUseDemoFallback(bootstrap) ? MOCK.suppliers : [];
+  return rows.slice(0, 100).map((supplier) => ({
+    id: supplier.id,
+    name: supplier.name || "Supplier",
+    category: supplier.category || "Supplier",
+    address: supplier.address || "",
+    deliveryCategory: supplier.deliveryCategory || supplier.delivery_category || "Review",
+    spend30: Number(supplier.spend30 || 0),
+    lastOrder: supplier.lastOrder || supplier.last_order || "-",
+    status: supplier.status || "good",
+  }));
+};
+
+const odooRecurringPurchaseRows = (bootstrap) => {
+  const snapshot = unwrapOdoo(bootstrap);
+  const rows = snapshot?.recurring_purchases || [];
+  if (!rows.length) return [];
+  const weekdayLabel = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    supplier: row.supplier,
+    warehouse: row.warehouse,
+    frequency: row.frequency,
+    weekday: weekdayLabel[Number(row.weekday || 0)] || row.weekday,
+    nextDate: row.nextDate,
+    items: row.lines?.map((line) => `${line.product} x ${line.qty}`).join(", ") || "No lines",
+    active: row.active,
   }));
 };
 
@@ -1672,14 +2137,14 @@ const purchaseLineSummary = (lines) => (lines || [])
 const purchaseStatusClass = (status) => {
   const normalized = String(status || "").toLowerCase();
   if (["done", "received"].includes(normalized)) return "badge-pos";
-  if (["created", "draft", "sent", "receiving", "purchase", "approved"].includes(normalized)) return "badge-warn";
+  if (["created", "draft", "receiving", "purchase", "approved"].includes(normalized)) return "badge-warn";
   if (["cancel", "cancelled", "rejected"].includes(normalized)) return "badge-crit";
   return "";
 };
 
 const nextPurchaseAction = (status) => {
   const normalized = String(status || "created").toLowerCase();
-  if (["created", "draft", "sent", "approved", "purchase"].includes(normalized)) return { label: "Receive", action: "receive", next: "received" };
+  if (["created", "draft", "approved", "purchase"].includes(normalized)) return { label: "Receive", action: "receive", next: "received" };
   if (normalized === "receiving") return { label: "Complete", action: "receive", next: "received" };
   return null;
 };
@@ -1690,6 +2155,17 @@ const nextTransferAction = (status) => {
   if (normalized === "approved" || normalized === "confirmed" || normalized === "waiting") return { label: "Pick", action: "pick", next: "picked" };
   if (normalized === "picked") return { label: "Dispatch", action: "dispatch", next: "dispatched" };
   return null;
+};
+
+const isDispatchedTransfer = (status) => String(status || "").toLowerCase() === "dispatched";
+const isReceivedTransfer = (status) => ["received", "done"].includes(String(status || "").toLowerCase());
+
+const transferStatusClass = (status) => {
+  const normalized = String(status || "").toLowerCase();
+  if (isReceivedTransfer(normalized)) return "badge-pos";
+  if (["cancel", "cancelled", "rejected"].includes(normalized)) return "badge-crit";
+  if (["draft", "approved", "picked", "dispatched", "confirmed", "waiting"].includes(normalized)) return "badge-warn";
+  return "";
 };
 
 const odooCashierPerformanceRows = (bootstrap) => {
@@ -1726,6 +2202,65 @@ const odooCashierPerformanceRows = (bootstrap) => {
     voidRefund: `${row.voids} / ${row.refunds}`,
   }));
 };
+
+const HR_ROLE_OPTIONS = ["Cashier", "Barista", "Supervisor", "Warehouse", "Manager", "Accountant", "Other"];
+const HR_ROLE_LABELS = {
+  any: "Any role",
+  cashier: "Cashier",
+  barista: "Barista",
+  supervisor: "Supervisor",
+  warehouse: "Warehouse",
+  manager: "Manager",
+  accountant: "Accountant",
+  other: "Other",
+};
+const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+const normalizeHrRole = (role) => {
+  const normalized = String(role || "").trim().toLowerCase();
+  if (normalized === "operations mgr") return "manager";
+  if (normalized === "any role" || normalized === "all") return "any";
+  return HR_ROLE_LABELS[normalized] ? normalized : "other";
+};
+
+const hrRoleLabel = (role) => HR_ROLE_LABELS[normalizeHrRole(role)] || "Other";
+
+const odooHrSnapshot = (bootstrap) => {
+  const snapshot = unwrapOdoo(bootstrap);
+  return snapshot?.hr || { employees: [], attendance: [], coverageRules: [], shifts: [], coverageGaps: [], summary: {} };
+};
+
+const staffRowsFromHrEmployees = (employees = []) => (
+  employees.map((person) => ({
+    id: person.id,
+    name: person.name,
+    role: hrRoleLabel(person.role),
+    roleValue: normalizeHrRole(person.role),
+    kiosk: person.kiosk || "Central",
+    kioskName: person.kioskName || person.kiosk || "Central",
+    hours: Math.round(Number(person.expectedMonthlyHours || 0)),
+    salary: Number(person.monthlySalary || 0),
+    hourlyRate: Number(person.hourlyRate || 0),
+    status: person.active === false ? "leave" : "active",
+    odooEmployeeId: person.odooEmployeeId,
+  }))
+);
+
+const odooStaffRows = (bootstrap) => staffRowsFromHrEmployees(odooHrSnapshot(bootstrap).employees || []);
+
+const hourToTime = (value) => {
+  const totalMinutes = Math.round(Number(value || 0) * 60);
+  const hours = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
+  const minutes = String(totalMinutes % 60).padStart(2, "0");
+  return `${hours}:${minutes}`;
+};
+
+const timeToHour = (value) => {
+  const [hours, minutes = "0"] = String(value || "0:00").split(":");
+  return Number(hours || 0) + Number(minutes || 0) / 60;
+};
+
+const todayIsoDate = () => new Date().toISOString().slice(0, 10);
 
 const odooWasteRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
@@ -3322,8 +3857,8 @@ const SCENES = {
         kind: "Recovery plan",
         title: "Two actions to recover today",
         actions: [
-          { label: "Approve auto-PO - Baghdad Dairy", sub: "20 ctn - ETA 2h", primary: true },
-          { label: "Transfer 8 ctn from K-01 Karrada Center", sub: "Recovers ~IQD 280K today", primary: false },
+          { label: "Approve auto-PO - Baghdad Dairy", sub: "240 L - ETA 2h", primary: true },
+          { label: "Transfer 96 L from K-01 Karrada Center", sub: "Recovers ~IQD 280K today", primary: false },
         ],
       },
       {
@@ -5106,6 +5641,14 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
   const orders = odooPosOrderRows(bootstrap).filter((order) => matchesKiosk(order.kioskId || order.kiosk, selected));
   const visibleOrders = orders.length ? orders : liveOnly ? [] : MOCK.posOrders.slice(0, 4);
   const closing = odooClosingRows(bootstrap).find((c) => matchesKiosk(c.kioskId || c.kioskName, selected));
+  const movementRows = odooKioskStockMovementRows(bootstrap, selected);
+  const demoMovementRows = [
+    { id: "demo-open", time: "07:00", action: "Opening stock count", detail: "Posted by cashier", source: "stock.quant" },
+    { id: "demo-transfer", time: "09:15", action: "Transfer received", detail: "Main Warehouse -> kiosk location", source: "stock.picking" },
+    { id: "demo-consumption", time: "14:42", action: "Recipe deduction", detail: "10 x Orange Juice 350ml", source: "bayaan.consumption.ledger" },
+    { id: "demo-waste", time: "15:10", action: "Waste recorded", detail: "Wrong order / spill", source: "bayaan.waste.entry" },
+  ];
+  const visibleMovementRows = movementRows.length ? movementRows : liveOnly ? [] : demoMovementRows;
   const fmtQty = (value, unit) => `${Number(value).toLocaleString("en", { maximumFractionDigits: 2 })} ${unit}`;
   const tabs = [
     { id: "overview", label: ar ? "نظرة عامة" : "Overview" },
@@ -5220,19 +5763,21 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
       <SectionHead title={ar ? "حركات المخزون" : "Stock movements"} sub={ar ? "افتتاح، تحويلات، استهلاك، هدر" : "Opening counts, transfers, recipe consumption, and waste"} />
       <table className="tbl">
         <tbody>
-          {[
-            ["07:00", "Opening stock count", "Posted by cashier", "stock.quant"],
-            ["09:15", "Transfer received", "Main Warehouse -> kiosk location", "stock.picking"],
-            ["14:42", "Recipe deduction", "10 x Orange Juice 350ml", "bayaan.consumption.ledger"],
-            ["15:10", "Waste recorded", "Wrong order / spill", "bayaan.waste.entry"],
-          ].map(([time, action, detail, source]) => (
-            <tr key={`${time}-${action}`}>
-              <td className="t-num muted" style={{ width: 72 }}>{time}</td>
-              <td>{action}</td>
-              <td className="muted">{detail}</td>
-              <td><span className="badge">{source}</span></td>
+          {visibleMovementRows.map((row) => (
+            <tr key={row.id}>
+              <td className="t-num muted" style={{ width: 84 }}>{row.time}</td>
+              <td>{row.action}</td>
+              <td className="muted">{row.detail}</td>
+              <td><span className="badge">{row.source}</span></td>
             </tr>
           ))}
+          {!visibleMovementRows.length && (
+            <tr>
+              <td colSpan={4} className="muted" style={{ padding: 18, textAlign: "center" }}>
+                {ar ? "Ù„Ø§ ØªÙˆØ¬Ø¯ Ø­Ø±ÙƒØ§Øª Ù…Ø®Ø²ÙˆÙ† Ù„Ù‡Ø°Ø§ Ø§Ù„ÙƒØ´Ùƒ Ø§Ù„ÙŠÙˆÙ…" : "No stock movements for this kiosk today."}
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
@@ -6110,7 +6655,6 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const removePoLine = (index) => {
     setPoDraft((draft) => ({ ...draft, lines: draft.lines.filter((_, i) => i !== index) }));
   };
-
   const submitPo = async (event, submit = false) => {
     event.preventDefault();
     const lines = poDraft.lines
@@ -6144,7 +6688,7 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         warehouse: poDraft.warehouse,
         items: purchaseLineSummary(lines),
         value: purchaseTotal(lines),
-        status: created?.state || (submit ? "sent" : "draft"),
+        status: created?.state || "created",
       };
       setPurchaseDrafts((rows) => [draft, ...rows]);
       setPoModalOpen(false);
@@ -6285,58 +6829,9 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     showToast(ar ? "Transfer status updated" : `Transfer ${transfer.id} moved to ${nextStatus}`, "success");
   };
   return (
-    <div className="col" style={{ gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        <KPI label={ar ? "بنود متابعة" : "SKUs tracked"} value={String(filteredInv.length)}/>
-        <KPI label={ar ? "تحت الحد الأدنى" : "Below reorder"} value={filteredLowCount} delta={ar ? "حرج" : "needs transfer"} deltaDir="down"/>
-        <KPI label={ar ? "قيمة المخزون" : "Stock value"} value={fmtMoney(filteredStockValue)}/>
-        <KPI label={ar ? "متوسط أيام التغطية" : "Avg days of cover"} value={filteredAvgDays} sub={ar ? "يوم" : "days"}/>
-      </div>
-
-      <div className="card card-pad" style={{ background: "var(--accent-soft)", borderColor: "transparent" }}>
-        <div className="row" style={{ gap: 10 }}>
-          <AITag>{ar ? "إجراء مقترح" : "Suggested"}</AITag>
-          <div className="ai-block" style={{ flex: 1, paddingLeft: 14 }}>
-            <div style={{ fontSize: 14, color: "var(--ink-1)" }}>
-              {ar
-                ? <>تم صياغة طلب شراء بقيمة <strong>د.ع ٢٫٩٥ مليون</strong> يغطي ٤ بنود تحت الحد الأدنى. إيصال متوقع: <strong>غداً ٠٧:٠٠</strong>.</>
-                : <>An <strong>IQD 2.95M</strong> draft PO covers 4 below-reorder items. Expected delivery: <strong>tomorrow 07:00</strong> from Baghdad Dairy &amp; Mesopotamia Foods.</>
-              }
-            </div>
-          </div>
-          <button className="btn btn-accent" onClick={openSuggestedPo}>{ar ? "مراجعة وموافقة" : "Review & approve"}</button>
-        </div>
-      </div>
-
-      {purchaseDrafts.length > 0 && (
-        <div className="card">
-          <div className="between" style={{ padding: "14px 18px" }}>
-            <div>
-              <div className="t-h2">{ar ? "Purchase drafts" : "Purchase drafts"}</div>
-              <div className="t-small subtle">{ar ? "Queued from reorder decisions" : "Queued from reorder decisions"}</div>
-            </div>
-            <span className="badge">{purchaseDrafts.length} queued</span>
-          </div>
-          <table className="tbl">
-            <tbody>
-              {purchaseDrafts.map((draft) => (
-                <tr key={draft.id}>
-                  <td>
-                    <div style={{ fontWeight: 500 }}>{draft.supplier}</div>
-                    <div className="t-small faint">{draft.id}</div>
-                  </td>
-                  <td className="muted">{draft.items}</td>
-                  <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(draft.value)}</td>
-                  <td style={{ textAlign: "end" }}><span className={`badge ${draft.status === "approved" ? "badge-pos" : "badge-warn"}`}>{draft.status}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        <div className="card">
+    <div className="col" style={{ gap: 14, height: "calc(100vh - 204px)", minHeight: 560 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14, order: 2, flex: "1 1 auto", minHeight: 0, alignItems: "stretch" }}>
+        <div className="card" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
           <div className="between" style={{ padding: "14px 18px" }}>
             <div>
               <div className="t-h2">{ar ? "تحويلات قيد التنفيذ" : "Warehouse transfers"}</div>
@@ -6346,33 +6841,38 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
               <Icon name="truck" size={12}/>{ar ? "تحويل جديد" : "New transfer"}
             </button>
           </div>
-          <table className="tbl">
-            <tbody>
-              {transfers.map((transfer) => (
-                <tr key={transfer.id}>
-                  <td>
-                    <div style={{ fontWeight: 500 }}>{transfer.to}</div>
-                    <div className="t-small faint">{transfer.from} - {transfer.id}</div>
-                  </td>
-                  <td className="muted">{transfer.items}</td>
-                  <td className="t-num muted">{transfer.eta}</td>
-                  <td style={{ textAlign: "end" }}>
-                    <span className={`badge ${transfer.status === "draft" ? "badge-warn" : "badge-pos"}`}>{transfer.status}</span>
-                    {nextTransferAction(transfer.status) && (
-                      <button className="btn btn-ghost" onClick={() => advanceTransferStatus(transfer, nextTransferAction(transfer.status))}
-                        disabled={transferActionBusy === transfer.id}
-                        style={{ height: 24, fontSize: 11, marginInlineStart: 6 }}>
-                        {transferActionBusy === transfer.id ? "Working" : nextTransferAction(transfer.status).label}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+            <table className="tbl">
+              <tbody>
+                {transfers.map((transfer) => (
+                  <tr key={transfer.id}>
+                    <td>
+                      <div style={{ fontWeight: 500 }}>{transfer.to}</div>
+                      <div className="t-small faint">{transfer.from} - {transfer.id}</div>
+                    </td>
+                    <td className="muted">{transfer.items}</td>
+                    <td className="t-num muted">{transfer.eta}</td>
+                    <td style={{ textAlign: "end" }}>
+                      <span className={`badge ${transferStatusClass(transfer.status)}`}>{transfer.status}</span>
+                      {isDispatchedTransfer(transfer.status) && (
+                        <span className="t-small subtle" style={{ marginInlineStart: 6 }}>waiting kiosk</span>
+                      )}
+                      {nextTransferAction(transfer.status) && (
+                        <button className="btn btn-ghost" onClick={() => advanceTransferStatus(transfer, nextTransferAction(transfer.status))}
+                          disabled={transferActionBusy === transfer.id}
+                          style={{ height: 24, fontSize: 11, marginInlineStart: 6 }}>
+                          {transferActionBusy === transfer.id ? "Working" : nextTransferAction(transfer.status).label}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
 
-        <div className="card">
+        <div className="card" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
           <div className="between" style={{ padding: "14px 18px" }}>
             <div>
               <div className="t-h2">{ar ? "احتياجات الأكشاك" : "Kiosk live stock needs"}</div>
@@ -6380,33 +6880,35 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
             </div>
             <span className="badge badge-ai">AI reads verified data</span>
           </div>
-          <table className="tbl">
-            <tbody>
-              {suggestions.map((s) => (
-                <tr key={`${s.kiosk}-${s.item}`}>
-                  <td>
-                    <div style={{ fontWeight: 500 }}>{s.item}</div>
-                    <div className="t-small faint">{s.kiosk}</div>
-                  </td>
-                  <td className="t-num" style={{ textAlign: "end" }}>{s.qty}</td>
-                  <td className="muted">{s.cover}</td>
-                  <td className="muted">{s.reason}</td>
-                  <td style={{ textAlign: "end" }}>
-                    <button className="btn btn-ghost" onClick={() => createSuggestedTransfer(s)}
-                      disabled={busyTransfer === `${s.kiosk}-${s.item}`}
-                      style={{ height: 24, fontSize: 11 }}>
-                      <Icon name="truck" size={11}/>
-                      {busyTransfer === `${s.kiosk}-${s.item}` ? (ar ? "جارٍ التجهيز" : "Drafting") : (ar ? "إنشاء تحويل" : "Create transfer")}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+            <table className="tbl">
+              <tbody>
+                {suggestions.map((s) => (
+                  <tr key={`${s.kiosk}-${s.item}`}>
+                    <td>
+                      <div style={{ fontWeight: 500 }}>{s.item}</div>
+                      <div className="t-small faint">{s.kiosk}</div>
+                    </td>
+                    <td className="t-num" style={{ textAlign: "end" }}>{s.qty}</td>
+                    <td className="muted">{s.cover}</td>
+                    <td className="muted">{s.reason}</td>
+                    <td style={{ textAlign: "end" }}>
+                      <button className="btn btn-ghost" onClick={() => createSuggestedTransfer(s)}
+                        disabled={busyTransfer === `${s.kiosk}-${s.item}`}
+                        style={{ height: 24, fontSize: 11 }}>
+                        <Icon name="truck" size={11}/>
+                        {busyTransfer === `${s.kiosk}-${s.item}` ? (ar ? "جارٍ التجهيز" : "Drafting") : (ar ? "إنشاء تحويل" : "Create transfer")}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
-      <div className="card">
+      <div className="card" style={{ order: 1, flex: "0 0 240px", minHeight: 0, display: "flex", flexDirection: "column" }}>
         <div className="between" style={{ padding: "14px 18px" }}>
           <div className="row" style={{ gap: 8 }}>
             <select className="input" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 160 }}>
@@ -6420,55 +6922,57 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
             <button className="btn btn-ghost" onClick={exportInventory} style={{ height: 28, fontSize: 12 }}><Icon name="download" size={12}/>{ar ? "تصدير" : "Export"}</button>
           </div>
         </div>
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th scope="col">{ar ? "البند" : "Item"}</th>
-              <th scope="col">{ar ? "الفئة" : "Category"}</th>
-              <th scope="col">{ar ? "الموقع" : "Location"}</th>
-              <th scope="col" style={{ textAlign: "end" }}>{ar ? "المخزون" : "Stock"}</th>
-              <th scope="col" style={{ textAlign: "end" }}>{ar ? "نقطة الطلب" : "Reorder at"}</th>
-              <th scope="col" style={{ width: 140 }}>{ar ? "أيام التغطية" : "Days of cover"}</th>
-              <th scope="col">{ar ? "المورد" : "Supplier"}</th>
-              <th scope="col" style={{ textAlign: "end" }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredInv.map((it, i) => {
-              const pct = Math.min(it.days / 14, 1);
-              const tone = it.status === "crit" ? "crit" : it.status === "low" ? "warn" : "ok";
-              return (
-                <tr key={i}>
-                  <td><span style={{ fontWeight: 500 }}>{it.item}</span></td>
-                  <td className="muted">{it.category}</td>
-                  <td className="muted">{it.location}</td>
-                  <td style={{ textAlign: "end" }} className="t-num">{it.stock} <span className="faint">{it.unit}</span></td>
-                  <td style={{ textAlign: "end" }} className="t-num muted">{it.reorder}</td>
-                  <td>
-                    <div className="row" style={{ gap: 8 }}>
-                      <div style={{ flex: 1, height: 6, background: "var(--surface-sunk)", borderRadius: 3 }}>
-                        <div style={{ height: "100%", width: `${pct*100}%`,
-                          background: tone === "crit" ? "var(--crit)" : tone === "warn" ? "var(--warn)" : "var(--ink-1)",
-                          borderRadius: 3 }}/>
+        <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col">{ar ? "البند" : "Item"}</th>
+                <th scope="col">{ar ? "الفئة" : "Category"}</th>
+                <th scope="col">{ar ? "الموقع" : "Location"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "المخزون" : "Stock"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "نقطة الطلب" : "Reorder at"}</th>
+                <th scope="col" style={{ width: 140 }}>{ar ? "أيام التغطية" : "Days of cover"}</th>
+                <th scope="col">{ar ? "المورد" : "Supplier"}</th>
+                <th scope="col" style={{ textAlign: "end" }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredInv.map((it, i) => {
+                const pct = Math.min(it.days / 14, 1);
+                const tone = it.status === "crit" ? "crit" : it.status === "low" ? "warn" : "ok";
+                return (
+                  <tr key={i}>
+                    <td><span style={{ fontWeight: 500 }}>{it.item}</span></td>
+                    <td className="muted">{it.category}</td>
+                    <td className="muted">{it.location}</td>
+                    <td style={{ textAlign: "end" }} className="t-num">{it.stock} <span className="faint">{it.unit}</span></td>
+                    <td style={{ textAlign: "end" }} className="t-num muted">{it.reorder}</td>
+                    <td>
+                      <div className="row" style={{ gap: 8 }}>
+                        <div style={{ flex: 1, height: 6, background: "var(--surface-sunk)", borderRadius: 3 }}>
+                          <div style={{ height: "100%", width: `${pct*100}%`,
+                            background: tone === "crit" ? "var(--crit)" : tone === "warn" ? "var(--warn)" : "var(--ink-1)",
+                            borderRadius: 3 }}/>
+                        </div>
+                        <span className={"t-num " + (tone === "crit" ? "delta-neg" : tone === "warn" ? "" : "muted")}
+                          style={{ fontSize: 12, minWidth: 36, textAlign: "end", color: tone === "warn" ? "var(--warn)" : undefined }}>
+                          {it.days}d
+                        </span>
                       </div>
-                      <span className={"t-num " + (tone === "crit" ? "delta-neg" : tone === "warn" ? "" : "muted")}
-                        style={{ fontSize: 12, minWidth: 36, textAlign: "end", color: tone === "warn" ? "var(--warn)" : undefined }}>
-                        {it.days}d
-                      </span>
-                    </div>
-                  </td>
-                  <td className="muted">{it.supplier}</td>
-                  <td style={{ textAlign: "end" }}>
-                    {tone !== "ok"
-                      ? <button className="btn btn-ghost" onClick={() => openTransferForItem(it)} style={{ height: 24, fontSize: 11 }}>{ar ? "حوّل" : "Allocate"}</button>
-                      : <Icon name="dots" size={14} style={{ color: "var(--ink-3)" }}/>
-                    }
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                    </td>
+                    <td className="muted">{it.supplier}</td>
+                    <td style={{ textAlign: "end" }}>
+                      {tone !== "ok"
+                        ? <button className="btn btn-ghost" onClick={() => openTransferForItem(it)} style={{ height: 24, fontSize: 11 }}>{ar ? "حوّل" : "Allocate"}</button>
+                        : <Icon name="dots" size={14} style={{ color: "var(--ink-3)" }}/>
+                      }
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <Modal open={itemModalOpen} onClose={() => setItemModalOpen(false)}
@@ -6501,69 +7005,6 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
             <button type="button" className="btn btn-ghost" onClick={() => setItemModalOpen(false)}>Cancel</button>
             <button className="btn btn-primary" disabled={itemBusy || !itemDraft.name.trim()}>{itemBusy ? "Creating" : "Create item"}</button>
-          </div>
-        </form>
-      </Modal>
-
-      <Modal open={poModalOpen} onClose={() => setPoModalOpen(false)}
-        title={ar ? "New purchase order" : "Upload invoice"}
-        sub={ar ? "Supplier to warehouse receiving" : "Invoice first, then match items and assign receiving warehouse"}
-        width={700}>
-        <form onSubmit={submitPo} className="col" style={{ gap: 10 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 8 }}>
-            <input className="input" type="file" accept="image/*,.pdf" onChange={(event) => setPoDraft((draft) => ({ ...draft, invoiceName: event.target.files?.[0]?.name || "" }))}/>
-            <input className="input" value={poDraft.invoiceRef} onChange={(event) => setPoDraft((draft) => ({ ...draft, invoiceRef: event.target.value }))} placeholder="Invoice number"/>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 150px", gap: 8 }}>
-            <select className="input" value={poDraft.supplier} onChange={(event) => setPoDraft((draft) => ({ ...draft, supplier: event.target.value }))}>
-              {supplierOptions.length ? supplierOptions.map((supplier) => (
-                <option key={supplier} value={supplier}>{supplier}</option>
-              )) : <option value="">No live suppliers loaded</option>}
-            </select>
-            <select className="input" value={poDraft.warehouse} onChange={(event) => setPoDraft((draft) => ({ ...draft, warehouse: event.target.value }))}>
-              <option value={DEFAULT_WAREHOUSE_NAME}>{DEFAULT_WAREHOUSE_NAME}</option>
-              <option value="Baghdad Area Warehouse">Baghdad Area Warehouse</option>
-            </select>
-            <input className="input" type="date" value={poDraft.scheduleDate} onChange={(event) => setPoDraft((draft) => ({ ...draft, scheduleDate: event.target.value }))}/>
-          </div>
-          <div className="t-small subtle">Structured PO lines. In live mode this creates the official Odoo purchase.order; warehouse stock changes only when the Odoo receipt is received.</div>
-          <div className="col" style={{ gap: 8 }}>
-            {poDraft.lines.map((line, index) => (
-              <div key={index} className="row" style={{ gap: 8 }}>
-                <select className="input" value={line.item} onChange={(event) => {
-                  const picked = inv.find((item) => item.item === event.target.value);
-                  updatePoLine(index, {
-                    item: event.target.value,
-                    unit: picked?.unit || line.unit,
-                    rate: estimatePurchaseRate(picked || event.target.value),
-                  });
-                }} style={{ flex: 1.6 }}>
-                  {inv.map((item) => <option key={item.item} value={item.item}>{item.item}</option>)}
-                </select>
-                <input className="input" value={line.qty} onChange={(event) => updatePoLine(index, { qty: event.target.value })} placeholder="Qty" inputMode="decimal" style={{ flex: 0.55 }}/>
-                <input className="input" value={line.unit} onChange={(event) => updatePoLine(index, { unit: event.target.value })} placeholder="Unit" style={{ flex: 0.5 }}/>
-                <input className="input" value={line.rate} onChange={(event) => updatePoLine(index, { rate: event.target.value })} placeholder="Unit cost" inputMode="numeric" style={{ flex: 0.8 }}/>
-                <div className="t-num muted" style={{ width: 110, textAlign: "end" }}>{fmtMoney(purchaseLineTotal(line))}</div>
-                <button type="button" className="btn btn-ghost" onClick={() => removePoLine(index)} style={{ width: 30, height: 30, padding: 0, justifyContent: "center" }}>
-                  <Icon name="x" size={12}/>
-                </button>
-              </div>
-            ))}
-          </div>
-          <div className="between" style={{ paddingTop: 4 }}>
-            <button type="button" className="btn btn-ghost" onClick={addPoLine} style={{ height: 30, fontSize: 12 }}>
-              <Icon name="plus" size={12}/>Add line
-            </button>
-            <div className="t-num" style={{ fontSize: 14 }}>Total {fmtMoney(purchaseTotal(poDraft.lines))}</div>
-          </div>
-          <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setPoModalOpen(false)}>Cancel</button>
-            <button type="submit" className="btn btn-ghost" disabled={poBusy}>
-              {poBusy ? "Creating..." : "Save draft"}
-            </button>
-            <button type="button" className="btn btn-primary" disabled={poBusy} onClick={(event) => submitPo(event, true)}>
-              {poBusy ? "Creating..." : "Create & send"}
-            </button>
           </div>
         </form>
       </Modal>
@@ -6856,6 +7297,7 @@ function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           </div>
         </form>
       </Modal>
+
     </div>
   );
 }
@@ -7272,10 +7714,11 @@ const RECIPE_INGREDIENTS_AR = {
 
 const recipeProductKey = (value) => String(value || "").trim().toLowerCase();
 
-function ProductsScreen({ lang, bootstrap, sourceOfTruth }) {
+function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const ar = lang === "ar";
   const catalog = useCatalog();
   const { showToast } = useToast();
+  const liveOnly = isLiveOnlyPayload(bootstrap);
   const [filter, setFilter] = React.useState("all");
   const [search, setSearch] = React.useState("");
   const [editingId, setEditingId] = React.useState(null);
@@ -7290,9 +7733,11 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth }) {
     [recipeRows],
   );
 
-  const products = catalog.state.products;
+  const liveProducts = odooProductCatalogRows(bootstrap);
+  const products = liveProducts || catalog.state.products;
+  const ingredientOptions = React.useMemo(() => odooIngredientOptions(bootstrap), [bootstrap]);
   const productHasRecipe = (product) => (
-    Boolean(catalog.state.recipes[product.id]?.lines?.length)
+    Boolean(!liveOnly && catalog.state.recipes[product.id]?.lines?.length)
     || recipeCoverage.has(recipeProductKey(product.name))
   );
   const filtered = products
@@ -7350,11 +7795,31 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth }) {
     setCreateSaving(true);
     setCreateError("");
     try {
-      catalog.upsertProduct(finalProduct);
-      catalog.setRecipe(finalProduct.id, validLines);
+      let savedProduct = finalProduct;
+      if (sourceOfTruth?.enabled) {
+        const created = unwrapOdoo(await sourceOfTruth.upsertProductCatalog({
+          name: finalProduct.name,
+          code: finalProduct.code,
+          category: finalProduct.category,
+          listPrice: finalProduct.price,
+          standardPrice: 0,
+          consumptionMode: validLines.length ? "recipe" : "finished",
+          availableInPos: true,
+        }));
+        savedProduct = {
+          ...finalProduct,
+          id: created?.product?.id || finalProduct.id,
+          odooId: created?.product?.id,
+          code: created?.product?.default_code || finalProduct.code,
+          uom: created?.product?.uom || finalProduct.uom,
+        };
+      } else {
+        catalog.upsertProduct(finalProduct);
+        catalog.setRecipe(finalProduct.id, validLines);
+      }
       if (sourceOfTruth?.enabled && validLines.length) {
         await sourceOfTruth.submitRecipeVersion({
-          itemId: finalProduct.name,
+          itemId: savedProduct.code || savedProduct.name,
           effectiveFrom: new Date().toISOString(),
           ingredients: validLines.map((line) => ({
             ingredientId: line.ingredient,
@@ -7363,7 +7828,9 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth }) {
           })),
           submit: true,
         });
+        await refreshOdoo?.();
       }
+      if (sourceOfTruth?.enabled && !validLines.length) await refreshOdoo?.();
       showToast(
         ar ? `تمت إضافة ${finalProduct.name}` : `Added ${finalProduct.name}`,
         "success",
@@ -7528,7 +7995,7 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth }) {
                   {isEditing && (
                     <tr>
                       <td colSpan={7} style={{ background: "var(--surface-sunk)", padding: "16px 18px" }}>
-                        <ProductEditor product={p} ar={ar} sourceOfTruth={sourceOfTruth} onClose={() => setEditingId(null)}/>
+                        <ProductEditor product={p} ar={ar} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} ingredientOptions={ingredientOptions} liveOnly={liveOnly} onClose={() => setEditingId(null)}/>
                       </td>
                     </tr>
                   )}
@@ -7557,21 +8024,18 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth }) {
         error={createError}
         onCancel={cancelCreate}
         onSave={saveCreate}
+        ingredientOptions={ingredientOptions}
       />
     </div>
   );
 }
 
-function ProductCreateDialog({ ar, open, draft, setDraft, lines, setLines, saving, error, onCancel, onSave }) {
-  const ingredientOptions = React.useMemo(
-    () => MOCK.inventory.map((it) => ({ value: it.item, label: it.item, unit: it.unit })),
-    [],
-  );
-
+function ProductCreateDialog({ ar, open, draft, setDraft, lines, setLines, saving, error, onCancel, onSave, ingredientOptions = [] }) {
   if (!open || !draft) return null;
 
   const addLine = () => {
     const first = ingredientOptions[0];
+    if (!first) return;
     setLines([...lines, { ingredient: first.value, qty: 0, unit: first.unit }]);
   };
   const updateLine = (i, patch) => setLines(lines.map((l, idx) => idx === i ? { ...l, ...patch } : l));
@@ -7714,22 +8178,19 @@ function ProductCreateDialog({ ar, open, draft, setDraft, lines, setLines, savin
   );
 }
 
-function ProductEditor({ product, ar, sourceOfTruth, onClose }) {
+function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOptions = [], liveOnly, onClose }) {
   const catalog = useCatalog();
   const { showToast } = useToast();
   const [draft, setDraft] = React.useState(product);
   const [uploading, setUploading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState("");
-  const recipeLines = catalog.state.recipes[product.id]?.lines ?? [];
+  const recipeLines = liveOnly
+    ? []
+    : catalog.state.recipes[product.id]?.lines ?? [];
   const [lines, setLines] = React.useState(recipeLines);
 
   React.useEffect(() => { setDraft(product); }, [product.id]);
-
-  const ingredientOptions = React.useMemo(
-    () => MOCK.inventory.map((it) => ({ value: it.item, label: it.item, unit: it.unit })),
-    [],
-  );
 
   const onPickFile = async (e) => {
     const file = e.target.files?.[0];
@@ -7751,6 +8212,34 @@ function ProductEditor({ product, ar, sourceOfTruth, onClose }) {
     const trimmed = { ...draft, name: draft.name.trim() || "Untitled", price: Math.max(0, Number(draft.price) || 0) };
     if (!trimmed.image) trimmed.image = slugify(trimmed.name) + "-" + trimmed.id;
     const validLines = lines.filter((l) => l.ingredient && l.qty > 0);
+    if (sourceOfTruth?.enabled) {
+      const saved = unwrapOdoo(await sourceOfTruth.upsertProductCatalog({
+        id: trimmed.odooId || trimmed.code || trimmed.id,
+        name: trimmed.name,
+        code: trimmed.code,
+        category: trimmed.category,
+        listPrice: trimmed.price,
+        standardPrice: trimmed.standardPrice || 0,
+        consumptionMode: validLines.length ? "recipe" : (trimmed.consumptionMode || "finished"),
+        availableInPos: true,
+      }));
+      const productRef = saved?.product?.default_code || trimmed.code || trimmed.name;
+      if (validLines.length) {
+        await sourceOfTruth.submitRecipeVersion({
+          itemId: productRef,
+          effectiveFrom: new Date().toISOString(),
+          ingredients: validLines.map((line) => ({
+            ingredientId: line.ingredient,
+            qty: Number(line.qty) || 0,
+            uom: line.unit,
+          })),
+          submit: true,
+        });
+      }
+      await refreshOdoo?.();
+      showToast(ar ? "Product saved to engine" : "Product saved to engine", "success");
+      return;
+    }
     catalog.upsertProduct(trimmed);
     catalog.setRecipe(trimmed.id, validLines);
     if (sourceOfTruth?.enabled && validLines.length) {
@@ -7793,6 +8282,7 @@ function ProductEditor({ product, ar, sourceOfTruth, onClose }) {
 
   const addLine = () => {
     const first = ingredientOptions[0];
+    if (!first) return;
     setLines([...lines, { ingredient: first.value, qty: 0, unit: first.unit }]);
   };
 
@@ -7944,13 +8434,19 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const { showToast } = useToast();
   const liveOnly = isLiveOnlyPayload(bootstrap);
   const enginePurchaseOrders = odooPurchaseOrderRows(bootstrap);
+  const engineSuppliers = odooSupplierRows(bootstrap);
+  const engineRecurringPurchases = odooRecurringPurchaseRows(bootstrap);
   const inv = odooInventoryRows(bootstrap);
   const [purchaseOrders, setPurchaseOrders] = useState(enginePurchaseOrders);
-  const [supplierRows, setSupplierRows] = useState(canUseDemoFallback(bootstrap) ? MOCK.suppliers : []);
+  const [supplierRows, setSupplierRows] = useState(engineSuppliers);
+  const [recurringRows, setRecurringRows] = useState(engineRecurringPurchases);
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [poModalOpen, setPoModalOpen] = useState(false);
   const [supplierModalOpen, setSupplierModalOpen] = useState(false);
+  const [recurringModalOpen, setRecurringModalOpen] = useState(false);
   const [poBusy, setPoBusy] = useState(false);
+  const [supplierBusy, setSupplierBusy] = useState(false);
+  const [recurringBusy, setRecurringBusy] = useState(false);
   const [poActionBusy, setPoActionBusy] = useState("");
   const [poDraft, setPoDraft] = useState({
     supplier: MOCK.suppliers[0]?.name || "",
@@ -7958,6 +8454,8 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     scheduleDate: tomorrowIsoDate(),
     invoiceRef: "",
     invoiceName: "",
+    invoiceFileBase64: "",
+    invoiceMimeType: "",
     lines: [purchaseLineFromInventory(MOCK.inventory[0])],
   });
   const [supplierDraft, setSupplierDraft] = useState({
@@ -7966,10 +8464,20 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     deliveryCategory: "Same day",
     category: "Produce",
   });
+  const [recurringDraft, setRecurringDraft] = useState({
+    name: "Weekly fresh milk",
+    supplier: "",
+    warehouse: DEFAULT_WAREHOUSE_NAME,
+    frequency: "weekly",
+    weekday: "0",
+    nextDate: tomorrowIsoDate(),
+    lines: [],
+  });
   React.useEffect(() => { setPurchaseOrders(enginePurchaseOrders); }, [bootstrap]);
+  React.useEffect(() => { setRecurringRows(engineRecurringPurchases); }, [bootstrap]);
   React.useEffect(() => {
-    if (!liveOnly) {
-      setSupplierRows(MOCK.suppliers);
+    if (engineSuppliers.length) {
+      setSupplierRows(engineSuppliers);
       return;
     }
     const bySupplier = new Map();
@@ -7990,14 +8498,14 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     });
     setSupplierRows(Array.from(bySupplier.values()));
     setPoDraft((draft) => draft.supplier || draft.lines?.length ? { ...draft, supplier: "", lines: [] } : draft);
-  }, [bootstrap, liveOnly]);
+  }, [bootstrap, engineSuppliers.length, liveOnly]);
   const openPurchaseOrders = purchaseOrders.filter((po) => !["done", "received", "cancel", "cancelled"].includes(String(po.status).toLowerCase()));
   const supplierCategories = ["all", ...Array.from(new Set(supplierRows.map((supplier) => supplier.category)))];
   const filteredSuppliers = categoryFilter === "all"
     ? supplierRows
     : supplierRows.filter((supplier) => supplier.category === categoryFilter);
   const priceChangeRows = liveOnly ? [] : [
-    ["Milk (whole) 1L", "ctn", "Baghdad Dairy", "Same day"],
+    ["Milk (whole) 1L", "L", "Baghdad Dairy", "Same day"],
     ["Oranges", "kg", "Najaf Fresh", "Next morning"],
     ["Pistachio paste", "kg", "Mesopotamia Foods", "2-3 days"],
     ["Cups 12oz", "pc", "Iraq Pack", "Weekly"],
@@ -8010,9 +8518,22 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       scheduleDate: draft.scheduleDate || tomorrowIsoDate(),
       invoiceRef: draft.invoiceRef || "",
       invoiceName: draft.invoiceName || "",
+      invoiceFileBase64: draft.invoiceFileBase64 || "",
+      invoiceMimeType: draft.invoiceMimeType || "",
       lines: draft.lines?.length ? draft.lines : [purchaseLineFromInventory(inv[0] || (liveOnly ? null : MOCK.inventory[0]))].filter((line) => line.item),
     }));
     setPoModalOpen(true);
+  };
+  const openRecurringModal = () => {
+    const firstItem = inv[0] || (liveOnly ? null : MOCK.inventory[0]);
+    setRecurringDraft((draft) => ({
+      ...draft,
+      supplier: draft.supplier || supplierRows[0]?.name || "",
+      warehouse: draft.warehouse || DEFAULT_WAREHOUSE_NAME,
+      nextDate: draft.nextDate || tomorrowIsoDate(),
+      lines: draft.lines?.length ? draft.lines : [purchaseLineFromInventory(firstItem)].filter((line) => line.item),
+    }));
+    setRecurringModalOpen(true);
   };
   const updatePoLine = (index, patch) => {
     setPoDraft((draft) => ({
@@ -8030,6 +8551,106 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   };
   const removePoLine = (index) => {
     setPoDraft((draft) => ({ ...draft, lines: draft.lines.filter((_, i) => i !== index) }));
+  };
+  const updateRecurringLine = (index, patch) => {
+    setRecurringDraft((draft) => ({
+      ...draft,
+      lines: draft.lines.map((line, i) => (i === index ? { ...line, ...patch } : line)),
+    }));
+  };
+  const addRecurringLine = () => {
+    const item = inv[0] || (liveOnly ? null : MOCK.inventory[0]);
+    if (!item) {
+      showToast("No live inventory items loaded for recurring purchases", "warn");
+      return;
+    }
+    setRecurringDraft((draft) => ({ ...draft, lines: [...draft.lines, purchaseLineFromInventory(item)] }));
+  };
+  const removeRecurringLine = (index) => {
+    setRecurringDraft((draft) => ({ ...draft, lines: draft.lines.filter((_, i) => i !== index) }));
+  };
+  const submitRecurring = async (event) => {
+    event.preventDefault();
+    const lines = recurringDraft.lines
+      .filter((line) => line.item && Number(line.qty || 0) > 0)
+      .map((line) => ({
+        item: line.item,
+        qty: Number(line.qty || 0),
+        unit: line.unit || inv.find((item) => item.item === line.item)?.unit || "",
+        rate: Number(line.rate || 0),
+      }));
+    if (!recurringDraft.name.trim() || !recurringDraft.supplier || !lines.length || lines.some((line) => line.rate <= 0)) {
+      showToast("Recurring purchase needs a name, supplier, item lines, quantities, and rates", "warn");
+      return;
+    }
+    setRecurringBusy(true);
+    try {
+      let saved = null;
+      if (sourceOfTruth?.enabled) {
+        saved = unwrapOdoo(await sourceOfTruth.createRecurringPurchase({
+          name: recurringDraft.name.trim(),
+          supplier: recurringDraft.supplier,
+          warehouse: recurringDraft.warehouse,
+          frequency: recurringDraft.frequency,
+          weekday: recurringDraft.weekday,
+          nextDate: recurringDraft.nextDate,
+          active: true,
+          items: lines.map((line) => ({
+            itemId: line.item,
+            qty: line.qty,
+            rate: line.rate,
+            uom: line.unit,
+          })),
+        }));
+        await refreshOdoo?.();
+      }
+      const rawPlan = saved?.recurring_purchase;
+      const plan = rawPlan ? {
+        id: rawPlan.id,
+        name: rawPlan.name,
+        supplier: rawPlan.supplier,
+        warehouse: rawPlan.warehouse,
+        frequency: rawPlan.frequency,
+        weekday: WEEKDAY_LABELS[Number(rawPlan.weekday || 0)] || rawPlan.weekday,
+        nextDate: rawPlan.nextDate,
+        items: rawPlan.lines?.map((line) => `${line.product} x ${line.qty}`).join(", ") || "No lines",
+        active: rawPlan.active,
+      } : {
+        id: `demo-recurring-${Date.now()}`,
+        name: recurringDraft.name.trim(),
+        supplier: recurringDraft.supplier,
+        warehouse: recurringDraft.warehouse,
+        frequency: recurringDraft.frequency,
+        weekday: WEEKDAY_LABELS[Number(recurringDraft.weekday || 0)] || recurringDraft.weekday,
+        nextDate: recurringDraft.nextDate,
+        items: purchaseLineSummary(lines),
+        active: true,
+      };
+      setRecurringRows((rows) => [plan, ...rows.filter((row) => row.id !== plan.id)]);
+      setRecurringModalOpen(false);
+      setRecurringDraft((draft) => ({ ...draft, name: "", lines: [] }));
+      showToast(sourceOfTruth?.enabled ? "Recurring purchase saved to Odoo" : "Recurring purchase saved", "success");
+    } catch (error) {
+      showToast(error?.message || "Could not save recurring purchase", "warn");
+    } finally {
+      setRecurringBusy(false);
+    }
+  };
+  const runRecurringPurchase = async (plan) => {
+    if (!sourceOfTruth?.enabled) {
+      showToast("Recurring run is available when the Odoo engine is connected", "warn");
+      return;
+    }
+    setRecurringBusy(true);
+    try {
+      const result = unwrapOdoo(await sourceOfTruth.recurringPurchaseAction({ id: plan.id, action: "run" }));
+      await refreshOdoo?.();
+      showToast(`Created purchase order ${result?.purchase_order?.name || ""}`.trim(), "success");
+    } catch (error) {
+      showToast(error?.message || "Could not run recurring purchase", "warn");
+    } finally {
+      setRecurringBusy(false);
+    }
   };
   const submitPo = async (event, submit = false) => {
     event.preventDefault();
@@ -8054,6 +8675,10 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           warehouse: poDraft.warehouse,
           scheduleDate: poDraft.scheduleDate,
           submit: true,
+          invoiceRef: poDraft.invoiceRef,
+          invoiceName: poDraft.invoiceName,
+          invoiceFileBase64: poDraft.invoiceFileBase64,
+          invoiceMimeType: poDraft.invoiceMimeType,
           items: lines.map((line) => ({ itemId: line.item, qty: line.qty, rate: line.rate })),
         }));
         await refreshOdoo?.();
@@ -8070,6 +8695,7 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         lines,
       };
       setPurchaseOrders((rows) => [next, ...rows]);
+      setPoDraft((draft) => ({ ...draft, invoiceRef: "", invoiceName: "", invoiceFileBase64: "", invoiceMimeType: "", lines: [] }));
       setPoModalOpen(false);
       showToast(ar ? "Purchase order created" : `${sourceOfTruth?.enabled ? "Odoo PO" : "Demo PO"} created - ${next.supplier}`, "success");
     } catch (error) {
@@ -8101,7 +8727,26 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     setPurchaseOrders((rows) => rows.map((row) => (row.po === po.po ? { ...row, status: nextStatus } : row)));
     showToast(`PO ${po.po} moved to ${nextStatus}`, "success");
   };
-  const submitSupplier = (event) => {
+  const readInvoiceFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      setPoDraft((draft) => ({ ...draft, invoiceName: "", invoiceFileBase64: "", invoiceMimeType: "" }));
+      return;
+    }
+    try {
+      const encoded = await readFileAsBase64(file);
+      setPoDraft((draft) => ({
+        ...draft,
+        invoiceName: file.name,
+        invoiceFileBase64: encoded,
+        invoiceMimeType: file.type || "application/octet-stream",
+      }));
+    } catch (error) {
+      showToast(error?.message || "Could not read invoice file", "warn");
+    }
+  };
+
+  const submitSupplier = async (event) => {
     event.preventDefault();
     if (!supplierDraft.name.trim()) {
       showToast(ar ? "Supplier name is required" : "Supplier name is required", "warn");
@@ -8116,10 +8761,27 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       lastOrder: "New",
       status: "good",
     };
-    setSupplierRows((rows) => [next, ...rows]);
-    setSupplierDraft({ name: "", address: "", deliveryCategory: "Same day", category: "Produce" });
-    setSupplierModalOpen(false);
-    showToast(ar ? "Supplier added" : `Supplier added - ${next.name}`, "success");
+    setSupplierBusy(true);
+    try {
+      let created = null;
+      if (sourceOfTruth?.enabled) {
+        created = unwrapOdoo(await sourceOfTruth.createSupplier({
+          name: next.name,
+          address: next.address,
+          category: next.category,
+          deliveryCategory: next.deliveryCategory,
+        }));
+        await refreshOdoo?.();
+      }
+      setSupplierRows((rows) => [created?.supplier || next, ...rows.filter((row) => row.name !== next.name)]);
+      setSupplierDraft({ name: "", address: "", deliveryCategory: "Same day", category: "Produce" });
+      setSupplierModalOpen(false);
+      showToast(ar ? "Supplier added" : `Supplier added - ${next.name}`, "success");
+    } catch (error) {
+      showToast(error?.message || "Could not add supplier", "warn");
+    } finally {
+      setSupplierBusy(false);
+    }
   };
   return (
     <div className="col" style={{ gap: 14 }}>
@@ -8207,12 +8869,55 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
 
       <div className="card">
         <div className="between" style={{ padding: "14px 18px" }}>
+          <div>
+            <div className="t-h2">{ar ? "Recurring purchases" : "Recurring purchases"}</div>
+            <div className="t-small subtle">{ar ? "Plans create purchase orders; receiving stays human-confirmed" : "Plans create purchase orders; receiving stays human-confirmed"}</div>
+          </div>
+          <button className="btn btn-ghost" onClick={openRecurringModal} style={{ height: 28, fontSize: 12 }}>
+            <Icon name="plus" size={12}/>{ar ? "Schedule" : "Schedule"}
+          </button>
+        </div>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th scope="col">{ar ? "Plan" : "Plan"}</th>
+              <th scope="col">{ar ? "Supplier" : "Supplier"}</th>
+              <th scope="col">{ar ? "Warehouse" : "Warehouse"}</th>
+              <th scope="col">{ar ? "Schedule" : "Schedule"}</th>
+              <th scope="col">{ar ? "Items" : "Items"}</th>
+              <th scope="col" style={{ textAlign: "end" }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {recurringRows.map((plan) => (
+              <tr key={plan.id || plan.name}>
+                <td style={{ fontWeight: 500 }}>{plan.name}</td>
+                <td className="muted">{plan.supplier}</td>
+                <td className="muted">{plan.warehouse}</td>
+                <td><span className="badge">{plan.frequency} {plan.weekday || ""} - {plan.nextDate || "-"}</span></td>
+                <td className="muted">{plan.items}</td>
+                <td style={{ textAlign: "end" }}>
+                  <button className="btn btn-ghost" onClick={() => runRecurringPurchase(plan)} disabled={recurringBusy || !sourceOfTruth?.enabled} style={{ height: 24, fontSize: 11 }}>
+                    {ar ? "Create PO" : "Create PO"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {!recurringRows.length && (
+              <tr><td colSpan={6} className="muted" style={{ textAlign: "center", padding: 20 }}>No recurring purchase plans yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="card">
+        <div className="between" style={{ padding: "14px 18px" }}>
           <div className="t-h2">{ar ? "الموردون" : "Suppliers"}</div>
           <div className="row" style={{ gap: 6 }}>
             <select className="input" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 150 }}>
               {supplierCategories.map((category) => <option key={category} value={category}>{category === "all" ? "All categories" : category}</option>)}
             </select>
-            <button className="btn btn-primary" onClick={() => setSupplierModalOpen(true)} disabled={liveOnly} style={{ height: 28, fontSize: 12 }}><Icon name="plus" size={12}/>{ar ? "مورد جديد" : "Add supplier"}</button>
+            <button className="btn btn-primary" onClick={() => setSupplierModalOpen(true)} style={{ height: 28, fontSize: 12 }}><Icon name="plus" size={12}/>{ar ? "مورد جديد" : "Add supplier"}</button>
           </div>
         </div>
         <table className="tbl">
@@ -8252,10 +8957,14 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       </div>
 
       <Modal open={poModalOpen} onClose={() => setPoModalOpen(false)}
-        title={ar ? "New purchase order" : "New purchase order"}
-        sub={ar ? "Supplier to warehouse receiving" : "Supplier to warehouse receiving"}
+        title={ar ? "New purchase order" : "Upload invoice"}
+        sub={ar ? "Supplier to warehouse receiving" : "Invoice first, then match items and assign receiving warehouse"}
         width={700}>
         <form onSubmit={(event) => submitPo(event, false)} className="col" style={{ gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 8 }}>
+            <input className="input" type="file" accept="image/*,.pdf" onChange={readInvoiceFile}/>
+            <input className="input" value={poDraft.invoiceRef} onChange={(event) => setPoDraft((draft) => ({ ...draft, invoiceRef: event.target.value }))} placeholder="Invoice number"/>
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 150px", gap: 8 }}>
           <select className="input" value={poDraft.supplier} onChange={(event) => setPoDraft((draft) => ({ ...draft, supplier: event.target.value }))}>
             {supplierRows.length ? supplierRows.map((supplier) => <option key={supplier.name} value={supplier.name}>{supplier.name}</option>) : <option value="">No live suppliers loaded</option>}
@@ -8317,7 +9026,68 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           </div>
           <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
             <button type="button" className="btn btn-ghost" onClick={() => setSupplierModalOpen(false)}>Cancel</button>
-            <button type="submit" className="btn btn-primary">Add supplier</button>
+            <button type="submit" className="btn btn-primary" disabled={supplierBusy}>{supplierBusy ? "Adding..." : "Add supplier"}</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={recurringModalOpen} onClose={() => setRecurringModalOpen(false)}
+        title={ar ? "Recurring purchase" : "Recurring purchase"}
+        sub={ar ? "Create PO plans; receipt remains manual" : "Create PO plans; receipt remains manual"}
+        width={700}>
+        <form onSubmit={submitRecurring} className="col" style={{ gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 120px", gap: 8 }}>
+            <input className="input" value={recurringDraft.name} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="Plan name"/>
+            <select className="input" value={recurringDraft.supplier} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, supplier: event.target.value }))}>
+              {supplierRows.length ? supplierRows.map((supplier) => <option key={supplier.name} value={supplier.name}>{supplier.name}</option>) : <option value="">No live suppliers loaded</option>}
+            </select>
+            <select className="input" value={recurringDraft.frequency} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, frequency: event.target.value }))}>
+              <option value="weekly">Weekly</option>
+              <option value="daily">Daily</option>
+              <option value="monthly">Monthly</option>
+            </select>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 160px 160px", gap: 8 }}>
+            <select className="input" value={recurringDraft.warehouse} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, warehouse: event.target.value }))}>
+              <option value={DEFAULT_WAREHOUSE_NAME}>{DEFAULT_WAREHOUSE_NAME}</option>
+              <option value="Baghdad Area Warehouse">Baghdad Area Warehouse</option>
+            </select>
+            <select className="input" value={recurringDraft.weekday} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, weekday: event.target.value }))}>
+              {WEEKDAY_LABELS.map((day, index) => <option key={day} value={String(index)}>{day}</option>)}
+            </select>
+            <input className="input" type="date" value={recurringDraft.nextDate} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, nextDate: event.target.value }))}/>
+          </div>
+          <div className="col" style={{ gap: 8 }}>
+            {recurringDraft.lines.map((line, index) => (
+              <div key={index} className="row" style={{ gap: 8 }}>
+                <select className="input" value={line.item} onChange={(event) => {
+                  const picked = inv.find((item) => item.item === event.target.value);
+                  updateRecurringLine(index, {
+                    item: event.target.value,
+                    unit: picked?.unit || line.unit,
+                    rate: estimatePurchaseRate(picked || event.target.value),
+                  });
+                }} style={{ flex: 1.6 }}>
+                  {inv.map((item) => <option key={item.item} value={item.item}>{item.item}</option>)}
+                </select>
+                <input className="input" value={line.qty} onChange={(event) => updateRecurringLine(index, { qty: event.target.value })} placeholder="Qty" inputMode="decimal" style={{ flex: 0.55 }}/>
+                <input className="input" value={line.unit} onChange={(event) => updateRecurringLine(index, { unit: event.target.value })} placeholder="Unit" style={{ flex: 0.5 }}/>
+                <input className="input" value={line.rate} onChange={(event) => updateRecurringLine(index, { rate: event.target.value })} placeholder="Unit cost" inputMode="numeric" style={{ flex: 0.8 }}/>
+                <button type="button" className="btn btn-ghost" onClick={() => removeRecurringLine(index)} style={{ width: 30, height: 30, padding: 0, justifyContent: "center" }}>
+                  <Icon name="x" size={12}/>
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="between" style={{ paddingTop: 4 }}>
+            <button type="button" className="btn btn-ghost" onClick={addRecurringLine} style={{ height: 30, fontSize: 12 }}>
+              <Icon name="plus" size={12}/>Add line
+            </button>
+            <div className="t-num" style={{ fontSize: 14 }}>Planned total {fmtMoney(purchaseTotal(recurringDraft.lines))}</div>
+          </div>
+          <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+            <button type="button" className="btn btn-ghost" onClick={() => setRecurringModalOpen(false)}>Cancel</button>
+            <button type="submit" className="btn btn-primary" disabled={recurringBusy}>{recurringBusy ? "Saving..." : "Save plan"}</button>
           </div>
         </form>
       </Modal>
@@ -8449,10 +9219,44 @@ function StaffScreen({ lang, bootstrap }) {
   );
 }
 
-function HRPayrollScreen({ lang, bootstrap }) {
+function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const ar = lang === "ar";
   const { showToast } = useToast();
   const liveOnly = isLiveOnlyPayload(bootstrap);
+  const chainHrSnapshot = odooHrSnapshot(bootstrap);
+  const [payrollSnapshot, setPayrollSnapshot] = useState(null);
+  const hrSnapshot = useMemo(() => {
+    if (!payrollSnapshot) return chainHrSnapshot;
+    return {
+      ...chainHrSnapshot,
+      employees: payrollSnapshot.employees?.length ? payrollSnapshot.employees : chainHrSnapshot.employees,
+      attendance: payrollSnapshot.attendance?.length ? payrollSnapshot.attendance : chainHrSnapshot.attendance,
+      adjustments: payrollSnapshot.adjustments || chainHrSnapshot.adjustments || [],
+      payrollRuns: payrollSnapshot.payrollRuns || chainHrSnapshot.payrollRuns || [],
+    };
+  }, [chainHrSnapshot, payrollSnapshot]);
+  const liveStaffRows = useMemo(() => staffRowsFromHrEmployees(hrSnapshot.employees || []), [hrSnapshot]);
+  useEffect(() => {
+    if (!liveOnly || !sourceOfTruth?.enabled) return undefined;
+    let active = true;
+    sourceOfTruth.getHrSnapshot()
+      .then((result) => {
+        if (active) setPayrollSnapshot(unwrapOdoo(result));
+      })
+      .catch((error) => {
+        if (active) showToast(compactError(error) || "Could not refresh HR payroll snapshot", "warn");
+      });
+    return () => { active = false; };
+  }, [liveOnly, sourceOfTruth, bootstrap]);
+  const kioskOptions = useMemo(() => {
+    const rows = odooKioskRows(bootstrap).map((kiosk) => ({
+      id: kiosk.id || kiosk.kiosk_code,
+      label: `${kiosk.id || kiosk.kiosk_code} ${kiosk.name || ""}`.trim(),
+    })).filter((kiosk) => kiosk.id);
+    if (rows.length || liveOnly) return rows;
+    return MOCK.kiosks.map((kiosk) => ({ id: kiosk.id, label: `${kiosk.id} ${kiosk.name}` }));
+  }, [bootstrap, liveOnly]);
+  const defaultKioskId = kioskOptions[0]?.id || "";
   const cashierRows = odooCashierPerformanceRows(bootstrap);
   const underReview = cashierRows.filter((row) => row.shortage < 0).length;
   const [roleFilter, setRoleFilter] = useState("all");
@@ -8460,6 +9264,8 @@ function HRPayrollScreen({ lang, bootstrap }) {
   const [payrollStatus, setPayrollStatus] = useState("draft");
   const [expenseModalOpen, setExpenseModalOpen] = useState(false);
   const [adjustmentModalOpen, setAdjustmentModalOpen] = useState(false);
+  const [shiftModalOpen, setShiftModalOpen] = useState(false);
+  const [coverageModalOpen, setCoverageModalOpen] = useState(false);
   const [expenseDraft, setExpenseDraft] = useState({ name: "", category: "Operations", amount: "" });
   const [adjustmentDraft, setAdjustmentDraft] = useState({
     staff: liveOnly ? "" : MOCK.staff[2]?.name || "",
@@ -8478,9 +9284,26 @@ function HRPayrollScreen({ lang, bootstrap }) {
   const [staffDraft, setStaffDraft] = useState({
     name: "",
     role: "Cashier",
-    kiosk: liveOnly ? "" : MOCK.kiosks[0]?.id || "K-01",
+    kiosk: liveOnly ? defaultKioskId : MOCK.kiosks[0]?.id || "K-01",
     salary: "1500000",
     hours: "168",
+  });
+  const [shiftDraft, setShiftDraft] = useState({
+    employee: "",
+    kiosk: defaultKioskId,
+    date: todayIsoDate(),
+    role: "Cashier",
+    start: "08:00",
+    end: "16:00",
+    note: "",
+  });
+  const [coverageDraft, setCoverageDraft] = useState({
+    kiosk: defaultKioskId,
+    dayOfWeek: "0",
+    role: "cashier",
+    start: "08:00",
+    end: "16:00",
+    requiredCount: "2",
   });
   const [adjustments, setAdjustments] = useState(liveOnly ? [] : [
     { staff: "Karim Fahmy", type: "deduction", amount: 32_000, reason: "Cash shortage pending review", status: "hold" },
@@ -8488,7 +9311,50 @@ function HRPayrollScreen({ lang, bootstrap }) {
     { staff: "Sara Younis", type: "deduction", amount: 110_000, reason: "Unpaid leave", status: "approved" },
     { staff: "Rashid Al-Tikriti", type: "bonus", amount: 85_000, reason: "Warehouse overtime", status: "approved" },
   ]);
-  const attendanceRows = liveOnly ? [] : [
+  const liveAdjustmentRows = useMemo(() => (
+    (hrSnapshot.adjustments || []).map((row) => ({
+      id: row.id,
+      staff: row.employee,
+      type: row.type,
+      amount: Number(row.amount || 0),
+      reason: row.reason || "Payroll adjustment",
+      status: row.state === "approved" ? "approved" : row.state === "rejected" ? "rejected" : "hold",
+    }))
+  ), [hrSnapshot]);
+  const activeAdjustments = liveOnly ? liveAdjustmentRows : adjustments;
+  const liveCoverageGaps = hrSnapshot.coverageGaps || [];
+  const liveShiftRows = (hrSnapshot.shifts || []).map((shift) => ({
+    ...shift,
+    roleLabel: hrRoleLabel(shift.role),
+    time: `${hourToTime(shift.startHour)}-${hourToTime(shift.endHour)}`,
+    staff: shift.employee,
+  }));
+  const demoShiftRows = [
+    { id: "demo-1", employee: "Maya Ahmed", kiosk: "K-01", kioskName: "Karrada Center", date: todayIsoDate(), roleLabel: "Cashier", time: "08:00-16:00", plannedHours: 8, state: "planned" },
+    { id: "demo-2", employee: "Yusuf Saleh", kiosk: "K-02", kioskName: "Mansour District", date: todayIsoDate(), roleLabel: "Barista", time: "10:00-18:00", plannedHours: 8, state: "planned" },
+  ];
+  const scheduleRows = liveOnly ? liveShiftRows : demoShiftRows;
+  const coverageGaps = liveOnly ? liveCoverageGaps : [
+    { ruleId: "demo-gap", date: todayIsoDate(), kiosk: "K-04", kioskName: "Zayouna Plaza", role: "cashier", startHour: 8, endHour: 16, requiredCount: 2, assignedCount: 1, missingCount: 1, severity: "warning" },
+  ];
+  const attendanceRows = liveOnly ? [
+    ...coverageGaps.slice(0, 6).map((gap) => ({
+      staff: "Unassigned",
+      kiosk: gap.kiosk,
+      issue: `${gap.missingCount} missing ${hrRoleLabel(gap.role)} - ${hourToTime(gap.startHour)}-${hourToTime(gap.endHour)}`,
+      hours: Number(gap.endHour || 0) - Number(gap.startHour || 0),
+      impact: 0,
+      status: "hold",
+    })),
+    ...(hrSnapshot.attendance || []).slice(0, 6).map((row) => ({
+      staff: row.employee,
+      kiosk: row.kiosk,
+      issue: row.checkOut ? "Attendance logged" : "Open attendance",
+      hours: Math.round(Number(row.workedHours || 0)),
+      impact: 0,
+      status: row.checkOut ? "approved" : "ready",
+    })),
+  ] : [
     { staff: "Sara Younis", kiosk: "K-04", issue: "Leave", hours: 88, impact: -110_000, status: "approved" },
     { staff: "Karim Fahmy", kiosk: "K-07", issue: "Cash shortage review", hours: 168, impact: -32_000, status: "hold" },
     { staff: "Rashid Al-Tikriti", kiosk: "Central", issue: "Overtime", hours: 184, impact: 85_000, status: "approved" },
@@ -8500,13 +9366,26 @@ function HRPayrollScreen({ lang, bootstrap }) {
     setAdjustments([]);
     setLocalStaff([]);
     setAdjustmentDraft((draft) => draft.staff ? { ...draft, staff: "" } : draft);
-    setStaffDraft((draft) => draft.kiosk ? { ...draft, kiosk: "" } : draft);
   }, [liveOnly]);
-  const allStaff = useMemo(() => [...(liveOnly ? [] : MOCK.staff), ...localStaff], [liveOnly, localStaff]);
+  const allStaff = useMemo(() => [...(liveOnly ? liveStaffRows : MOCK.staff), ...localStaff], [liveOnly, liveStaffRows, localStaff]);
+  useEffect(() => {
+    if (!liveOnly) return;
+    const staffId = allStaff[0]?.id || "";
+    setStaffDraft((draft) => ({ ...draft, kiosk: draft.kiosk || defaultKioskId }));
+    setShiftDraft((draft) => ({
+      ...draft,
+      employee: draft.employee || staffId,
+      kiosk: draft.kiosk || defaultKioskId,
+    }));
+    setCoverageDraft((draft) => ({ ...draft, kiosk: draft.kiosk || defaultKioskId }));
+  }, [allStaff, defaultKioskId, liveOnly]);
   const roles = ["all", ...Array.from(new Set(allStaff.map((person) => person.role)))];
-  const kiosks = ["all", ...Array.from(new Set(allStaff.map((person) => person.kiosk)))];
+  const kiosks = ["all", ...Array.from(new Set([
+    ...kioskOptions.map((kiosk) => kiosk.id),
+    ...allStaff.map((person) => person.kiosk),
+  ].filter(Boolean)))];
   const payrollRows = useMemo(() => allStaff.map((person) => {
-    const personAdjustments = adjustments.filter((item) => item.staff === person.name);
+    const personAdjustments = activeAdjustments.filter((item) => item.staff === person.name);
     const hourlyRate = person.salary / Math.max(person.hours, 1);
     const overtimeHours = Math.max(0, person.hours - 168);
     const overtimePay = Math.round(overtimeHours * hourlyRate * 1.25);
@@ -8530,7 +9409,7 @@ function HRPayrollScreen({ lang, bootstrap }) {
       netPay: Math.max(0, Math.round(person.salary + overtimePay + bonus - advance - deduction)),
       payrollStatus: hold ? "review" : person.status === "leave" ? "leave-adjusted" : "ready",
     };
-  }), [adjustments, allStaff]);
+  }), [activeAdjustments, allStaff]);
   const filteredRoster = payrollRows.filter((person) => (
     (roleFilter === "all" || person.role === roleFilter)
     && (kioskFilter === "all" || person.kiosk === kioskFilter)
@@ -8541,6 +9420,14 @@ function HRPayrollScreen({ lang, bootstrap }) {
   const adjustmentTotal = payrollRows.reduce((sum, person) => sum + person.bonus + person.overtimePay - person.advance - person.deduction, 0);
   const payrollReviewCount = payrollRows.filter((person) => person.payrollStatus === "review").length;
   const avgWeeklyHours = Math.round(allStaff.reduce((sum, person) => sum + person.hours, 0) / Math.max(allStaff.length, 1) / 4);
+  const missingPeople = coverageGaps.reduce((sum, gap) => sum + Number(gap.missingCount || 0), 0);
+  const plannedWeeklyHours = Math.round(scheduleRows.reduce((sum, shift) => sum + Number(shift.plannedHours || 0), 0));
+  const livePayrollRuns = liveOnly ? (hrSnapshot.payrollRuns || []) : [];
+  const latestPayrollRun = livePayrollRuns[0] || null;
+  useEffect(() => {
+    if (!liveOnly) return;
+    setPayrollStatus(latestPayrollRun?.state || "draft");
+  }, [latestPayrollRun?.id, latestPayrollRun?.state, liveOnly]);
   const payrollStatusLabel = payrollStatus === "approved" ? "Approved" : payrollStatus === "reviewed" ? "Reviewed" : "Draft";
   const payrollStatusBadge = payrollStatus === "approved" ? "badge-pos" : payrollStatus === "reviewed" ? "badge-warn" : "";
 
@@ -8560,13 +9447,35 @@ function HRPayrollScreen({ lang, bootstrap }) {
     showToast("Expense recorded", "success");
   };
 
-  const submitStaff = (event) => {
+  const submitStaff = async (event) => {
     event.preventDefault();
     const name = staffDraft.name.trim();
     const salary = Number(staffDraft.salary || 0);
     const hours = Number(staffDraft.hours || 0);
     if (!name || salary <= 0 || hours <= 0) {
       showToast(ar ? "الاسم والراتب والساعات مطلوبة" : "Name, salary, and hours are required", "warn");
+      return;
+    }
+    if (liveOnly && !staffDraft.kiosk) {
+      showToast("Pick a live kiosk before adding staff", "warn");
+      return;
+    }
+    if (liveOnly && sourceOfTruth?.enabled) {
+      try {
+        await sourceOfTruth.createHrEmployee({
+          name,
+          role: normalizeHrRole(staffDraft.role),
+          kiosk: staffDraft.kiosk,
+          monthlySalary: salary,
+          expectedMonthlyHours: hours,
+        });
+        await refreshOdoo?.();
+        setStaffDraft({ name: "", role: "Cashier", kiosk: staffDraft.kiosk || defaultKioskId, salary: "1500000", hours: "168" });
+        setStaffModalOpen(false);
+        showToast(`Added ${name} to live HR`, "success");
+      } catch (error) {
+        showToast(compactError(error) || "Could not add live staff", "warn");
+      }
       return;
     }
     setLocalStaff((rows) => [
@@ -8583,7 +9492,7 @@ function HRPayrollScreen({ lang, bootstrap }) {
     setStaffDraft({
       name: "",
       role: "Cashier",
-      kiosk: liveOnly ? "" : MOCK.kiosks[0]?.id || "K-01",
+      kiosk: liveOnly ? defaultKioskId : MOCK.kiosks[0]?.id || "K-01",
       salary: "1500000",
       hours: "168",
     });
@@ -8591,11 +9500,99 @@ function HRPayrollScreen({ lang, bootstrap }) {
     showToast(ar ? `تمت إضافة ${name}` : `Added ${name}`, "success");
   };
 
-  const submitAdjustment = (event) => {
+  const submitShift = async (event) => {
+    event.preventDefault();
+    if (!shiftDraft.employee || !shiftDraft.kiosk || !shiftDraft.date) {
+      showToast("Shift needs staff, kiosk, and date", "warn");
+      return;
+    }
+    const startHour = timeToHour(shiftDraft.start);
+    const endHour = timeToHour(shiftDraft.end);
+    if (endHour <= startHour) {
+      showToast("Shift end time must be after start time", "warn");
+      return;
+    }
+    if (liveOnly && sourceOfTruth?.enabled) {
+      try {
+        await sourceOfTruth.createHrShift({
+          employee: shiftDraft.employee,
+          kiosk: shiftDraft.kiosk,
+          date: shiftDraft.date,
+          role: normalizeHrRole(shiftDraft.role),
+          startHour,
+          endHour,
+          note: shiftDraft.note,
+        });
+        await refreshOdoo?.();
+        setShiftModalOpen(false);
+        showToast("Shift added to live work week", "success");
+      } catch (error) {
+        showToast(compactError(error) || "Could not add shift", "warn");
+      }
+      return;
+    }
+    setShiftModalOpen(false);
+    showToast("Demo shift prepared", "success");
+  };
+
+  const submitCoverageRule = async (event) => {
+    event.preventDefault();
+    if (!coverageDraft.kiosk) {
+      showToast("Coverage rule needs a kiosk", "warn");
+      return;
+    }
+    const startHour = timeToHour(coverageDraft.start);
+    const endHour = timeToHour(coverageDraft.end);
+    const requiredCount = Number(coverageDraft.requiredCount || 0);
+    if (endHour <= startHour || requiredCount <= 0) {
+      showToast("Coverage needs valid time and headcount", "warn");
+      return;
+    }
+    if (liveOnly && sourceOfTruth?.enabled) {
+      try {
+        await sourceOfTruth.createHrCoverageRule({
+          kiosk: coverageDraft.kiosk,
+          dayOfWeek: coverageDraft.dayOfWeek,
+          role: coverageDraft.role,
+          startHour,
+          endHour,
+          requiredCount,
+        });
+        await refreshOdoo?.();
+        setCoverageModalOpen(false);
+        showToast("Coverage rule added", "success");
+      } catch (error) {
+        showToast(compactError(error) || "Could not add coverage rule", "warn");
+      }
+      return;
+    }
+    setCoverageModalOpen(false);
+    showToast("Demo coverage rule prepared", "success");
+  };
+
+  const submitAdjustment = async (event) => {
     event.preventDefault();
     const amount = Number(adjustmentDraft.amount || 0);
     if (!adjustmentDraft.staff || amount <= 0) {
       showToast("Adjustment needs staff and amount", "warn");
+      return;
+    }
+    if (liveOnly && sourceOfTruth?.enabled) {
+      try {
+        await sourceOfTruth.submitPayrollAdjustment({
+          employee: adjustmentDraft.staff,
+          type: adjustmentDraft.type,
+          amount,
+          reason: adjustmentDraft.reason || "Payroll adjustment",
+        });
+        await refreshOdoo?.();
+        setPayrollStatus("draft");
+        setAdjustmentDraft({ staff: allStaff[0]?.name || "", type: "deduction", amount: "", reason: "" });
+        setAdjustmentModalOpen(false);
+        showToast("Live payroll adjustment added", "success");
+      } catch (error) {
+        showToast(compactError(error) || "Could not add adjustment", "warn");
+      }
       return;
     }
     setAdjustments((rows) => [
@@ -8614,14 +9611,58 @@ function HRPayrollScreen({ lang, bootstrap }) {
     showToast("Payroll adjustment added", "success");
   };
 
-  const reviewPayroll = () => {
+  const refreshHrPayrollSnapshot = async () => {
+    if (sourceOfTruth?.enabled) {
+      const snapshot = unwrapOdoo(await sourceOfTruth.getHrSnapshot());
+      setPayrollSnapshot(snapshot);
+    }
+    await refreshOdoo?.();
+  };
+
+  const reviewPayroll = async () => {
+    if (liveOnly && sourceOfTruth?.enabled) {
+      try {
+        const today = todayIsoDate();
+        const dateFrom = `${today.slice(0, 8)}01`;
+        const run = unwrapOdoo(await sourceOfTruth.payrollRunAction({
+          name: `Payroll ${dateFrom} - ${today}`,
+          dateFrom,
+          dateTo: today,
+          compute: true,
+        }));
+        await refreshHrPayrollSnapshot();
+        setPayrollStatus(run?.state || "reviewed");
+        showToast("Live payroll run computed", "success");
+      } catch (error) {
+        showToast(compactError(error) || "Could not compute live payroll", "warn");
+      }
+      return;
+    }
     setPayrollStatus("reviewed");
     showToast("Payroll marked reviewed", "success");
   };
 
-  const approvePayroll = () => {
+  const approvePayroll = async () => {
     if (payrollReviewCount > 0) {
       showToast("Resolve held payroll rows first", "warn");
+      return;
+    }
+    if (liveOnly && sourceOfTruth?.enabled) {
+      if (!latestPayrollRun?.id) {
+        showToast("Review payroll first to create a live payroll run", "warn");
+        return;
+      }
+      try {
+        const run = unwrapOdoo(await sourceOfTruth.payrollRunAction({
+          id: latestPayrollRun.id,
+          action: "approve",
+        }));
+        await refreshHrPayrollSnapshot();
+        setPayrollStatus(run?.state || "approved");
+        showToast("Live payroll approved", "success");
+      } catch (error) {
+        showToast(compactError(error) || "Could not approve live payroll", "warn");
+      }
       return;
     }
     setPayrollStatus("approved");
@@ -8665,8 +9706,8 @@ function HRPayrollScreen({ lang, bootstrap }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
         <KPI label={ar ? "Active staff" : "Active staff"} value={String(activeStaff)} footer={ar ? "HR roster" : "HR roster"}/>
         <KPI label={ar ? "Monthly payroll" : "Monthly payroll"} value={fmtMoney(netPayroll)} footer={ar ? "next run in 6d" : "next run in 6d"}/>
-        <KPI label={ar ? "Avg weekly hrs" : "Avg weekly hrs"} value={String(avgWeeklyHours)} delta="2h" deltaDir="up"/>
-        <KPI label={ar ? "Payroll review" : "Payroll review"} value={String(payrollReviewCount + underReview)} footer={ar ? "held rows" : "held rows"}/>
+        <KPI label={ar ? "Avg weekly hrs" : "Avg weekly hrs"} value={String(avgWeeklyHours)} footer={`${plannedWeeklyHours} planned`}/>
+        <KPI label={ar ? "Coverage gaps" : "Coverage gaps"} value={String(missingPeople)} footer={ar ? "missing staff" : "missing staff"}/>
       </div>
 
       <div className="card card-pad">
@@ -8694,6 +9735,90 @@ function HRPayrollScreen({ lang, bootstrap }) {
               <Icon name="download" size={12}/>Export payroll
             </button>
           </div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.15fr", gap: 14 }}>
+        <div className="card">
+          <div className="between" style={{ padding: "14px 18px" }}>
+            <div>
+              <div className="t-h2">{ar ? "Kiosk coverage" : "Kiosk coverage"}</div>
+              <div className="t-small subtle">{ar ? "Required slots and missing staff" : "Required slots and missing staff"}</div>
+            </div>
+            <button className="btn btn-ghost" onClick={() => setCoverageModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
+              <Icon name="plus" size={12}/>{ar ? "Slot" : "Slot"}
+            </button>
+          </div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col">{ar ? "Day" : "Day"}</th>
+                <th scope="col">{ar ? "Kiosk" : "Kiosk"}</th>
+                <th scope="col">{ar ? "Slot" : "Slot"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Need" : "Need"}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {coverageGaps.length ? coverageGaps.map((gap) => (
+                <tr key={`${gap.ruleId || gap.kiosk}-${gap.date}-${gap.role}-${gap.startHour}`} className="row-click">
+                  <td style={{ fontWeight: 500 }}>{gap.date || WEEKDAY_LABELS[Number(gap.dayOfWeek || 0)]}</td>
+                  <td>
+                    <div style={{ fontWeight: 500 }}>{gap.kiosk}</div>
+                    <div className="t-small muted">{gap.kioskName || gap.kiosk}</div>
+                  </td>
+                  <td className="muted">{hourToTime(gap.startHour)}-{hourToTime(gap.endHour)} / {hrRoleLabel(gap.role)}</td>
+                  <td style={{ textAlign: "end" }}>
+                    <span className="badge badge-warn">{gap.assignedCount || 0}/{gap.requiredCount || 0} staffed</span>
+                  </td>
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan={4} className="muted">{ar ? "All planned slots covered" : "All planned slots covered"}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="card">
+          <div className="between" style={{ padding: "14px 18px" }}>
+            <div>
+              <div className="t-h2">{ar ? "Work week" : "Work week"}</div>
+              <div className="t-small subtle">{ar ? "Dated shifts connected to kiosks" : "Dated shifts connected to kiosks"}</div>
+            </div>
+            <button className="btn btn-primary" onClick={() => setShiftModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
+              <Icon name="plus" size={12}/>{ar ? "Assign shift" : "Assign shift"}
+            </button>
+          </div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col">{ar ? "Staff" : "Staff"}</th>
+                <th scope="col">{ar ? "Kiosk" : "Kiosk"}</th>
+                <th scope="col">{ar ? "Date" : "Date"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Hours" : "Hours"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "State" : "State"}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {scheduleRows.length ? scheduleRows.slice(0, 12).map((shift) => (
+                <tr key={shift.id || `${shift.employee}-${shift.date}-${shift.startHour}`}>
+                  <td>
+                    <div style={{ fontWeight: 500 }}>{shift.staff || shift.employee}</div>
+                    <div className="t-small muted">{shift.roleLabel || hrRoleLabel(shift.role)}</div>
+                  </td>
+                  <td className="muted">{shift.kioskName || shift.kiosk}</td>
+                  <td className="muted">{shift.date} / {shift.time}</td>
+                  <td className="t-num" style={{ textAlign: "end" }}>{Number(shift.plannedHours || 0).toFixed(1)}h</td>
+                  <td style={{ textAlign: "end" }}><span className="badge">{shift.state || "planned"}</span></td>
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan={5} className="muted">{ar ? "No shifts planned yet" : "No shifts planned yet"}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -8923,12 +10048,133 @@ function HRPayrollScreen({ lang, bootstrap }) {
         </form>
       </Modal>
 
+      <Modal open={coverageModalOpen} onClose={() => setCoverageModalOpen(false)}
+        width={520}
+        title={ar ? "Coverage slot" : "Coverage slot"}
+        sub={ar ? "Required kiosk headcount by weekday and time" : "Required kiosk headcount by weekday and time"}>
+        <form onSubmit={submitCoverageRule} className="col" style={{ gap: 10 }}>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "Kiosk" : "Kiosk"}</label>
+              <select className="input" value={coverageDraft.kiosk}
+                onChange={(event) => setCoverageDraft((draft) => ({ ...draft, kiosk: event.target.value }))}>
+                {kioskOptions.length
+                  ? kioskOptions.map((kiosk) => <option key={kiosk.id} value={kiosk.id}>{kiosk.label}</option>)
+                  : <option value="">No live kiosks loaded</option>}
+              </select>
+            </div>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "Day" : "Day"}</label>
+              <select className="input" value={coverageDraft.dayOfWeek}
+                onChange={(event) => setCoverageDraft((draft) => ({ ...draft, dayOfWeek: event.target.value }))}>
+                {WEEKDAY_LABELS.map((day, index) => <option key={day} value={String(index)}>{day}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "Role" : "Role"}</label>
+              <select className="input" value={coverageDraft.role}
+                onChange={(event) => setCoverageDraft((draft) => ({ ...draft, role: event.target.value }))}>
+                <option value="any">{HR_ROLE_LABELS.any}</option>
+                {HR_ROLE_OPTIONS.map((role) => {
+                  const value = normalizeHrRole(role);
+                  return <option key={value} value={value}>{role}</option>;
+                })}
+              </select>
+            </div>
+            <div className="col" style={{ width: 124, gap: 4 }}>
+              <label className="t-micro">{ar ? "Headcount" : "Headcount"}</label>
+              <input className="input" type="number" min={1} step={1} value={coverageDraft.requiredCount}
+                onChange={(event) => setCoverageDraft((draft) => ({ ...draft, requiredCount: event.target.value }))}/>
+            </div>
+          </div>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "Start" : "Start"}</label>
+              <input className="input" type="time" value={coverageDraft.start}
+                onChange={(event) => setCoverageDraft((draft) => ({ ...draft, start: event.target.value }))}/>
+            </div>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "End" : "End"}</label>
+              <input className="input" type="time" value={coverageDraft.end}
+                onChange={(event) => setCoverageDraft((draft) => ({ ...draft, end: event.target.value }))}/>
+            </div>
+          </div>
+          <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+            <button type="button" className="btn btn-ghost" onClick={() => setCoverageModalOpen(false)}>Cancel</button>
+            <button type="submit" className="btn btn-primary">Save slot</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={shiftModalOpen} onClose={() => setShiftModalOpen(false)}
+        width={560}
+        title={ar ? "Assign shift" : "Assign shift"}
+        sub={ar ? "Plan who works each kiosk slot" : "Plan who works each kiosk slot"}>
+        <form onSubmit={submitShift} className="col" style={{ gap: 10 }}>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "Staff" : "Staff"}</label>
+              <select className="input" value={shiftDraft.employee}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, employee: event.target.value }))}>
+                {allStaff.length
+                  ? allStaff.map((person) => <option key={person.id || person.name} value={person.id || person.name}>{person.name}</option>)
+                  : <option value="">No live staff loaded</option>}
+              </select>
+            </div>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "Kiosk" : "Kiosk"}</label>
+              <select className="input" value={shiftDraft.kiosk}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, kiosk: event.target.value }))}>
+                {kioskOptions.length
+                  ? kioskOptions.map((kiosk) => <option key={kiosk.id} value={kiosk.id}>{kiosk.label}</option>)
+                  : <option value="">No live kiosks loaded</option>}
+              </select>
+            </div>
+          </div>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "Date" : "Date"}</label>
+              <input className="input" type="date" value={shiftDraft.date}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, date: event.target.value }))}/>
+            </div>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "Role" : "Role"}</label>
+              <select className="input" value={shiftDraft.role}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, role: event.target.value }))}>
+                {HR_ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "Start" : "Start"}</label>
+              <input className="input" type="time" value={shiftDraft.start}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, start: event.target.value }))}/>
+            </div>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ar ? "End" : "End"}</label>
+              <input className="input" type="time" value={shiftDraft.end}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, end: event.target.value }))}/>
+            </div>
+          </div>
+          <input className="input" value={shiftDraft.note}
+            onChange={(event) => setShiftDraft((draft) => ({ ...draft, note: event.target.value }))}
+            placeholder="Note"/>
+          <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+            <button type="button" className="btn btn-ghost" onClick={() => setShiftModalOpen(false)}>Cancel</button>
+            <button type="submit" className="btn btn-primary">Assign shift</button>
+          </div>
+        </form>
+      </Modal>
+
       <Modal open={staffModalOpen} onClose={() => setStaffModalOpen(false)}
         width={520}
         title={ar ? "إضافة موظف" : "Add staff"}
         sub={ar
           ? "املأ التفاصيل لإضافة موظف إلى الجدول."
-          : liveOnly ? "Local HR persistence is not wired yet; no demo staff is shown in live-only mode." : "Adds a new staff member to the roster (demo: stays in this browser)."}>
+          : liveOnly ? "Creates a Bayaan staff record linked to Odoo HR and the selected kiosk." : "Adds a new staff member to the roster (demo: stays in this browser)."}>
         <form onSubmit={submitStaff} className="col" style={{ gap: 10 }}>
           <div className="col" style={{ gap: 4 }}>
             <label className="t-micro">{ar ? "الاسم" : "Full name"}</label>
@@ -8945,20 +10191,16 @@ function HRPayrollScreen({ lang, bootstrap }) {
               <label className="t-micro">{ar ? "الدور" : "Role"}</label>
               <select className="input" value={staffDraft.role}
                 onChange={(event) => setStaffDraft((d) => ({ ...d, role: event.target.value }))}>
-                <option value="Cashier">Cashier</option>
-                <option value="Barista">Barista</option>
-                <option value="Supervisor">Supervisor</option>
-                <option value="Warehouse">Warehouse</option>
-                <option value="Manager">Manager</option>
+                {HR_ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}
               </select>
             </div>
             <div className="col" style={{ flex: 1, gap: 4 }}>
               <label className="t-micro">{ar ? "الكشك" : "Kiosk"}</label>
               <select className="input" value={staffDraft.kiosk}
                 onChange={(event) => setStaffDraft((d) => ({ ...d, kiosk: event.target.value }))}>
-                {kiosks.filter((kiosk) => kiosk !== "all").length
-                  ? kiosks.filter((kiosk) => kiosk !== "all").map((kiosk) => (
-                    <option key={kiosk} value={kiosk}>{kiosk}</option>
+                {kioskOptions.length
+                  ? kioskOptions.map((kiosk) => (
+                    <option key={kiosk.id} value={kiosk.id}>{kiosk.label}</option>
                   ))
                   : <option value="">No live kiosks loaded</option>}
                 {!liveOnly && <option value="Central">Central</option>}
@@ -9221,6 +10463,58 @@ const ADMIN_NAV = [
   { id: "reports", label: "Reports", icon: "chart" },
 ];
 
+const ROLE_LABELS = {
+  superadmin: "Superadmin",
+  manager: "Manager",
+  logistics: "Logistics",
+  accountant: "Accountant",
+  supervisor: "Supervisor",
+  cashier: "Cashier",
+};
+
+const TEST_ACCOUNTS = [
+  { role: "Superadmin", login: "superadmin@bayaan.test" },
+  { role: "Manager", login: "manager@bayaan.test" },
+  { role: "Logistics", login: "logistics@bayaan.test" },
+  { role: "Accountant", login: "accountant@bayaan.test" },
+  { role: "Cashier", login: "cashier@bayaan.test" },
+];
+
+function authAllowsPanel(auth, hasBackend, panel, mode = "live") {
+  if (!hasBackend || mode === "demo") return true;
+  if (!auth?.checked || !auth.authenticated) return panel === "admin";
+  return Boolean(auth.user?.allowedPanels?.[panel]);
+}
+
+function allowedAdminIds(auth, hasBackend) {
+  if (!hasBackend || !auth?.checked || !auth.authenticated) {
+    return ADMIN_NAV.filter((item) => item.id).map((item) => item.id);
+  }
+  return auth.user?.allowedNav?.length ? auth.user.allowedNav : [];
+}
+
+function filteredAdminNav(auth, hasBackend) {
+  const allowed = new Set(allowedAdminIds(auth, hasBackend));
+  if (!hasBackend || !auth?.checked || !auth.authenticated) return ADMIN_NAV;
+  const rows = [];
+  for (let i = 0; i < ADMIN_NAV.length; i += 1) {
+    const item = ADMIN_NAV[i];
+    if (item.section) {
+      let hasVisibleItem = false;
+      for (let j = i + 1; j < ADMIN_NAV.length && !ADMIN_NAV[j].section; j += 1) {
+        if (allowed.has(ADMIN_NAV[j].id)) {
+          hasVisibleItem = true;
+          break;
+        }
+      }
+      if (hasVisibleItem) rows.push(item);
+    } else if (allowed.has(item.id)) {
+      rows.push(item);
+    }
+  }
+  return rows;
+}
+
 const ADMIN_NAV_AR = {
   overview: "مركز اليوم",
   insights: "تحليلات الذكاء",
@@ -9244,7 +10538,11 @@ const ADMIN_NAV_AR = {
 };
 
 function AdminSidebar({ active, setActive, lang }) {
+  const bayaan = useBayaan();
   const isAr = lang === "ar";
+  const navRows = filteredAdminNav(bayaan.auth, bayaan.hasBackend);
+  const user = bayaan.auth.user || {};
+  const roleLabel = ROLE_LABELS[user.primaryRole] || "Owner";
   return (
     <aside style={{
       width: 220, flexShrink: 0,
@@ -9261,7 +10559,7 @@ function AdminSidebar({ active, setActive, lang }) {
         <Icon name="chevDown" size={12} style={{ color: "var(--ink-3)", marginInlineStart: "auto" }}/>
       </div>
 
-      {ADMIN_NAV.map((it, i) => {
+      {navRows.map((it, i) => {
         if (it.section) {
           return <div key={i} className="nav-section">{isAr ? ADMIN_NAV_AR[it.section] : it.section}</div>;
         }
@@ -9277,10 +10575,10 @@ function AdminSidebar({ active, setActive, lang }) {
 
       <div style={{ marginTop: "auto", paddingTop: 12, borderTop: "1px solid var(--line)" }}>
         <div className="nav-item" style={{ height: 36 }}>
-          <Avatar name="Layla Hassan" size={20}/>
+          <Avatar name={user.name || "Bayaan"} size={20}/>
           <div style={{ flex: 1, lineHeight: 1.15 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 500 }}>{isAr ? "ليلى حسن" : "Layla Hassan"}</div>
-            <div style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{isAr ? "المدير" : "Owner"}</div>
+            <div style={{ fontSize: 12.5, fontWeight: 500 }}>{user.name || (isAr ? "بيان" : "Bayaan")}</div>
+            <div style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{roleLabel}</div>
           </div>
           <Icon name="settings" size={13} style={{ color: "var(--ink-3)" }}/>
         </div>
@@ -9346,10 +10644,122 @@ function DataModeToggle({ bayaan, lang }) {
   );
 }
 
+function AuditLogRail({ lang, sourceOfTruth }) {
+  const ar = lang === "ar";
+  const [events, setEvents] = React.useState(() => demoAuditEvents());
+  const [status, setStatus] = React.useState("idle");
+  const [error, setError] = React.useState("");
+  const loadEvents = React.useCallback(async () => {
+    if (!sourceOfTruth?.enabled) {
+      setEvents(demoAuditEvents());
+      setStatus("demo");
+      setError("");
+      return;
+    }
+    setStatus("loading");
+    try {
+      const payload = await sourceOfTruth.getAuditLog({ limit: 80 });
+      const rows = normalizeAuditEvents(payload);
+      setEvents(rows);
+      setStatus("live");
+      setError("");
+    } catch (err) {
+      setStatus("error");
+      setError(compactError(err));
+    }
+  }, [sourceOfTruth]);
+
+  React.useEffect(() => {
+    void loadEvents();
+    if (!sourceOfTruth?.enabled) return undefined;
+    const subscription = sourceOfTruth.subscribeRealtime?.({
+      onStatus: (next) => {
+        if (next === "live" || next === "polling") setStatus("live");
+      },
+      onEvent: (event) => {
+        setStatus("live");
+        setEvents((rows) => {
+          const next = normalizeRealtimeAuditEvent(event);
+          return [next, ...rows.filter((row) => row.id !== next.id)].slice(0, 80);
+        });
+      },
+      onError: (err) => {
+        setStatus("error");
+        setError(compactError(err));
+      },
+    });
+    if (subscription) return () => subscription.close();
+    const timer = window.setInterval(() => void loadEvents(), 8000);
+    return () => window.clearInterval(timer);
+  }, [loadEvents, sourceOfTruth?.enabled]);
+
+  return (
+    <aside style={{
+      width: 340,
+      flexShrink: 0,
+      background: "var(--surface)",
+      borderInlineEnd: "1px solid var(--line)",
+      display: "flex",
+      flexDirection: "column",
+      minHeight: 0,
+    }}>
+      <div className="between" style={{ height: 56, padding: "0 16px", borderBottom: "1px solid var(--line)" }}>
+        <div>
+          <div className="t-h2">{ar ? "سجل النظام" : "Live action log"}</div>
+          <div className="t-small subtle">
+            {status === "live" ? (ar ? "متصل" : "Realtime stream") : status === "demo" ? "Demo events" : status === "error" ? "Log unavailable" : "Loading"}
+          </div>
+        </div>
+        <button className="btn btn-ghost" onClick={loadEvents} style={{ height: 28, fontSize: 12 }}>
+          <Icon name="refresh" size={12}/>{ar ? "تحديث" : "Refresh"}
+        </button>
+      </div>
+      {error && (
+        <div className="t-small" style={{ margin: 12, padding: 10, border: "1px solid var(--crit)", borderRadius: 6, color: "var(--crit)", background: "var(--crit-soft)" }}>
+          {error}
+        </div>
+      )}
+      <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 12 }}>
+        <div className="col" style={{ gap: 10 }}>
+          {events.map((event) => (
+            <div key={event.id} className="card" style={{ padding: 12 }}>
+              <div className="between" style={{ alignItems: "flex-start", gap: 8 }}>
+                <div className="row" style={{ gap: 8, alignItems: "flex-start", minWidth: 0 }}>
+                  <span className={`dot ${auditDotClass(event.severity)}`} style={{ marginTop: 7, flexShrink: 0 }}></span>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.35 }}>{event.title}</div>
+                    <div className="t-small subtle" style={{ marginTop: 3, lineHeight: 1.45 }}>{event.detail}</div>
+                  </div>
+                </div>
+                <span className="t-num faint" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{auditTimeLabel(event.occurredAt)}</span>
+              </div>
+              <div className="row" style={{ gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+                <span className={`badge ${auditSeverityClass(event.severity)}`}>{event.eventType || "system"}</span>
+                {event.kiosk && <span className="badge">{event.kiosk}</span>}
+                {event.reference && <span className="badge">{event.reference}</span>}
+              </div>
+              <div className="t-small faint" style={{ marginTop: 8 }}>{event.actor}</div>
+            </div>
+          ))}
+          {!events.length && (
+            <div className="card" style={{ padding: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 500 }}>{ar ? "لا توجد أحداث" : "No events yet"}</div>
+              <div className="t-small subtle" style={{ marginTop: 4 }}>System changes will appear here after they are committed.</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
 function AdminPanel({ lang }) {
   const bayaan = useBayaan();
   const [active, setActive] = useState("overview");
   const [selectedKiosk, setSelectedKiosk] = useState(MOCK.kiosks[0]);
+  const allowedIds = useMemo(() => allowedAdminIds(bayaan.auth, bayaan.hasBackend), [bayaan.auth, bayaan.hasBackend]);
+  const canViewAuditLog = isSuperadminAuth(bayaan.auth);
+  const [auditLogOpen, setAuditLogOpen] = useState(false);
   // The AdminPanel uses the SAME gateway as the BayaanProvider. When the
   // user toggles to Demo mode, we present a transparent noop wrapper so
   // every screen's `sourceOfTruth?.enabled` check falls through to the
@@ -9374,8 +10784,15 @@ function AdminPanel({ lang }) {
     warehouseSetup: liveOnlySelected ? EMPTY_WAREHOUSE_SETUP : DEMO_WAREHOUSE_SETUP,
     error: "",
   });
+  const [realtime, setRealtime] = useState({
+    status: liveBackendActive ? "connecting" : "demo",
+    lastEvent: null,
+    eventCount: 0,
+    error: "",
+  });
+  const realtimeRefreshRef = React.useRef(false);
 
-  const refreshOdoo = async () => {
+  const refreshOdoo = React.useCallback(async () => {
     if (!liveOnlySelected) {
       setSync({ status: "demo", bootstrap: null, warehouseSetup: DEMO_WAREHOUSE_SETUP, error: "" });
       return;
@@ -9410,13 +10827,66 @@ function AdminPanel({ lang }) {
         error: compactError(error),
       }));
     }
-  };
+  }, [baseGateway.enabled, liveOnlySelected, sourceOfTruth]);
 
   useEffect(() => {
     void refreshOdoo();
     // Re-run whenever mode flips so the dashboard immediately respects Demo/Live.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceOfTruth, bayaan.mode, baseGateway.enabled]);
+  }, [refreshOdoo, bayaan.mode, baseGateway.enabled]);
+
+  useEffect(() => {
+    if (!liveBackendActive) {
+      setRealtime({
+        status: liveOnlySelected ? "missing" : "demo",
+        lastEvent: null,
+        eventCount: 0,
+        error: "",
+      });
+      return undefined;
+    }
+    if (!bayaan.auth.authenticated) {
+      setRealtime({
+        status: "missing",
+        lastEvent: null,
+        eventCount: 0,
+        error: "Sign in to start the realtime stream.",
+      });
+      return undefined;
+    }
+    const subscription = sourceOfTruth.subscribeRealtime({
+      onStatus: (status) => {
+        setRealtime((current) => ({ ...current, status, error: "" }));
+      },
+      onEvent: (event) => {
+        setRealtime((current) => ({
+          status: current.status === "polling" ? "polling" : "live",
+          lastEvent: event,
+          eventCount: current.eventCount + 1,
+          error: "",
+        }));
+        if (!realtimeRefreshRef.current) {
+          realtimeRefreshRef.current = true;
+          window.setTimeout(() => {
+            realtimeRefreshRef.current = false;
+            void refreshOdoo();
+          }, 250);
+        }
+      },
+      onError: (error) => {
+        setRealtime((current) => ({ ...current, status: "error", error: compactError(error) }));
+      },
+    });
+    return () => subscription.close();
+  }, [liveBackendActive, liveOnlySelected, bayaan.auth.authenticated, refreshOdoo, sourceOfTruth]);
+
+  useEffect(() => {
+    if (!allowedIds.length || active === "kioskDetail") return;
+    if (!allowedIds.includes(active)) setActive(allowedIds[0]);
+  }, [active, allowedIds]);
+
+  useEffect(() => {
+    if (!canViewAuditLog && auditLogOpen) setAuditLogOpen(false);
+  }, [auditLogOpen, canViewAuditLog]);
 
   const openKiosk = (kiosk) => {
     setSelectedKiosk(kiosk || MOCK.kiosks[0]);
@@ -9432,11 +10902,11 @@ function AdminPanel({ lang }) {
     warehouses: <WarehousesScreen lang={lang} sync={sync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
     items: <ItemsCatalogScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
     inventory: <InventoryScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    products: <ProductsScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth}/>,
+    products: <ProductsScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
     closing: <ClosingScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth}/>,
     waste: <WasteScreen lang={lang} bootstrap={sync.bootstrap}/>,
     suppliers: <SuppliersScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    staff: <HRPayrollScreen lang={lang} bootstrap={sync.bootstrap}/>,
+    staff: <HRPayrollScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
     finance: <ReportsScreen lang={lang} bootstrap={sync.bootstrap}/>,
     reports: <ReportsScreen lang={lang} bootstrap={sync.bootstrap}/>,
   };
@@ -9462,10 +10932,20 @@ function AdminPanel({ lang }) {
   return (
     <div style={{ flex: 1, display: "flex", overflow: "hidden", background: "var(--paper)" }}>
       <AdminSidebar active={active === "kioskDetail" ? "kiosks" : active} setActive={setActive} lang={lang}/>
+      {canViewAuditLog && auditLogOpen && <AuditLogRail lang={lang} sourceOfTruth={sourceOfTruth}/>}
       <main style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <AdminTopBar title={lang === "ar" ? t.ar : t.en} sub={lang === "ar" ? t.sub.ar : t.sub.en} lang={lang}
           right={(
             <div className="row" style={{ gap: 6 }}>
+              {canViewAuditLog && (
+                <button
+                  className={`btn ${auditLogOpen ? "btn-primary" : "btn-ghost"}`}
+                  onClick={() => setAuditLogOpen((open) => !open)}
+                  style={{ height: 28, fontSize: 12 }}
+                >
+                  <Icon name="list" size={12}/>{lang === "ar" ? "السجل" : "Log"}
+                </button>
+              )}
               <DataModeToggle bayaan={bayaan} lang={lang}/>
               <span className={`badge ${sync.status === "synced" ? "badge-pos" : ["error", "missing"].includes(sync.status) ? "badge-crit" : "badge-warn"}`}>
                 <span className={`dot ${sync.status === "synced" ? "pos" : ["error", "missing"].includes(sync.status) ? "crit" : "warn"}`}></span>
@@ -9481,6 +10961,23 @@ function AdminPanel({ lang }) {
                           ? "Engine syncing"
                           : "Demo mode"}
               </span>
+              {liveOnlySelected && (
+                <span
+                  className={`badge ${["live", "polling"].includes(realtime.status) ? "badge-pos" : realtime.status === "error" ? "badge-crit" : "badge-warn"}`}
+                  title={realtime.lastEvent?.title || realtime.error || "Bayaan realtime stream"}
+                >
+                  <span className={`dot ${["live", "polling"].includes(realtime.status) ? "pos" : realtime.status === "error" ? "crit" : "warn"}`}></span>
+                  {realtime.status === "live"
+                    ? "Stream live"
+                    : realtime.status === "polling"
+                      ? "Bus fallback"
+                      : realtime.status === "error"
+                        ? "Stream error"
+                      : realtime.status === "missing"
+                          ? bayaan.auth.authenticated ? "Stream missing" : "Stream waiting"
+                          : "Stream connecting"}
+                </span>
+              )}
               {active === "overview" && (
                 <>
               <button className="btn btn-ghost"><Icon name="download" size={13}/>{lang === "ar" ? "تصدير" : "Export"}</button>
@@ -9528,6 +11025,7 @@ function POSPanel({ lang }) {
   const [tender, setTender] = useStatePOS(null);
   const [posTransfers, setPosTransfers] = useStatePOS([]);
   const [transferBusy, setTransferBusy] = useStatePOS("");
+  const [posBootstrap, setPosBootstrap] = useStatePOS(null);
 
   const goSale = () => { setScreen("sale"); setCart([]); };
   const endShiftAndLogout = () => {
@@ -9557,12 +11055,14 @@ function POSPanel({ lang }) {
   const posKioskId = bayaan.shift?.kioskId || bayaan.kioskId;
   const loadPosTransfers = React.useCallback(async () => {
     try {
-      const rows = bayaan.mode === "live" && bayaan.hasBackend
-        ? odooTransferRows(await bayaan.gateway.getChainBootstrap())
-        : MOCK.pendingTransfers;
+      const bootstrap = bayaan.mode === "live" && bayaan.hasBackend
+        ? await bayaan.gateway.getChainBootstrap()
+        : null;
+      if (bootstrap) setPosBootstrap(markLiveOnlySnapshot(bootstrap));
+      const rows = bootstrap ? odooTransferRows(bootstrap) : MOCK.pendingTransfers;
       setPosTransfers(rows.filter((transfer) => {
         const status = String(transfer.status || "").toLowerCase();
-        if (["received", "done", "cancel", "cancelled"].includes(status)) return false;
+        if (["cancel", "cancelled"].includes(status)) return false;
         return matchesKiosk(transfer.toKioskId || transfer.to, { id: posKioskId, kiosk_code: posKioskId });
       }));
     } catch {
@@ -9574,12 +11074,32 @@ function POSPanel({ lang }) {
     void loadPosTransfers();
   }, [loadPosTransfers]);
 
+  React.useEffect(() => {
+    if (!(bayaan.mode === "live" && bayaan.hasBackend)) return undefined;
+    const subscription = bayaan.gateway.subscribeRealtime?.({
+      onEvent: (event) => {
+        const action = event.action || event.type || "";
+        if (
+          action.startsWith("transfer.")
+          || action.startsWith("purchase.")
+          || matchesKiosk(event.kiosk || event.kioskName, { id: posKioskId, kiosk_code: posKioskId })
+        ) {
+          void loadPosTransfers();
+        }
+      },
+    });
+    return () => subscription?.close();
+  }, [bayaan.gateway, bayaan.hasBackend, bayaan.mode, loadPosTransfers, posKioskId]);
+
   const receivePosTransfer = async (transfer) => {
     setTransferBusy(transfer.id);
     try {
       if (bayaan.mode === "live" && bayaan.hasBackend) {
-        await bayaan.gateway.stockTransferAction({ transfer: transfer.id, action: "receive" });
-        await loadPosTransfers();
+        const result = unwrapOdoo(await bayaan.gateway.stockTransferAction({ transfer: transfer.id, action: "receive" }));
+        const receivedStatus = result?.bayaan_state || "received";
+        setPosTransfers((rows) => rows.map((row) => row.id === transfer.id
+          ? { ...row, status: receivedStatus, engineState: result?.state || row.engineState || "done", eta: "received" }
+          : row));
       } else {
         setPosTransfers((rows) => rows.map((row) => row.id === transfer.id ? { ...row, status: "received" } : row));
       }
@@ -9600,11 +11120,12 @@ function POSPanel({ lang }) {
           {screen === "sale" && <POSSale lang={lang}
             cart={cart} setCart={setCart} addItem={wrappedAdd}
             subTotal={subTotal} vat={vat} total={total}
+            bootstrap={posBootstrap}
             onCharge={() => setScreen("payment")}
             onWaste={() => setScreen("waste")}
             onStock={() => setScreen("stock")}
             expectedTransfers={posTransfers}
-            onLogout={endShiftAndLogout}
+            onLogout={() => setScreen("close")}
           />}
           {screen === "payment" && <POSPayment lang={lang}
             total={total} cart={cart}
@@ -9614,7 +11135,12 @@ function POSPanel({ lang }) {
             onBack={() => setScreen("sale")}
           />}
           {screen === "waste" && <POSWaste lang={lang}
+            bootstrap={posBootstrap}
             onDone={() => setScreen("sale")} onBack={() => setScreen("sale")}/>}
+          {screen === "close" && <POSClose lang={lang}
+            bootstrap={posBootstrap}
+            onBack={() => setScreen("sale")}
+            onClosed={endShiftAndLogout}/>}
           {screen === "stock" && <POSTransfers lang={lang}
             kioskId={posKioskId}
             transfers={posTransfers}
@@ -9783,16 +11309,22 @@ function POSLogin({ lang, onIn }) {
    POS Sale screen — order taking
    ============================================================ */
 
-function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, onCharge, onWaste, onStock, expectedTransfers = [], onLogout }) {
+function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, bootstrap, onCharge, onWaste, onStock, expectedTransfers = [], onLogout }) {
   const ar = lang === "ar";
+  const bayaan = useBayaan();
   const catalog = useCatalog();
-  const menu = React.useMemo(() => catalog.menuByCategory(), [catalog.state.products]);
+  const menu = React.useMemo(() => (
+    bayaan.mode === "live" && bayaan.hasBackend
+      ? odooPosMenu(bootstrap)
+      : catalog.menuByCategory()
+  ), [bayaan.hasBackend, bayaan.mode, bootstrap, catalog.state.products]);
   const [activeCat, setActiveCat] = useStatePOS(0);
   const [search, setSearch] = useStatePOS("");
   const cat = menu[activeCat] ?? menu[0] ?? { items: [] };
   const items = search
     ? menu.flatMap(c => c.items).filter(i => i.name.toLowerCase().includes(search.toLowerCase()))
     : cat.items;
+  const dispatchedTransfers = expectedTransfers.filter((transfer) => isDispatchedTransfer(transfer.status));
 
   const inc = (key) => setCart(c => c.map(x => x.key === key ? { ...x, qty: x.qty + 1 } : x));
   const dec = (key) => setCart(c => c.flatMap(x => x.key === key ? (x.qty > 1 ? [{ ...x, qty: x.qty - 1 }] : []) : [x]));
@@ -9814,12 +11346,38 @@ function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, onCharge,
         <div className="row" style={{ gap: 6 }}>
           <button className="btn btn-ghost" onClick={onWaste}><Icon name="trash" size={13}/>{ar ? "هدر" : "Waste"}</button>
           <button className="btn btn-ghost" onClick={onStock}>
-            <Icon name="box" size={13}/>{ar ? "المخزون" : "Stock"}
-            {expectedTransfers.length > 0 && <span className="badge" style={{ marginInlineStart: 4 }}>{expectedTransfers.length}</span>}
+            <Icon name="box" size={13}/>{ar ? "استلام المخزون" : "Receive stock"}
+            {dispatchedTransfers.length > 0 && <span className="badge badge-warn" style={{ marginInlineStart: 4 }}>{dispatchedTransfers.length}</span>}
           </button>
           <button className="btn btn-ghost" onClick={onLogout}>{ar ? "إنهاء" : "End shift"}</button>
         </div>
       </div>
+
+      {dispatchedTransfers.length > 0 && (
+        <button type="button" onClick={onStock}
+          style={{
+            margin: 0,
+            padding: "10px 18px",
+            border: 0,
+            borderBottom: "1px solid var(--line)",
+            background: "var(--warn-soft)",
+            color: "var(--ink)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            textAlign: "start",
+            cursor: "pointer",
+          }}>
+          <span className="row" style={{ gap: 8, minWidth: 0 }}>
+            <Icon name="truck" size={14}/>
+            <span style={{ fontSize: 12.5, fontWeight: 500 }}>
+              {dispatchedTransfers.length === 1 ? "1 transfer arrived for kiosk confirmation" : `${dispatchedTransfers.length} transfers arrived for kiosk confirmation`}
+            </span>
+          </span>
+          <span className="badge badge-warn">{ar ? "استلام" : "Confirm receipt"}</span>
+        </button>
+      )}
 
       {/* Body */}
       <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 380px", overflow: "hidden" }}>
@@ -9948,6 +11506,11 @@ function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, onCharge,
 function POSTransfers({ lang, kioskId, transfers, busy, onReceive, onRefresh, onBack }) {
   const ar = lang === "ar";
   const actionable = transfers.filter((transfer) => String(transfer.status || "").toLowerCase() === "dispatched");
+  const sortedTransfers = [...transfers].sort((a, b) => {
+    const aReady = isDispatchedTransfer(a.status) ? 0 : isReceivedTransfer(a.status) ? 2 : 1;
+    const bReady = isDispatchedTransfer(b.status) ? 0 : isReceivedTransfer(b.status) ? 2 : 1;
+    return aReady - bReady;
+  });
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--paper)" }}>
       <div style={{ height: 52, padding: "0 18px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--line)", background: "var(--surface)" }}>
@@ -9967,9 +11530,10 @@ function POSTransfers({ lang, kioskId, transfers, busy, onReceive, onRefresh, on
 
       <div className="scroll" style={{ flex: 1, overflow: "auto", padding: 18 }}>
         <div className="col" style={{ gap: 10 }}>
-          {transfers.map((transfer) => {
+          {sortedTransfers.map((transfer) => {
             const status = String(transfer.status || "").toLowerCase();
-            const canReceive = status === "dispatched";
+            const canReceive = isDispatchedTransfer(status);
+            const received = isReceivedTransfer(status);
             return (
               <div key={transfer.id} className="card" style={{ padding: 14 }}>
                 <div className="between" style={{ alignItems: "flex-start", gap: 12 }}>
@@ -9978,12 +11542,14 @@ function POSTransfers({ lang, kioskId, transfers, busy, onReceive, onRefresh, on
                     <div className="t-small subtle" style={{ marginTop: 3 }}>{transfer.from}{" -> "}{transfer.to}</div>
                     <div className="t-small" style={{ marginTop: 8 }}>{transfer.items}</div>
                   </div>
-                  <span className={`badge ${canReceive ? "badge-warn" : "badge-pos"}`}>{transfer.status}</span>
+                  <span className={`badge ${transferStatusClass(status)}`}>{received ? "received" : transfer.status}</span>
                 </div>
                 <div className="row" style={{ justifyContent: "space-between", gap: 8, marginTop: 12 }}>
-                  <div className="t-small subtle">ETA {transfer.eta || "--:--"}</div>
+                  <div className="t-small subtle">
+                    {received ? "Confirmed at kiosk" : canReceive ? "Arrived - waiting for kiosk confirmation" : `ETA ${transfer.eta || "--:--"}`}
+                  </div>
                   <button className="btn btn-primary" disabled={!canReceive || busy === transfer.id} onClick={() => onReceive(transfer)} style={{ height: 30, fontSize: 12 }}>
-                    {busy === transfer.id ? "Receiving..." : "Received"}
+                    {busy === transfer.id ? "Receiving..." : received ? "Confirmed" : "Confirm arrived"}
                   </button>
                 </div>
               </div>
@@ -10001,6 +11567,107 @@ function POSTransfers({ lang, kioskId, transfers, busy, onReceive, onRefresh, on
 
       <div style={{ padding: "12px 18px", borderTop: "1px solid var(--line)", background: "var(--surface)" }}>
         <div className="t-small subtle">{actionable.length} transfer{actionable.length === 1 ? "" : "s"} waiting for kiosk confirmation</div>
+      </div>
+    </div>
+  );
+}
+
+function POSClose({ lang, bootstrap, onBack, onClosed }) {
+  const ar = lang === "ar";
+  const bayaan = useBayaan();
+  const { showToast } = useToast();
+  const snapshot = unwrapOdoo(bootstrap);
+  const kioskId = bayaan.shift?.kioskId || bayaan.kioskId;
+  const stockRows = React.useMemo(() => (
+    (snapshot?.kiosk_stock_rows || [])
+      .filter((row) => matchesKiosk(row.kiosk, { id: kioskId, kiosk_code: kioskId }))
+      .slice(0, 12)
+  ), [kioskId, snapshot]);
+  const [actualCash, setActualCash] = useStatePOS("");
+  const [counts, setCounts] = useStatePOS({});
+  const [busy, setBusy] = useStatePOS(false);
+
+  const submitClose = async () => {
+    if (!bayaan.shift) return;
+    const cash = Number(actualCash || 0);
+    setBusy(true);
+    try {
+      if (bayaan.mode === "live" && bayaan.hasBackend) {
+        const stockCounts = stockRows.map((row) => ({
+          item: row.item,
+          uom: row.uom || "Units",
+          expected_qty: Number(row.actual_qty || 0),
+          actual_qty: Number(counts[row.item] ?? row.actual_qty ?? 0),
+        }));
+        await bayaan.gateway.submitShiftClose({
+          kioskId,
+          cashier: bayaan.shift.cashier,
+          shift: {
+            openedAt: bayaan.shift.openedAt,
+            openingCash: bayaan.shift.openingCash,
+            sales: [],
+          },
+          draft: {
+            actualCash: cash,
+            stockCounts,
+            ingredientCounts: stockCounts.map((line) => ({
+              ingredient: line.item,
+              actual_qty: line.actual_qty,
+            })),
+          },
+        });
+      }
+      showToast(ar ? "ØªÙ… Ø¥ØºÙ„Ø§Ù‚ Ø§Ù„ÙˆØ±Ø¯ÙŠØ©" : "Shift close submitted", "success");
+      onClosed();
+    } catch (error) {
+      showToast(error?.message || "Could not submit shift close", "warn");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <div className="between" style={{ height: 52, padding: "0 18px", borderBottom: "1px solid var(--line)", background: "var(--surface)" }}>
+        <button className="btn btn-ghost" onClick={onBack}><Icon name="arrowLeft" size={13}/>{ar ? "Ø±Ø¬ÙˆØ¹" : "Back"}</button>
+        <div className="t-h2">{ar ? "Ø¥ØºÙ„Ø§Ù‚ Ø§Ù„ÙˆØ±Ø¯ÙŠØ©" : "Close shift"}</div>
+        <span className="badge">{kioskId}</span>
+      </div>
+      <div className="col" style={{ gap: 14, padding: 18, overflow: "auto" }}>
+        <div className="card card-pad">
+          <label className="t-micro">{ar ? "Ø§Ù„Ù†Ù‚Ø¯ Ø§Ù„Ù…Ø¹Ø¯ÙˆØ¯" : "Counted cash"}</label>
+          <input className="input" type="number" min={0} value={actualCash} onChange={(event) => setActualCash(event.target.value)} placeholder={String(bayaan.shift?.openingCash || 0)}/>
+        </div>
+        <div className="card">
+          <div className="between" style={{ padding: "12px 14px" }}>
+            <div>
+              <div className="t-h2">{ar ? "Ø¹Ø¯ Ø§Ù„Ù…Ø®Ø²ÙˆÙ†" : "Stock count"}</div>
+              <div className="t-small subtle">{ar ? "ÙŠØªØ­ÙˆÙ„ Ø¥Ù„Ù‰ ÙØ±Ù‚ Ø¹Ù†Ø¯ Ø§Ù„Ù…Ø¯ÙŠØ±" : "These counted values become the variance record"}</div>
+            </div>
+          </div>
+          <table className="tbl">
+            <tbody>
+              {stockRows.map((row) => (
+                <tr key={row.item}>
+                  <td>{cleanDisplayName(row.item)}</td>
+                  <td className="t-num muted">{Number(row.actual_qty || 0).toLocaleString("en", { maximumFractionDigits: 2 })} {row.uom}</td>
+                  <td style={{ width: 140 }}>
+                    <input className="input" type="number" min={0} step={0.01}
+                      value={counts[row.item] ?? ""}
+                      onChange={(event) => setCounts((current) => ({ ...current, [row.item]: event.target.value }))}
+                      placeholder="count"/>
+                  </td>
+                </tr>
+              ))}
+              {!stockRows.length && (
+                <tr><td className="muted" style={{ textAlign: "center", padding: 24 }}>{ar ? "Ù„Ø§ ÙŠÙˆØ¬Ø¯ Ù…Ø®Ø²ÙˆÙ† Ù…Ø­Ù…Ù„" : "No live kiosk stock loaded"}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <button className="btn btn-primary btn-xl" onClick={submitClose} disabled={busy || !actualCash} style={{ justifyContent: "center" }}>
+          <Icon name="check" size={14}/>{busy ? (ar ? "Ø¬Ø§Ø±Ù Ø§Ù„Ø¥Ø±Ø³Ø§Ù„" : "Submitting") : (ar ? "Ø¥Ø±Ø³Ø§Ù„ Ø§Ù„Ø¥ØºÙ„Ø§Ù‚" : "Submit close")}
+        </button>
       </div>
     </div>
   );
@@ -10190,7 +11857,7 @@ function POSPayment({ lang, total, cart, onTender, tender, onDone, onBack }) {
 }
 
 // =============== WASTE ENTRY ===============
-function POSWaste({ lang, onDone, onBack }) {
+function POSWaste({ lang, bootstrap, onDone, onBack }) {
   const ar = lang === "ar";
   const bayaan = useBayaan();
   const { showToast } = useToast();
@@ -10199,7 +11866,24 @@ function POSWaste({ lang, onDone, onBack }) {
   const [reason, setReason] = useStatePOS(null);
   const [busy, setBusy] = useStatePOS(false);
 
-  const items = [
+  const liveWasteItems = React.useMemo(() => {
+    const snapshot = unwrapOdoo(bootstrap);
+    if (!(bayaan.mode === "live" && bayaan.hasBackend) || !snapshot) return null;
+    const stockRows = (snapshot.kiosk_stock_rows || [])
+      .filter((row) => matchesKiosk(row.kiosk, { id: bayaan.kioskId, kiosk_code: bayaan.kioskId }));
+    const productsByCode = new Map((snapshot.products || []).map((product) => [product.default_code || product.name, product]));
+    const rows = stockRows.map((row) => {
+      const product = productsByCode.get(row.item);
+      return {
+        id: product?.default_code || row.item,
+        name: cleanDisplayName(product?.name || row.item),
+        price: Number(product?.standard_price || 0),
+      };
+    });
+    return rows.length ? rows : null;
+  }, [bayaan.hasBackend, bayaan.kioskId, bayaan.mode, bootstrap]);
+
+  const items = liveWasteItems || [
     { id: "menu-croissant-plain", name: "Croissant — Plain", price: 12 },
     { id: "menu-croissant-chocolate", name: "Croissant — Chocolate", price: 14 },
     { id: "menu-pistachio-cake", name: "Pistachio Cake", price: 32 },
@@ -10516,9 +12200,94 @@ function getInitialTheme() {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function AuthChip({ lang }) {
+  const bayaan = useBayaan();
+  const { showToast } = useToast();
+  const ar = lang === "ar";
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ login: "manager@bayaan.test", password: "test" });
+  if (!bayaan.hasBackend) return null;
+
+  const user = bayaan.auth.user || {};
+  const roleLabel = ROLE_LABELS[user.primaryRole] || "User";
+  const signedIn = bayaan.auth.authenticated;
+  const submit = async (event) => {
+    event.preventDefault();
+    const result = await bayaan.login(form);
+    if (result.ok) {
+      showToast(ar ? "تم تسجيل الدخول" : `Signed in as ${form.login}`, "success");
+      setOpen(false);
+    } else {
+      showToast(result.error, "warn");
+    }
+  };
+  const signOut = async () => {
+    await bayaan.logout();
+    showToast(ar ? "تم تسجيل الخروج" : "Signed out", "info");
+    setOpen(false);
+  };
+
+  return (
+    <>
+      <button type="button" className="btn btn-ghost" style={{ height: 28, fontSize: 12 }} onClick={() => setOpen(true)}>
+        <Icon name="user" size={12}/>
+        {signedIn ? `${roleLabel} · ${user.name || user.login}` : (ar ? "دخول" : "Sign in")}
+      </button>
+      <Modal open={open} onClose={() => setOpen(false)} title={signedIn ? "Bayaan account" : "Sign in to Bayaan"} width={420}>
+        {signedIn ? (
+          <div style={{ display: "grid", gap: 14 }}>
+            <div className="card" style={{ padding: 14 }}>
+              <div style={{ fontWeight: 600 }}>{user.name}</div>
+              <div className="t-small subtle">{user.login}</div>
+              <div style={{ marginTop: 10 }}><span className="badge">{roleLabel}</span></div>
+            </div>
+            <div className="between">
+              <button type="button" className="btn btn-ghost" onClick={() => setOpen(false)}>Close</button>
+              <button type="button" className="btn btn-primary" onClick={signOut}>Sign out</button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
+            <label className="field-label">Login</label>
+            <input className="input" value={form.login} onChange={(event) => setForm((current) => ({ ...current, login: event.target.value }))}/>
+            <label className="field-label">Password</label>
+            <input className="input" type="password" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}/>
+            <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              {TEST_ACCOUNTS.map((account) => (
+                <button
+                  key={account.login}
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ justifyContent: "flex-start", fontSize: 12 }}
+                  onClick={() => setForm({ login: account.login, password: "test" })}
+                >
+                  {account.role}
+                </button>
+              ))}
+            </div>
+            {bayaan.auth.error && (
+              <div className="t-small" style={{ color: "var(--crit)", background: "var(--crit-soft)", border: "1px solid var(--crit)", borderRadius: 6, padding: 10 }}>
+                {bayaan.auth.error}
+              </div>
+            )}
+            <div className="between">
+              <button type="button" className="btn btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
+              <button type="submit" className="btn btn-primary" disabled={bayaan.auth.busy || !form.login || !form.password}>
+                {bayaan.auth.busy ? "Signing in" : "Sign in"}
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
+    </>
+  );
+}
+
 function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme }) {
   const bayaan = useBayaan();
   const ar = lang === "ar";
+  const canAdmin = authAllowsPanel(bayaan.auth, bayaan.hasBackend, "admin", bayaan.mode);
+  const canPos = authAllowsPanel(bayaan.auth, bayaan.hasBackend, "pos", bayaan.mode);
   return (
     <div className="master-top">
       <div className="brand">
@@ -10527,11 +12296,12 @@ function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme }) {
         <span style={{ color: "#6E6E68", fontWeight: 400 }}>- operations</span>
       </div>
       <div className="seg">
-        <button className={panel === "admin" ? "on" : ""} onClick={() => setPanel("admin")}>Admin</button>
-        <button className={panel === "pos" ? "on" : ""} onClick={() => setPanel("pos")}>POS</button>
+        <button className={panel === "admin" ? "on" : ""} disabled={!canAdmin} onClick={() => setPanel("admin")}>Admin</button>
+        <button className={panel === "pos" ? "on" : ""} disabled={!canPos} onClick={() => setPanel("pos")}>POS</button>
       </div>
       <div className="row" style={{ gap: 12 }}>
         <ModeBadge bayaan={bayaan} ar={ar}/>
+        <AuthChip lang={lang}/>
         <div className="theme-switch" role="group" aria-label="Theme">
           <button
             type="button"
@@ -10605,27 +12375,78 @@ function ModeBadge({ bayaan, ar }) {
   );
 }
 
-function App() {
+function AuthRequired({ lang }) {
+  const bayaan = useBayaan();
+  const ar = lang === "ar";
+  return (
+    <div style={{ flex: 1, display: "grid", placeItems: "center", background: "var(--paper)", padding: 24 }}>
+      <div className="card" style={{ width: 420, maxWidth: "100%", padding: 18 }}>
+        <div className="t-h2">{ar ? "تسجيل الدخول" : "Sign in"}</div>
+        <div className="t-small subtle" style={{ marginTop: 4 }}>
+          {ar ? "وضع التشغيل يحتاج حساب أودو/بيان." : "Live mode uses Odoo users and Bayaan role groups."}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 16 }}>
+          {TEST_ACCOUNTS.map((account) => (
+            <button
+              key={account.login}
+              type="button"
+              className="btn btn-ghost"
+              style={{ justifyContent: "flex-start", height: 34 }}
+              onClick={() => void bayaan.login({ login: account.login, password: "test" })}
+            >
+              {account.role}
+            </button>
+          ))}
+        </div>
+        {bayaan.auth.error && (
+          <div className="t-small" style={{ marginTop: 12, color: "var(--crit)" }}>{bayaan.auth.error}</div>
+        )}
+        <button type="button" className="btn btn-primary" style={{ marginTop: 14, width: "100%", justifyContent: "center" }}
+          onClick={() => bayaan.setMode("demo")}>
+          {ar ? "فتح العرض التجريبي" : "Open demo mode"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AppContent() {
+  const bayaan = useBayaan();
   const [panel, setPanel] = useStateApp("admin");
   const [lang, setLang] = useStateApp("en");
   const [theme, setTheme] = useStateApp(getInitialTheme);
   const dir = lang === "ar" ? "rtl" : "ltr";
+  const needsLogin = bayaan.hasBackend && bayaan.mode === "live" && (!bayaan.auth.checked || !bayaan.auth.authenticated);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
+  useEffect(() => {
+    if (authAllowsPanel(bayaan.auth, bayaan.hasBackend, panel, bayaan.mode)) return;
+    if (authAllowsPanel(bayaan.auth, bayaan.hasBackend, "admin", bayaan.mode)) setPanel("admin");
+    else if (authAllowsPanel(bayaan.auth, bayaan.hasBackend, "pos", bayaan.mode)) setPanel("pos");
+  }, [bayaan.auth, bayaan.hasBackend, bayaan.mode, panel]);
+
+  return (
+    <div className={`app-frame panel-${panel}`} data-theme={theme} dir={dir} lang={lang}>
+      <MasterTop panel={panel} setPanel={setPanel} lang={lang} setLang={setLang} theme={theme} setTheme={setTheme}/>
+      {needsLogin
+        ? <AuthRequired lang={lang}/>
+        : panel === "admin"
+          ? <AdminPanel lang={lang}/>
+          : <POSPanel lang={lang}/>}
+    </div>
+  );
+}
+
+function App() {
   return (
     <ToastProvider>
       <BayaanProvider>
         <CatalogProvider>
-          <div className={`app-frame panel-${panel}`} data-theme={theme} dir={dir} lang={lang}>
-            <MasterTop panel={panel} setPanel={setPanel} lang={lang} setLang={setLang} theme={theme} setTheme={setTheme}/>
-            {panel === "admin"
-              ? <AdminPanel lang={lang}/>
-              : <POSPanel lang={lang}/>}
-          </div>
+          <AppContent/>
         </CatalogProvider>
       </BayaanProvider>
     </ToastProvider>

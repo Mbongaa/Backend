@@ -7,6 +7,10 @@
     "license": "LGPL-3",
     "depends": [
         "account",
+        "bus",
+        "hr",
+        "hr_attendance",
+        "pos_hr",
         "point_of_sale",
         "purchase",
         "stock",

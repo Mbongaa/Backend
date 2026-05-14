@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime, time, timedelta
 from uuid import uuid4
 
@@ -13,6 +14,9 @@ from ..payment_gateways import (
     serialize_payment_gateway_catalog,
 )
 from ..models.bayaan_payment_transaction import normalize_provider_status
+
+
+_logger = logging.getLogger(__name__)
 
 
 class BayaanKioskApi(http.Controller):
@@ -106,8 +110,123 @@ class BayaanKioskApi(http.Controller):
     def _is_bayaan_supervisor(self):
         return self._is_bayaan_manager() or request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_supervisor")
 
+    def _is_bayaan_logistics(self):
+        return self._is_bayaan_manager() or request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_logistics")
+
+    def _is_bayaan_stock_operator(self):
+        return self._is_bayaan_logistics() or request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_supervisor")
+
+    def _is_bayaan_accountant(self):
+        return self._is_bayaan_manager() or request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_accountant")
+
+    def _is_chain_read_user(self):
+        return self._is_bayaan_manager() or self._is_bayaan_logistics() or self._is_bayaan_accountant()
+
     def _is_bayaan_cashier(self):
         return self._is_bayaan_supervisor() or request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_cashier")
+
+    def _current_user_is_authenticated(self):
+        user = request.env.user
+        is_public = getattr(user, "_is_public", lambda: False)
+        return bool(request.session.uid) and not is_public()
+
+    def _bayaan_roles(self):
+        if not self._current_user_is_authenticated():
+            return []
+        roles = []
+        if self._is_system_user():
+            roles.append("superadmin")
+        if request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_manager"):
+            roles.append("manager")
+        if request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_logistics"):
+            roles.append("logistics")
+        if request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_accountant"):
+            roles.append("accountant")
+        if request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_supervisor"):
+            roles.append("supervisor")
+        if request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_cashier"):
+            roles.append("cashier")
+        return roles
+
+    def _role_payload(self):
+        user = request.env.user
+        roles = self._bayaan_roles()
+        primary = next(
+            (role for role in ("superadmin", "manager", "logistics", "accountant", "supervisor", "cashier") if role in roles),
+            None,
+        )
+        nav_by_role = {
+            "cashier": [],
+            "supervisor": ["overview", "kiosks", "sales", "closing", "waste", "inventory", "reports"],
+            "logistics": ["overview", "warehouses", "items", "suppliers", "inventory", "reports"],
+            "accountant": ["overview", "insights", "sales", "closing", "suppliers", "staff", "finance", "reports"],
+            "manager": [
+                "overview", "insights", "kiosks", "warehouses", "items", "sales", "closing",
+                "waste", "products", "suppliers", "inventory", "staff", "finance", "reports",
+            ],
+            "superadmin": [
+                "overview", "insights", "kiosks", "warehouses", "items", "sales", "closing",
+                "waste", "products", "suppliers", "inventory", "staff", "finance", "reports",
+            ],
+        }
+        allowed_nav = []
+        for role in roles:
+            for item in nav_by_role.get(role, []):
+                if item not in allowed_nav:
+                    allowed_nav.append(item)
+        assigned_kiosks = []
+        if roles:
+            Kiosk = request.env["bayaan.kiosk"].sudo()
+            if "superadmin" in roles:
+                kiosks = Kiosk.search([
+                    ("company_id", "=", request.env.company.id),
+                    ("active", "=", True),
+                ], order="kiosk_code", limit=200)
+            else:
+                kiosks = Kiosk.search([
+                    ("company_id", "=", request.env.company.id),
+                    "|", "|",
+                    ("manager_user_id", "=", user.id),
+                    ("supervisor_user_id", "=", user.id),
+                    ("cashier_user_ids", "in", [user.id]),
+                ], order="kiosk_code", limit=200)
+            assigned_kiosks = [{
+                "id": kiosk.id,
+                "kioskCode": kiosk.kiosk_code,
+                "name": kiosk.name,
+                "city": kiosk.city,
+                "area": kiosk.area,
+            } for kiosk in kiosks]
+            if "superadmin" in roles:
+                pos_kiosk_count = Kiosk.search_count([
+                    ("company_id", "=", request.env.company.id),
+                    ("active", "=", True),
+                ])
+            else:
+                pos_kiosk_count = Kiosk.search_count([
+                    ("company_id", "=", request.env.company.id),
+                    "|",
+                    ("supervisor_user_id", "=", user.id),
+                    ("cashier_user_ids", "in", [user.id]),
+                ])
+        else:
+            pos_kiosk_count = 0
+        return {
+            "authenticated": bool(roles),
+            "user": {
+                "id": user.id if roles else False,
+                "name": user.name if roles else "",
+                "login": user.login if roles else "",
+                "roles": roles,
+                "primaryRole": primary,
+                "allowedNav": allowed_nav,
+                "allowedPanels": {
+                    "admin": bool(allowed_nav),
+                    "pos": bool(pos_kiosk_count),
+                },
+                "assignedKiosks": assigned_kiosks,
+            },
+        }
 
     def _user_is_assigned_to_kiosk(self, kiosk):
         user = request.env.user
@@ -117,16 +236,40 @@ class BayaanKioskApi(http.Controller):
             or user in kiosk.cashier_user_ids
         )
 
+    def _user_can_receive_for_kiosk(self, kiosk):
+        user = request.env.user
+        return (
+            self._is_system_user()
+            or
+            (
+                kiosk.supervisor_user_id == user
+                and user.has_group("bayaan_fnb_kiosk.group_bayaan_supervisor")
+            )
+            or (
+                user in kiosk.cashier_user_ids
+                and user.has_group("bayaan_fnb_kiosk.group_bayaan_cashier")
+            )
+        )
+
     def _require_kiosk_scope(self, kiosk, operation):
         """JSON routes use sudo for Odoo writes; enforce Bayaan kiosk scope here."""
+        if operation == "transfer_receive":
+            if self._user_can_receive_for_kiosk(kiosk):
+                return
+            raise UserError(
+                "You are not allowed to %s for kiosk %s."
+                % (operation.replace("_", " "), kiosk.kiosk_code)
+            )
         if self._is_bayaan_manager():
             return
+        if operation == "transfer" and self._is_bayaan_logistics():
+            return
         assigned = self._user_is_assigned_to_kiosk(kiosk)
-        if operation in ("open_session", "sale", "waste", "shift_close", "transfer_receive"):
+        if operation in ("open_session", "sale", "waste", "shift_close"):
             if assigned and self._is_bayaan_cashier():
                 return
         elif operation in ("transfer", "review"):
-            if assigned and self._is_bayaan_supervisor():
+            if assigned and self._is_bayaan_stock_operator():
                 return
         raise UserError(
             "You are not allowed to %s for kiosk %s."
@@ -134,11 +277,89 @@ class BayaanKioskApi(http.Controller):
         )
 
     def _require_procurement_scope(self):
-        self._require_manager_scope("create or process purchase orders")
+        if not self._is_bayaan_logistics():
+            raise UserError("Only Bayaan logistics or managers can create or process purchase orders.")
+
+    def _require_chain_read_scope(self, action):
+        if not self._is_chain_read_user():
+            raise UserError("Only Bayaan managers, logistics, or accountants can %s." % action)
 
     def _require_manager_scope(self, action):
         if not self._is_bayaan_manager():
             raise UserError("Only Bayaan managers can %s." % action)
+
+    def _require_superadmin_scope(self, action):
+        if not self._is_system_user():
+            raise UserError("Only Bayaan superadmins can %s." % action)
+
+    def _audit_payload(self, payload):
+        if not isinstance(payload, dict):
+            return payload
+        redacted = {}
+        sensitive_tokens = ("password", "token", "secret", "file", "base64", "credential")
+        for key, value in payload.items():
+            if any(token in str(key).lower() for token in sensitive_tokens):
+                redacted[key] = "[redacted]"
+            elif isinstance(value, dict):
+                redacted[key] = self._audit_payload(value)
+            elif isinstance(value, list):
+                redacted[key] = [
+                    self._audit_payload(item) if isinstance(item, dict) else item
+                    for item in value[:20]
+                ]
+            else:
+                redacted[key] = value
+        return redacted
+
+    def _audit_event(self, event_type, action, title, detail="", record=None, kiosk=None, severity="info", payload=None):
+        try:
+            values = {
+                "event_type": event_type,
+                "action": action,
+                "severity": severity,
+                "title": title,
+                "detail": detail or "",
+                "actor_id": request.env.user.id,
+                "company_id": request.env.company.id,
+                "occurred_at": fields.Datetime.now(),
+            }
+            if kiosk:
+                values["kiosk_id"] = kiosk.id
+            if record:
+                values.update({
+                    "model_name": record._name,
+                    "res_id": record.id,
+                    "reference": getattr(record, "name", False) or getattr(record, "display_name", False) or str(record.id),
+                })
+            if payload is not None:
+                values["payload_json"] = json.dumps(self._audit_payload(payload), default=str, ensure_ascii=False)[:8000]
+            event = request.env["bayaan.audit.event"].sudo().create(values)
+            try:
+                request.env["bayaan.realtime"].sudo().publish_from_audit(event)
+            except Exception:
+                _logger.exception("Could not publish Bayaan realtime event: %s", title)
+            return event
+        except Exception:
+            _logger.exception("Could not write Bayaan audit event: %s", title)
+        return False
+
+    def _serialize_audit_event(self, event):
+        return {
+            "id": event.id,
+            "eventType": event.event_type,
+            "action": event.action,
+            "severity": event.severity,
+            "title": event.title,
+            "detail": event.detail or "",
+            "actor": event.actor_id.name,
+            "actorLogin": event.actor_id.login,
+            "occurredAt": fields.Datetime.to_string(event.occurred_at) if event.occurred_at else False,
+            "kiosk": event.kiosk_id.kiosk_code if event.kiosk_id else "",
+            "kioskName": event.kiosk_id.name if event.kiosk_id else "",
+            "model": event.model_name or "",
+            "resId": event.res_id or False,
+            "reference": event.reference or "",
+        }
 
     def _kiosk_for_picking(self, picking):
         return request.env["bayaan.kiosk"].sudo().search([
@@ -169,6 +390,31 @@ class BayaanKioskApi(http.Controller):
             return default
         return float(value)
 
+    def _hour_value(self, value, default=0.0):
+        if value in (None, ""):
+            return default
+        if isinstance(value, str) and ":" in value:
+            hours, minutes = value.split(":", 1)
+            return float(hours) + (float(minutes) / 60.0)
+        return self._float_value(value, default)
+
+    def _hr_week_window(self, payload=None):
+        payload = payload or {}
+        today = fields.Date.context_today(request.env.user)
+        date_from = payload.get("date_from") or payload.get("dateFrom")
+        date_to = payload.get("date_to") or payload.get("dateTo")
+        if date_from:
+            date_from = fields.Date.to_date(date_from)
+        else:
+            date_from = today - timedelta(days=today.weekday())
+        if date_to:
+            date_to = fields.Date.to_date(date_to)
+        else:
+            date_to = date_from + timedelta(days=int(payload.get("days") or 7) - 1)
+        if date_to < date_from:
+            raise UserError("HR schedule date_to must be on or after date_from.")
+        return date_from, date_to
+
     def _unique_product_code(self, code, name):
         base = (code or name or "ITEM").strip()
         candidate = "".join(ch if ch.isalnum() else "-" for ch in base.upper()).strip("-") or "ITEM"
@@ -194,6 +440,100 @@ class BayaanKioskApi(http.Controller):
             "consumption_mode": product.product_tmpl_id.bayaan_consumption_mode,
             "qty_available": product.qty_available,
         }
+
+    def _serialize_supplier_partner(self, partner, spend30=0.0, last_order="-"):
+        return {
+            "id": partner.id,
+            "name": partner.name,
+            "category": partner.bayaan_supplier_category or "Supplier",
+            "address": partner.street or partner.contact_address or "",
+            "deliveryCategory": partner.bayaan_delivery_category or "Review",
+            "spend30": spend30,
+            "lastOrder": last_order,
+            "status": "good",
+        }
+
+    def _serialize_recurring_purchase(self, plan):
+        lines = [{
+            "product": line.product_id.default_code or line.product_id.display_name,
+            "qty": line.qty,
+            "uom": line.uom_id.name,
+            "priceUnit": line.price_unit,
+        } for line in plan.line_ids]
+        return {
+            "id": plan.id,
+            "name": plan.name,
+            "supplier": plan.partner_id.name,
+            "warehouse": plan.warehouse_id.name,
+            "frequency": plan.frequency,
+            "weekday": plan.weekday,
+            "nextDate": fields.Date.to_string(plan.next_date),
+            "active": plan.active,
+            "lines": lines,
+            "items": lines,
+        }
+
+    def _serialize_hr_snapshot(self):
+        company = request.env.company
+        Employee = request.env["bayaan.employee"].sudo()
+        Attendance = request.env["bayaan.attendance"].sudo()
+        Adjustment = request.env["bayaan.payroll.adjustment"].sudo()
+        PayrollRun = request.env["bayaan.payroll.run"].sudo()
+        today = fields.Date.context_today(request.env.user)
+        month_start = today.replace(day=1)
+        employees = Employee.search([("company_id", "=", company.id)], order="name", limit=500)
+        attendance = Attendance.search([
+            ("company_id", "=", company.id),
+            ("check_in", ">=", datetime.combine(month_start, time.min)),
+        ], order="check_in desc, id desc", limit=500)
+        adjustments = Adjustment.search([
+            ("company_id", "=", company.id),
+            ("date", ">=", month_start),
+        ], order="date desc, id desc", limit=500)
+        payroll_runs = PayrollRun.search([("company_id", "=", company.id)], order="date_from desc, id desc", limit=24)
+        return {
+            "engine": "odoo_pos",
+            "employees": [self._serialize_employee(employee) for employee in employees],
+            "attendance": [{
+                "id": row.id,
+                "employee": row.employee_id.name,
+                "kiosk": row.kiosk_id.kiosk_code,
+                "checkIn": fields.Datetime.to_string(row.check_in),
+                "checkOut": fields.Datetime.to_string(row.check_out) if row.check_out else False,
+                "workedHours": row.worked_hours,
+                "note": row.note,
+            } for row in attendance],
+            "adjustments": [self._serialize_payroll_adjustment(adjustment) for adjustment in adjustments],
+            "payrollRuns": [self._serialize_payroll_run(run) for run in payroll_runs],
+        }
+
+    def _attach_purchase_invoice(self, order, payload):
+        invoice_ref = (payload.get("invoice_ref") or payload.get("invoiceRef") or "").strip()
+        invoice_name = (payload.get("invoice_name") or payload.get("invoiceName") or "").strip()
+        invoice_file = payload.get("invoice_file") or payload.get("invoiceFile") or payload.get("invoiceFileBase64")
+        invoice_mimetype = payload.get("invoice_mimetype") or payload.get("invoiceMimeType")
+        attachment = False
+
+        if invoice_ref:
+            order.partner_ref = invoice_ref
+
+        if invoice_file and invoice_name:
+            attachment = request.env["ir.attachment"].sudo().create({
+                "name": invoice_name,
+                "res_model": "purchase.order",
+                "res_id": order.id,
+                "datas": invoice_file,
+                "mimetype": invoice_mimetype or "application/octet-stream",
+            })
+
+        if invoice_ref or attachment:
+            body = "Bayaan invoice uploaded."
+            if invoice_ref:
+                body += " Vendor reference: %s" % invoice_ref
+            order.message_post(
+                body=body,
+                attachment_ids=attachment.ids if attachment else [],
+            )
 
     def _payment_gateway_catalog(self):
         return serialize_payment_gateway_catalog()
@@ -326,11 +666,86 @@ class BayaanKioskApi(http.Controller):
             "name": employee.name,
             "role": employee.role,
             "kiosk": employee.kiosk_id.kiosk_code,
+            "kioskName": employee.kiosk_id.name,
+            "odooEmployeeId": employee.hr_employee_id.id,
+            "odooEmployee": employee.hr_employee_id.name,
             "monthlySalary": employee.monthly_salary,
             "expectedMonthlyHours": employee.expected_monthly_hours,
             "hourlyRate": employee.hourly_rate,
             "currency": employee.currency_id.name,
             "active": employee.active,
+        }
+
+    def _serialize_hr_attendance(self, attendance):
+        return {
+            "id": attendance.id,
+            "employeeId": attendance.employee_id.id,
+            "employee": attendance.employee_id.name,
+            "kiosk": attendance.kiosk_id.kiosk_code,
+            "kioskName": attendance.kiosk_id.name,
+            "workedHours": attendance.worked_hours,
+            "checkIn": fields.Datetime.to_string(attendance.check_in),
+            "checkOut": fields.Datetime.to_string(attendance.check_out) if attendance.check_out else False,
+            "odooAttendanceId": attendance.hr_attendance_id.id,
+        }
+
+    def _serialize_hr_shift(self, shift):
+        return {
+            "id": shift.id,
+            "employeeId": shift.employee_id.id,
+            "employee": shift.employee_id.name,
+            "odooEmployeeId": shift.hr_employee_id.id,
+            "kiosk": shift.kiosk_id.kiosk_code,
+            "kioskName": shift.kiosk_id.name,
+            "date": fields.Date.to_string(shift.date),
+            "role": shift.role,
+            "startHour": shift.start_hour,
+            "endHour": shift.end_hour,
+            "plannedHours": shift.planned_hours,
+            "state": shift.state,
+            "note": shift.note,
+        }
+
+    def _serialize_coverage_rule(self, rule):
+        return {
+            "id": rule.id,
+            "kiosk": rule.kiosk_id.kiosk_code,
+            "kioskName": rule.kiosk_id.name,
+            "dayOfWeek": rule.dayofweek,
+            "role": rule.role,
+            "startHour": rule.start_hour,
+            "endHour": rule.end_hour,
+            "requiredCount": rule.required_count,
+            "active": rule.active,
+        }
+
+    def _serialize_coverage_gap(self, rule, date_value, assigned_shifts):
+        assigned = [
+            {
+                "shiftId": shift.id,
+                "employeeId": shift.employee_id.id,
+                "employee": shift.employee_id.name,
+                "role": shift.role,
+                "startHour": shift.start_hour,
+                "endHour": shift.end_hour,
+            }
+            for shift in assigned_shifts
+        ]
+        missing_count = max(rule.required_count - len(assigned), 0)
+        return {
+            "ruleId": rule.id,
+            "date": fields.Date.to_string(date_value),
+            "dayOfWeek": rule.dayofweek,
+            "kiosk": rule.kiosk_id.kiosk_code,
+            "kioskName": rule.kiosk_id.name,
+            "role": rule.role,
+            "startHour": rule.start_hour,
+            "endHour": rule.end_hour,
+            "requiredCount": rule.required_count,
+            "assignedCount": len(assigned),
+            "missingCount": missing_count,
+            "assigned": assigned,
+            "severity": "critical" if missing_count >= rule.required_count else "warning",
         }
 
     def _serialize_payroll_adjustment(self, adjustment):
@@ -451,6 +866,102 @@ class BayaanKioskApi(http.Controller):
         if not employee.exists() or employee.company_id != request.env.company:
             raise UserError("Employee not found: %s" % value)
         return employee
+
+    def _hr_schedule_snapshot(self, payload=None):
+        payload = payload or {}
+        date_from, date_to = self._hr_week_window(payload)
+        company = request.env.company
+        Kiosk = request.env["bayaan.kiosk"].sudo()
+        Employee = request.env["bayaan.employee"].sudo()
+        Attendance = request.env["bayaan.attendance"].sudo()
+        CoverageRule = request.env["bayaan.staffing.coverage.rule"].sudo()
+        ShiftPlan = request.env["bayaan.shift.plan"].sudo()
+
+        kiosk_domain = [
+            ("active", "=", True),
+            ("company_id", "=", company.id),
+        ]
+        if payload.get("kiosk"):
+            kiosk_domain += [("kiosk_code", "=", payload.get("kiosk"))]
+        if not self._is_chain_read_user():
+            user = request.env.user
+            kiosk_domain += [
+                "|", "|",
+                ("manager_user_id", "=", user.id),
+                ("supervisor_user_id", "=", user.id),
+                ("cashier_user_ids", "in", [user.id]),
+            ]
+
+        kiosks = Kiosk.search(kiosk_domain, order="kiosk_code", limit=500)
+        kiosk_ids = kiosks.ids or [0]
+        employee_domain = [
+            ("company_id", "=", company.id),
+            "|",
+            ("kiosk_id", "=", False),
+            ("kiosk_id", "in", kiosk_ids),
+        ]
+        if not self._is_chain_read_user():
+            employee_domain = [
+                ("company_id", "=", company.id),
+                ("kiosk_id", "in", kiosk_ids),
+            ]
+        shift_domain = [
+            ("company_id", "=", company.id),
+            ("date", ">=", date_from),
+            ("date", "<=", date_to),
+            ("kiosk_id", "in", kiosk_ids),
+        ]
+        coverage_domain = [
+            ("company_id", "=", company.id),
+            ("active", "=", True),
+            ("kiosk_id", "in", kiosk_ids),
+        ]
+        attendance_domain = [
+            ("company_id", "=", company.id),
+            ("check_in", ">=", datetime.combine(date_from, time.min)),
+            ("check_in", "<=", datetime.combine(date_to, time.max)),
+            "|",
+            ("kiosk_id", "=", False),
+            ("kiosk_id", "in", kiosk_ids),
+        ]
+
+        employees = Employee.search(employee_domain, order="name", limit=500)
+        shifts = ShiftPlan.search(shift_domain, order="date, start_hour, kiosk_id, employee_id", limit=1000)
+        coverage_rules = CoverageRule.search(coverage_domain, order="kiosk_id, dayofweek, start_hour, role", limit=1000)
+        attendance = Attendance.search(attendance_domain, order="check_in desc, id desc", limit=1000)
+        coverage_gaps = []
+        span_days = (date_to - date_from).days + 1
+        for day_index in range(span_days):
+            date_value = date_from + timedelta(days=day_index)
+            dayofweek = str(date_value.weekday())
+            for rule in coverage_rules.filtered(lambda item: item.dayofweek == dayofweek):
+                assigned_shifts = shifts.filtered(lambda shift, rule=rule, date_value=date_value: (
+                    shift.state != "cancelled"
+                    and shift.date == date_value
+                    and shift.kiosk_id == rule.kiosk_id
+                    and shift.start_hour < rule.end_hour
+                    and shift.end_hour > rule.start_hour
+                    and (rule.role == "any" or shift.role == rule.role)
+                ))
+                if len(assigned_shifts) < rule.required_count:
+                    coverage_gaps.append(self._serialize_coverage_gap(rule, date_value, assigned_shifts))
+
+        return {
+            "dateFrom": fields.Date.to_string(date_from),
+            "dateTo": fields.Date.to_string(date_to),
+            "employees": [self._serialize_employee(employee) for employee in employees],
+            "coverageRules": [self._serialize_coverage_rule(rule) for rule in coverage_rules],
+            "shifts": [self._serialize_hr_shift(shift) for shift in shifts],
+            "attendance": [self._serialize_hr_attendance(row) for row in attendance],
+            "coverageGaps": coverage_gaps,
+            "summary": {
+                "employeeCount": len(employees),
+                "plannedShiftCount": len(shifts.filtered(lambda shift: shift.state != "cancelled")),
+                "plannedHours": sum(shifts.filtered(lambda shift: shift.state != "cancelled").mapped("planned_hours")),
+                "coverageGapCount": len(coverage_gaps),
+                "missingPeople": sum(gap["missingCount"] for gap in coverage_gaps),
+            },
+        }
 
     def _picking_lines_from_payload(self, items):
         quantities_by_product = {}
@@ -719,9 +1230,52 @@ class BayaanKioskApi(http.Controller):
             "created": created or {},
         }
 
+    @http.route("/bayaan/api/auth_status", type="jsonrpc", auth="public")
+    def auth_status(self, **kwargs):
+        return self._role_payload()
+
+    @http.route("/bayaan/api/auth_logout", type="jsonrpc", auth="public")
+    def auth_logout(self, **kwargs):
+        if self._current_user_is_authenticated():
+            self._audit_event(
+                "auth",
+                "logout",
+                "User signed out",
+                request.env.user.login or request.env.user.name,
+                record=request.env.user,
+                severity="info",
+            )
+        request.session.logout(keep_db=True)
+        return {"authenticated": False}
+
+    @http.route("/bayaan/api/audit_log", type="jsonrpc", auth="user")
+    def audit_log(self, **kwargs):
+        self._require_superadmin_scope("read the Bayaan audit log")
+        payload = self._payload(kwargs)
+        limit = int(payload.get("limit") or 80)
+        limit = max(1, min(limit, 200))
+        domain = [("company_id", "=", request.env.company.id)]
+        after_id = payload.get("after_id") or payload.get("afterId")
+        if after_id:
+            domain.append(("id", ">", int(after_id)))
+        event_type = payload.get("event_type") or payload.get("eventType")
+        if event_type:
+            domain.append(("event_type", "=", event_type))
+        events = request.env["bayaan.audit.event"].sudo().search(domain, order="id desc", limit=limit)
+        return {
+            "engine": "odoo_pos",
+            "events": [self._serialize_audit_event(event) for event in events],
+        }
+
+    @http.route("/bayaan/api/realtime_config", type="jsonrpc", auth="user")
+    def realtime_config(self, **kwargs):
+        if not self._bayaan_roles():
+            raise UserError("Only Bayaan users can subscribe to realtime events.")
+        return request.env["bayaan.realtime"].sudo().realtime_config()
+
     @http.route("/bayaan/api/warehouse_setup", type="jsonrpc", auth="user")
     def warehouse_setup(self, **kwargs):
-        self._require_procurement_scope()
+        self._require_chain_read_scope("read warehouse setup")
         return self._serialize_warehouse_setup()
 
     @http.route("/bayaan/api/payment_gateways", type="jsonrpc", auth="user")
@@ -823,6 +1377,16 @@ class BayaanKioskApi(http.Controller):
         elif provider == "zain_cash":
             write_vals["redirect_url"] = provider_payload.get("redirectUrl")
         transaction.write(write_vals)
+        self._audit_event(
+            "payment",
+            "transaction.created",
+            "Payment transaction created: %s" % transaction.external_reference,
+            "%s %.2f via %s" % (request.env.company.currency_id.name, transaction.amount, transaction.provider),
+            record=transaction,
+            kiosk=kiosk if kiosk else None,
+            severity="info",
+            payload=payload,
+        )
         return self._serialize_payment_transaction(transaction, expose_callback_secret=mock)
 
     @http.route("/bayaan/api/payment_transaction_action", type="jsonrpc", auth="user")
@@ -842,7 +1406,7 @@ class BayaanKioskApi(http.Controller):
             ], limit=1)
         if not transaction.exists() or transaction.company_id != request.env.company:
             raise UserError("Payment transaction not found: %s" % transaction_ref)
-        if transaction.kiosk_id:
+        if transaction.kiosk_id and not self._is_bayaan_accountant():
             self._require_kiosk_scope(transaction.kiosk_id, "sale")
 
         action = (payload.get("action") or "status").lower()
@@ -859,6 +1423,16 @@ class BayaanKioskApi(http.Controller):
             transaction.bayaan_apply_provider_status("refunded", payload)
         else:
             raise UserError("Unsupported payment transaction action: %s" % action)
+        self._audit_event(
+            "payment",
+            "transaction.%s" % action,
+            "Payment transaction %s: %s" % (action, transaction.external_reference),
+            "Status %s" % transaction.status,
+            record=transaction,
+            kiosk=transaction.kiosk_id,
+            severity="warning" if action in ("cancel", "cancelled", "canceled", "refund", "refunded") else "info",
+            payload=payload,
+        )
         return self._serialize_payment_transaction(transaction)
 
     @http.route("/bayaan/payment/webhook/<string:provider>", type="http", auth="public", csrf=False, methods=["POST"])
@@ -921,6 +1495,16 @@ class BayaanKioskApi(http.Controller):
             "processed": True,
         })
         transaction.bayaan_apply_provider_status(str(provider_status), payload)
+        self._audit_event(
+            "payment",
+            "webhook.received",
+            "Payment webhook received: %s" % transaction.external_reference,
+            "%s -> %s" % (provider, provider_status),
+            record=event,
+            kiosk=transaction.kiosk_id,
+            severity="info",
+            payload=payload,
+        )
         return request.make_json_response({
             "ok": True,
             "duplicate": False,
@@ -929,21 +1513,32 @@ class BayaanKioskApi(http.Controller):
             "transaction": self._serialize_payment_transaction(transaction),
         })
 
+    @http.route("/bayaan/api/hr_snapshot", type="jsonrpc", auth="user")
+    def hr_snapshot(self, **kwargs):
+        if not (self._is_bayaan_manager() or self._is_bayaan_accountant()):
+            raise UserError("Only Bayaan managers or accountants can read HR/payroll.")
+        return self._serialize_hr_snapshot()
+
     @http.route("/bayaan/api/hr_employee", type="jsonrpc", auth="user")
     def hr_employee(self, **kwargs):
-        self._require_manager_scope("manage staff records")
         payload = self._payload(kwargs)
         Employee = request.env["bayaan.employee"].sudo()
         if not payload.get("name"):
+            if not (self._is_bayaan_manager() or self._is_bayaan_accountant()):
+                raise UserError("Only Bayaan managers or accountants can read staff records.")
             employees = Employee.search([("company_id", "=", request.env.company.id)], order="name", limit=500)
             return {"employees": [self._serialize_employee(employee) for employee in employees]}
+        self._require_manager_scope("manage staff records")
 
         kiosk = request.env["bayaan.kiosk"].sudo().browse()
         if payload.get("kiosk"):
             kiosk = self._require_kiosk(payload.get("kiosk"))
+        role = str(payload.get("role") or "cashier").lower()
+        if role not in ("manager", "supervisor", "warehouse", "cashier", "barista", "accountant", "other"):
+            role = "other"
         employee = Employee.create({
             "name": payload["name"],
-            "role": payload.get("role") or "cashier",
+            "role": role,
             "kiosk_id": kiosk.id if kiosk else False,
             "monthly_salary": self._float_value(payload.get("monthly_salary") or payload.get("monthlySalary"), 0.0),
             "expected_monthly_hours": self._float_value(
@@ -953,6 +1548,16 @@ class BayaanKioskApi(http.Controller):
             "company_id": request.env.company.id,
             "currency_id": request.env.company.currency_id.id,
         })
+        self._audit_event(
+            "hr",
+            "employee.created",
+            "Staff record created: %s" % employee.name,
+            employee.role,
+            record=employee,
+            kiosk=kiosk if kiosk else None,
+            severity="success",
+            payload=payload,
+        )
         return self._serialize_employee(employee)
 
     @http.route("/bayaan/api/hr_attendance", type="jsonrpc", auth="user")
@@ -969,13 +1574,93 @@ class BayaanKioskApi(http.Controller):
             "manual_hours": self._float_value(payload.get("manual_hours") or payload.get("manualHours"), 0.0),
             "note": payload.get("note"),
         })
+        self._audit_event(
+            "hr",
+            "attendance.created",
+            "Attendance logged: %s" % employee.name,
+            "Worked hours %.2f" % attendance.worked_hours,
+            record=attendance,
+            kiosk=employee.kiosk_id,
+            severity="info",
+            payload=payload,
+        )
         return {
             "id": attendance.id,
             "employee": employee.name,
             "workedHours": attendance.worked_hours,
             "checkIn": fields.Datetime.to_string(attendance.check_in),
             "checkOut": fields.Datetime.to_string(attendance.check_out) if attendance.check_out else False,
+            "odooAttendanceId": attendance.hr_attendance_id.id,
         }
+
+    @http.route("/bayaan/api/hr_schedule", type="jsonrpc", auth="user")
+    def hr_schedule(self, **kwargs):
+        payload = self._payload(kwargs)
+        action = (payload.get("action") or payload.get("type") or "read").lower()
+        if action in ("read", "list", "snapshot"):
+            if not (self._is_chain_read_user() or self._is_bayaan_supervisor()):
+                raise UserError("Only Bayaan managers, supervisors, logistics, or accountants can read HR schedules.")
+            return self._hr_schedule_snapshot(payload)
+
+        self._require_manager_scope("manage HR schedules")
+        if action in ("coverage_rule", "create_coverage_rule", "rule"):
+            kiosk = self._require_kiosk(payload.get("kiosk"))
+            role = str(payload.get("role") or "any").lower()
+            if role == "all":
+                role = "any"
+            if role not in ("any", "manager", "supervisor", "warehouse", "cashier", "barista", "accountant", "other"):
+                raise UserError("Unsupported coverage role: %s" % role)
+            rule = request.env["bayaan.staffing.coverage.rule"].sudo().create({
+                "kiosk_id": kiosk.id,
+                "dayofweek": str(payload.get("day_of_week") or payload.get("dayOfWeek") or "0"),
+                "role": role,
+                "start_hour": self._hour_value(payload.get("start_hour") or payload.get("startHour"), 8.0),
+                "end_hour": self._hour_value(payload.get("end_hour") or payload.get("endHour"), 16.0),
+                "required_count": int(payload.get("required_count") or payload.get("requiredCount") or 1),
+                "company_id": request.env.company.id,
+            })
+            self._audit_event(
+                "hr",
+                "coverage_rule.created",
+                "Coverage rule created: %s" % kiosk.kiosk_code,
+                "%s %.2f-%.2f x%s" % (rule.role, rule.start_hour, rule.end_hour, rule.required_count),
+                record=rule,
+                kiosk=kiosk,
+                severity="info",
+                payload=payload,
+            )
+            return self._serialize_coverage_rule(rule)
+
+        if action in ("shift", "create_shift", "assign_shift"):
+            employee = self._employee(payload.get("employee") or payload.get("employee_id") or payload.get("employeeId"))
+            kiosk = self._require_kiosk(payload.get("kiosk") or employee.kiosk_id.kiosk_code)
+            role = str(payload.get("role") or employee.role or "cashier").lower()
+            if role not in ("manager", "supervisor", "warehouse", "cashier", "barista", "accountant", "other"):
+                raise UserError("Unsupported shift role: %s" % role)
+            shift = request.env["bayaan.shift.plan"].sudo().create({
+                "employee_id": employee.id,
+                "kiosk_id": kiosk.id,
+                "date": payload.get("date") or fields.Date.context_today(request.env.user),
+                "role": role,
+                "start_hour": self._hour_value(payload.get("start_hour") or payload.get("startHour"), 8.0),
+                "end_hour": self._hour_value(payload.get("end_hour") or payload.get("endHour"), 16.0),
+                "state": payload.get("state") or "planned",
+                "note": payload.get("note"),
+                "company_id": request.env.company.id,
+            })
+            self._audit_event(
+                "hr",
+                "shift.created",
+                "Shift planned: %s" % employee.name,
+                "%s %s %.2f-%.2f" % (kiosk.kiosk_code, shift.date, shift.start_hour, shift.end_hour),
+                record=shift,
+                kiosk=kiosk,
+                severity="success",
+                payload=payload,
+            )
+            return self._serialize_hr_shift(shift)
+
+        raise UserError("Unsupported HR schedule action: %s" % action)
 
     @http.route("/bayaan/api/payroll_adjustment", type="jsonrpc", auth="user")
     def payroll_adjustment(self, **kwargs):
@@ -999,6 +1684,16 @@ class BayaanKioskApi(http.Controller):
         if payload.get("approve"):
             self._require_manager_scope("approve payroll adjustments")
             adjustment.action_approve()
+        self._audit_event(
+            "payroll",
+            "adjustment.created",
+            "Payroll adjustment created: %s" % employee.name,
+            "%s %.2f" % (adjustment_type, amount),
+            record=adjustment,
+            kiosk=employee.kiosk_id,
+            severity="warning" if adjustment_type in ("deduction", "cash_shortage") else "info",
+            payload=payload,
+        )
         return self._serialize_payroll_adjustment(adjustment)
 
     @http.route("/bayaan/api/payroll_adjustment_action", type="jsonrpc", auth="user")
@@ -1017,6 +1712,16 @@ class BayaanKioskApi(http.Controller):
             adjustment.action_reject()
         else:
             raise UserError("Unsupported payroll adjustment action: %s" % (action or "empty value"))
+        self._audit_event(
+            "payroll",
+            "adjustment.%s" % action,
+            "Payroll adjustment %s: %s" % (action, adjustment.employee_id.name),
+            "%s %.2f" % (adjustment.type, adjustment.amount),
+            record=adjustment,
+            kiosk=adjustment.employee_id.kiosk_id,
+            severity="success" if action in ("approve", "approved") else "warning",
+            payload=payload,
+        )
         return self._serialize_payroll_adjustment(adjustment)
 
     @http.route("/bayaan/api/payroll_run", type="jsonrpc", auth="user")
@@ -1037,6 +1742,15 @@ class BayaanKioskApi(http.Controller):
         })
         if payload.get("compute", True):
             payroll_run.action_compute_lines()
+        self._audit_event(
+            "payroll",
+            "run.created",
+            "Payroll run created: %s" % payroll_run.name,
+            "%s to %s" % (date_from, date_to),
+            record=payroll_run,
+            severity="info",
+            payload=payload,
+        )
         return self._serialize_payroll_run(payroll_run)
 
     @http.route("/bayaan/api/payroll_run_action", type="jsonrpc", auth="user")
@@ -1057,6 +1771,15 @@ class BayaanKioskApi(http.Controller):
             payroll_run.state = "cancelled"
         else:
             raise UserError("Unsupported payroll run action: %s" % (action or "empty value"))
+        self._audit_event(
+            "payroll",
+            "run.%s" % action,
+            "Payroll run %s: %s" % (action, payroll_run.name),
+            "State %s" % payroll_run.state,
+            record=payroll_run,
+            severity="success" if action in ("approve", "approved", "paid", "mark_paid") else "warning",
+            payload=payload,
+        )
         return self._serialize_payroll_run(payroll_run)
 
     @http.route("/bayaan/api/create_warehouse", type="jsonrpc", auth="user")
@@ -1073,6 +1796,15 @@ class BayaanKioskApi(http.Controller):
             "reception_steps": payload.get("reception_steps") or "one_step",
             "delivery_steps": payload.get("delivery_steps") or "ship_only",
         })
+        self._audit_event(
+            "setup",
+            "warehouse.created",
+            "Warehouse created: %s" % warehouse.name,
+            "Code %s" % warehouse.code,
+            record=warehouse,
+            severity="success",
+            payload=payload,
+        )
         return self._serialize_warehouse_setup(created={
             "type": "warehouse",
             "id": warehouse.id,
@@ -1107,6 +1839,16 @@ class BayaanKioskApi(http.Controller):
                 "stock_deduction_policy": payload.get("stock_deduction_policy") or existing.stock_deduction_policy,
                 "active": payload.get("active", existing.active),
             })
+            self._audit_event(
+                "setup",
+                "kiosk.updated",
+                "Kiosk updated: %s" % existing.kiosk_code,
+                existing.name,
+                record=existing,
+                kiosk=existing,
+                severity="success",
+                payload=payload,
+            )
             return self._serialize_warehouse_setup(created={
                 "type": "kiosk",
                 "action": "updated",
@@ -1160,6 +1902,16 @@ class BayaanKioskApi(http.Controller):
             "company_id": request.env.company.id,
         })
 
+        self._audit_event(
+            "setup",
+            "kiosk.created",
+            "Kiosk created: %s" % kiosk.kiosk_code,
+            "%s linked to %s" % (kiosk.name, warehouse.name),
+            record=kiosk,
+            kiosk=kiosk,
+            severity="success",
+            payload=payload,
+        )
         return self._serialize_warehouse_setup(created={
             "type": "kiosk",
             "action": "created",
@@ -1168,6 +1920,57 @@ class BayaanKioskApi(http.Controller):
             "stock_location_id": location.id,
             "pos_config_id": pos_config.id,
         })
+
+    @http.route("/bayaan/api/create_supplier", type="jsonrpc", auth="user")
+    def create_supplier(self, **kwargs):
+        self._require_procurement_scope()
+        payload = self._payload(kwargs)
+        name = (payload.get("name") or "").strip()
+        if not name:
+            raise UserError("Supplier name is required.")
+
+        Partner = request.env["res.partner"].sudo()
+        partner = Partner.search([
+            ("name", "=", name),
+            "|",
+            ("company_id", "=", False),
+            ("company_id", "=", request.env.company.id),
+        ], limit=1)
+        vals = {
+            "name": name,
+            "supplier_rank": 1,
+            "street": (payload.get("address") or "").strip(),
+            "bayaan_supplier_category": (payload.get("category") or "").strip(),
+            "bayaan_delivery_category": (
+                payload.get("delivery_category")
+                or payload.get("deliveryCategory")
+                or ""
+            ).strip(),
+        }
+        if partner:
+            partner.write(vals)
+            action = "supplier.updated"
+            title = "Supplier updated: %s" % partner.name
+        else:
+            vals["company_id"] = request.env.company.id
+            partner = Partner.create(vals)
+            action = "supplier.created"
+            title = "Supplier created: %s" % partner.name
+
+        self._audit_event(
+            "procurement",
+            action,
+            title,
+            partner.bayaan_delivery_category or partner.bayaan_supplier_category or "",
+            record=partner,
+            severity="success",
+            payload=payload,
+        )
+
+        return {
+            "engine": "odoo_pos",
+            "supplier": self._serialize_supplier_partner(partner),
+        }
 
     @http.route("/bayaan/api/create_stock_item", type="jsonrpc", auth="user")
     def create_stock_item(self, **kwargs):
@@ -1230,6 +2033,80 @@ class BayaanKioskApi(http.Controller):
                 "company_id": request.env.company.id,
             })
 
+        self._audit_event(
+            "catalog",
+            "stock_item.created",
+            "Stock item created: %s" % product.display_name,
+            "Mode %s, UoM %s" % (mode, product.uom_id.name),
+            record=product,
+            severity="success",
+            payload=payload,
+        )
+        return {
+            "engine": "odoo_pos",
+            "product": self._serialize_stock_item(product),
+        }
+
+    @http.route("/bayaan/api/product_catalog", type="jsonrpc", auth="user")
+    def product_catalog(self, **kwargs):
+        self._require_procurement_scope()
+        payload = self._payload(kwargs)
+        name = (payload.get("name") or "").strip()
+        product_ref = payload.get("id") or payload.get("product") or payload.get("code") or payload.get("default_code")
+        product = self._product(product_ref) if product_ref else request.env["product.product"].sudo().browse()
+        if not product and not name:
+            raise UserError("Product name is required.")
+
+        mode = payload.get("consumption_mode") or payload.get("consumptionMode") or (
+            product.product_tmpl_id.bayaan_consumption_mode if product else "recipe"
+        )
+        if mode not in ("recipe", "finished", "hybrid", "none"):
+            raise UserError("Invalid Bayaan consumption mode: %s" % mode)
+
+        category = request.env.ref("product.product_category_all", raise_if_not_found=False)
+        category_name = (payload.get("category") or "").strip()
+        if category_name:
+            category = request.env["product.category"].sudo().search([("name", "=", category_name)], limit=1)
+            if not category:
+                category = request.env["product.category"].sudo().create({"name": category_name})
+
+        uom = self._uom(payload.get("uom"), product.uom_id if product else request.env.ref("uom.product_uom_unit"))
+        values = {
+            "name": name or product.name,
+            "list_price": self._float_value(payload.get("list_price") or payload.get("listPrice"), product.lst_price if product else 0.0),
+            "standard_price": self._float_value(payload.get("standard_price") or payload.get("standardPrice"), product.standard_price if product else 0.0),
+            "available_in_pos": payload.get("available_in_pos", payload.get("availableInPos", True)),
+            "bayaan_consumption_mode": mode,
+            "uom_id": uom.id,
+            "uom_po_id": uom.id,
+        }
+        if category:
+            values["categ_id"] = category.id
+
+        if product:
+            product.product_tmpl_id.sudo().write(values)
+            action = "product.updated"
+        else:
+            default_code = self._unique_product_code(payload.get("code") or payload.get("default_code"), name)
+            values.update({
+                "default_code": default_code,
+                "type": "consu",
+                "is_storable": True,
+                "company_id": request.env.company.id,
+            })
+            template = request.env["product.template"].sudo().create(values)
+            product = template.product_variant_id
+            action = "product.created"
+
+        self._audit_event(
+            "catalog",
+            action,
+            "Product catalog saved: %s" % product.display_name,
+            "Mode %s, POS %s" % (product.product_tmpl_id.bayaan_consumption_mode, product.available_in_pos),
+            record=product,
+            severity="success",
+            payload=payload,
+        )
         return {
             "engine": "odoo_pos",
             "product": self._serialize_stock_item(product),
@@ -1253,12 +2130,14 @@ class BayaanKioskApi(http.Controller):
         PaymentMethod = request.env["pos.payment.method"].sudo()
         ShiftClose = request.env["bayaan.shift.close"].sudo()
         Picking = request.env["stock.picking"].sudo()
+        Partner = request.env["res.partner"].sudo()
+        RecurringPurchase = request.env["bayaan.recurring.purchase"].sudo()
 
         kiosk_domain = [
             ("active", "=", True),
             ("company_id", "=", company.id),
         ]
-        if not self._is_bayaan_manager():
+        if not self._is_chain_read_user():
             user = request.env.user
             kiosk_domain += [
                 "|", "|",
@@ -1315,10 +2194,16 @@ class BayaanKioskApi(http.Controller):
             ("scheduled_date", ">=", today_start),
             ("create_date", ">=", today_start),
         ]
+        supplier_domain = [
+            ("supplier_rank", ">", 0),
+            "|",
+            ("company_id", "=", False),
+            ("company_id", "=", company.id),
+        ]
 
         kiosks = Kiosk.search(kiosk_domain, order="kiosk_code", limit=500)
         kiosk_location_ids = kiosks.mapped("stock_location_id").ids
-        if not self._is_bayaan_manager():
+        if not self._is_chain_read_user():
             kiosk_ids = kiosks.ids or [0]
             kiosk_location_ids_for_domain = kiosk_location_ids or [0]
             pos_config_ids = kiosks.mapped("pos_config_id").ids or [0]
@@ -1351,6 +2236,8 @@ class BayaanKioskApi(http.Controller):
         sales = PosOrder.search(sale_domain, order="date_order desc, id desc", limit=1000)
         closings = ShiftClose.search(closing_domain, order="opened_at desc, id desc", limit=500)
         transfers = Picking.search(transfer_domain, order="scheduled_date desc, id desc", limit=500)
+        suppliers = Partner.search(supplier_domain, order="name", limit=500)
+        recurring_purchases = RecurringPurchase.search([("company_id", "=", company.id)], order="next_date, name", limit=200)
         kiosk_by_location = {
             kiosk.stock_location_id.id: kiosk
             for kiosk in kiosks
@@ -1535,6 +2422,12 @@ class BayaanKioskApi(http.Controller):
             close.id: payment_split(close.pos_order_ids)
             for close in closings
         }
+        supplier_spend30 = {}
+        supplier_last_order = {}
+        for order in purchases:
+            partner_id = order.partner_id.id
+            supplier_spend30[partner_id] = supplier_spend30.get(partner_id, 0.0) + order.amount_total
+            supplier_last_order.setdefault(partner_id, order.name)
 
         transfer_rows = []
         for transfer in transfers:
@@ -1548,7 +2441,10 @@ class BayaanKioskApi(http.Controller):
                 "to": dest_kiosk.kiosk_code if dest_kiosk else transfer.location_dest_id.complete_name,
                 "toKioskId": dest_kiosk.kiosk_code if dest_kiosk else False,
                 "scheduledAt": fields.Datetime.to_string(transfer.scheduled_date),
+                "doneAt": fields.Datetime.to_string(transfer.date_done) if transfer.date_done else False,
+                "createdAt": fields.Datetime.to_string(transfer.create_date),
                 "state": transfer.state,
+                "bayaan_state": transfer.bayaan_transfer_state,
                 "items": len(transfer.move_ids),
                 "lines": [{
                     "product": move.product_id.default_code or move.product_id.display_name,
@@ -1737,9 +2633,16 @@ class BayaanKioskApi(http.Controller):
             row["payments"] = finalize_payment_split(row["payments"])
             by_kiosk_summary.append(row)
 
+        hr_snapshot = self._hr_schedule_snapshot({})
+        hr_payroll_snapshot = self._serialize_hr_snapshot()
+        hr_snapshot["adjustments"] = hr_payroll_snapshot["adjustments"]
+        hr_snapshot["payrollRuns"] = hr_payroll_snapshot["payrollRuns"]
+
         return {
             "engine": "odoo_pos",
             "payment_gateways": self._payment_gateway_catalog(),
+            "current_user": self._role_payload()["user"],
+            "hr": hr_snapshot,
             "meta": {
                 "date": fields.Date.to_string(today),
                 "generated_at": fields.Datetime.to_string(fields.Datetime.now()),
@@ -1754,6 +2657,9 @@ class BayaanKioskApi(http.Controller):
                     "closings": 500,
                     "transfers": 500,
                     "suggested_transfers": 25,
+                    "hr_employees": 500,
+                    "hr_shifts": 1000,
+                    "hr_coverage_rules": 1000,
                 },
                 "rows_returned": {
                     "products": len(products),
@@ -1766,6 +2672,12 @@ class BayaanKioskApi(http.Controller):
                     "closings": len(closings),
                     "transfers": len(transfers),
                     "suggested_transfers": len(suggested_transfer_rows),
+                    "recurring_purchases": len(recurring_purchases),
+                    "hr_employees": len(hr_snapshot["employees"]),
+                    "hr_shifts": len(hr_snapshot["shifts"]),
+                    "hr_coverage_gaps": len(hr_snapshot["coverageGaps"]),
+                    "payroll_adjustments": len(hr_snapshot["adjustments"]),
+                    "payroll_runs": len(hr_snapshot["payrollRuns"]),
                 },
             },
             "summary": {
@@ -1800,6 +2712,11 @@ class BayaanKioskApi(http.Controller):
                     "products": Product.search_count(product_domain),
                     "recipes": Recipe.search_count(recipe_domain),
                     "purchaseOrders": Purchase.search_count(purchase_domain),
+                    "recurringPurchases": len(recurring_purchases),
+                    "hrEmployees": len(hr_snapshot["employees"]),
+                    "hrCoverageGaps": len(hr_snapshot["coverageGaps"]),
+                    "payrollAdjustments": len(hr_snapshot["adjustments"]),
+                    "payrollRuns": len(hr_snapshot["payrollRuns"]),
                 },
                 "byKiosk": sorted(by_kiosk_summary, key=lambda row: (-row["sales"], row["kioskId"])),
             },
@@ -1833,6 +2750,7 @@ class BayaanKioskApi(http.Controller):
                 "standard_price": product.standard_price,
                 "uom": product.uom_id.name,
                 "consumption_mode": product.product_tmpl_id.bayaan_consumption_mode,
+                "available_in_pos": product.available_in_pos,
             } for product in products],
             "recipes": [{
                 "id": recipe.id,
@@ -1856,6 +2774,8 @@ class BayaanKioskApi(http.Controller):
                 "id": order.id,
                 "name": order.name,
                 "supplier": order.partner_id.name,
+                "invoice": order.partner_ref or "",
+                "warehouse": order.picking_type_id.warehouse_id.name if order.picking_type_id.warehouse_id else "",
                 "date_order": fields.Datetime.to_string(order.date_order),
                 "state": order.state,
                 "receipt_state": (
@@ -1875,6 +2795,18 @@ class BayaanKioskApi(http.Controller):
                     "planned_date": fields.Datetime.to_string(line.date_planned),
                 } for line in order.order_line],
             } for order in purchases],
+            "suppliers": [
+                self._serialize_supplier_partner(
+                    partner,
+                    supplier_spend30.get(partner.id, 0.0),
+                    supplier_last_order.get(partner.id, "-"),
+                )
+                for partner in suppliers
+            ],
+            "recurring_purchases": [
+                self._serialize_recurring_purchase(plan)
+                for plan in recurring_purchases
+            ],
             "kiosk_stock": kiosk_stock_grouped,
             "kiosk_stock_rows": kiosk_stock_rows,
             "transfers": transfer_rows,
@@ -1952,17 +2884,23 @@ class BayaanKioskApi(http.Controller):
                     "consumption_state": sale.bayaan_consumption_state,
                 } for sale in sales],
                 "consumption": [{
+                    "id": line.id,
+                    "order": line.pos_order_id.name,
                     "kiosk": line.kiosk_id.kiosk_code,
                     "sold_product": line.product_id.display_name,
                     "ingredient": line.ingredient_id.display_name,
                     "qty": line.ingredient_qty,
                     "uom": line.uom_id.name,
                     "cost": line.total_cost,
+                    "consumed_at": fields.Datetime.to_string(line.consumed_at),
                 } for line in consumption],
                 "waste": [{
+                    "id": entry.id,
+                    "name": entry.name,
                     "kiosk": entry.kiosk_id.kiosk_code,
                     "product": entry.product_id.display_name,
                     "qty": entry.qty,
+                    "uom": entry.product_id.uom_id.name,
                     "reason": entry.reason,
                     "estimated_cost": entry.estimated_cost,
                     "state": entry.state,
@@ -1973,6 +2911,7 @@ class BayaanKioskApi(http.Controller):
 
     @http.route("/bayaan/api/recipe_version", type="jsonrpc", auth="user")
     def recipe_version(self, **kwargs):
+        self._require_manager_scope("manage product recipes")
         payload = self._payload(kwargs)
         product = self._require_product(payload.get("item") or payload.get("itemId"))
         ingredients = payload.get("ingredients", [])
@@ -2001,6 +2940,15 @@ class BayaanKioskApi(http.Controller):
         product.product_tmpl_id.sudo().bayaan_consumption_mode = "recipe"
         if payload.get("submit", True):
             recipe.action_activate()
+        self._audit_event(
+            "catalog",
+            "recipe.%s" % recipe.state,
+            "Recipe %s for %s" % (recipe.state, product.display_name),
+            "%s ingredient line(s)" % len(recipe.line_ids),
+            record=recipe,
+            severity="success",
+            payload=payload,
+        )
         return {
             "id": recipe.id,
             "state": recipe.state,
@@ -2085,6 +3033,16 @@ class BayaanKioskApi(http.Controller):
         cashier = request.env.user
         opening_cash = self._float_value(payload.get("opening_cash"), 0.0)
         session = self._open_kiosk_session(kiosk, cashier, opening_cash)
+        self._audit_event(
+            "pos",
+            "session.opened",
+            "POS session opened: %s" % kiosk.kiosk_code,
+            "Cashier %s" % cashier.name,
+            record=session,
+            kiosk=kiosk,
+            severity="success",
+            payload=payload,
+        )
         return {
             "id": session.id,
             "name": session.name,
@@ -2212,6 +3170,21 @@ class BayaanKioskApi(http.Controller):
         order.write({"state": "paid"})
         order._process_saved_order(False)
 
+        self._audit_event(
+            "pos",
+            "sale.paid",
+            "Sale paid: %s" % order.name,
+            "%s - %.2f" % (kiosk.kiosk_code, order.amount_total),
+            record=order,
+            kiosk=kiosk,
+            severity="success",
+            payload={
+                "external_id": external_id,
+                "items": items,
+                "payment_count": len(payments),
+                "amount_total": order.amount_total,
+            },
+        )
         return self._serialize_kiosk_order(order)
 
     def _serialize_kiosk_order(self, order, idempotent=False):
@@ -2248,6 +3221,16 @@ class BayaanKioskApi(http.Controller):
             "estimated_cost": self._waste_estimated_cost(product, qty),
         })
         entry.action_post()
+        self._audit_event(
+            "stock",
+            "waste.posted",
+            "Waste posted: %s" % product.display_name,
+            "%s x %s at %s" % (qty, product.uom_id.name, kiosk.kiosk_code),
+            record=entry,
+            kiosk=kiosk,
+            severity="warning",
+            payload=payload,
+        )
         return {"id": entry.id, "state": entry.state, "scrap_ids": entry.scrap_ids.ids}
 
     @http.route("/bayaan/api/stock_transfer", type="jsonrpc", auth="user")
@@ -2312,6 +3295,16 @@ class BayaanKioskApi(http.Controller):
             "move_ids": move_commands,
         })
         kiosk.last_stock_transfer_at = fields.Datetime.now()
+        self._audit_event(
+            "stock",
+            "transfer.created",
+            "Transfer created: %s" % picking.name,
+            "%s to %s" % (source_location.complete_name, kiosk.kiosk_code),
+            record=picking,
+            kiosk=kiosk,
+            severity="success",
+            payload=payload,
+        )
         return self._serialize_picking_action(picking)
 
     @http.route("/bayaan/api/stock_transfer_action", type="jsonrpc", auth="user")
@@ -2325,7 +3318,7 @@ class BayaanKioskApi(http.Controller):
         if kiosk:
             receive_action = action in ("receive", "received", "done", "complete")
             self._require_kiosk_scope(kiosk, "transfer_receive" if receive_action else "transfer")
-            if receive_action and not self._is_bayaan_supervisor() and picking.bayaan_transfer_state != "dispatched":
+            if receive_action and picking.bayaan_transfer_state != "dispatched":
                 raise UserError("Kiosk users can only receive dispatched transfers.")
 
         if action in ("approve", "confirm"):
@@ -2353,6 +3346,17 @@ class BayaanKioskApi(http.Controller):
             raise UserError("Unsupported transfer action: %s" % (payload.get("action") or "empty value"))
 
         picking.invalidate_recordset()
+        status_label = picking.bayaan_transfer_state or picking.state
+        self._audit_event(
+            "stock",
+            "transfer.%s" % status_label,
+            "Transfer %s: %s" % (status_label, picking.name),
+            "%s to %s" % (picking.location_id.complete_name, picking.location_dest_id.complete_name),
+            record=picking,
+            kiosk=kiosk,
+            severity="success" if status_label not in ("cancelled", "cancel") else "warning",
+            payload=payload,
+        )
         return self._serialize_picking_action(picking)
 
     @http.route("/bayaan/api/purchase_order", type="jsonrpc", auth="user")
@@ -2396,9 +3400,114 @@ class BayaanKioskApi(http.Controller):
             order_vals["picking_type_id"] = warehouse.in_type_id.id
 
         order = request.env["purchase.order"].sudo().create(order_vals)
-        if payload.get("submit"):
-            order.button_confirm()
+        self._attach_purchase_invoice(order, payload)
+        order.button_confirm()
+        self._audit_event(
+            "procurement",
+            "purchase.created",
+            "Purchase order created: %s" % order.name,
+            "%s - %s line(s)" % (partner.name, len(order.order_line)),
+            record=order,
+            severity="success",
+            payload=payload,
+        )
         return {"id": order.id, "name": order.name, "state": order.state}
+
+    @http.route("/bayaan/api/recurring_purchase", type="jsonrpc", auth="user")
+    def recurring_purchase(self, **kwargs):
+        self._require_procurement_scope()
+        payload = self._payload(kwargs)
+        Recurring = request.env["bayaan.recurring.purchase"].sudo()
+        if not payload:
+            plans = Recurring.search([("company_id", "=", request.env.company.id)], order="next_date, name", limit=200)
+            return {"engine": "odoo_pos", "recurring_purchases": [self._serialize_recurring_purchase(plan) for plan in plans]}
+
+        action = (payload.get("action") or "save").lower()
+        plan = Recurring.browse()
+        if payload.get("id") or payload.get("recurring"):
+            plan = Recurring.browse(int(payload.get("id") or payload.get("recurring")))
+            if not plan.exists() or plan.company_id != request.env.company:
+                raise UserError("Recurring purchase not found.")
+
+        if action in ("run", "create_po"):
+            if not plan:
+                raise UserError("Recurring purchase id is required to create a PO.")
+            orders = plan.action_create_purchase_order()
+            self._audit_event(
+                "procurement",
+                "recurring_purchase.run",
+                "Recurring purchase created PO: %s" % plan.name,
+                ", ".join(orders.mapped("name")),
+                record=plan,
+                severity="success",
+                payload=payload,
+            )
+            return {
+                "engine": "odoo_pos",
+                "recurring_purchase": self._serialize_recurring_purchase(plan),
+                "purchase_orders": [{"id": order.id, "name": order.name, "state": order.state} for order in orders],
+            }
+
+        supplier_name = payload.get("supplier")
+        if not supplier_name:
+            raise UserError("Supplier is required.")
+        partner = request.env["res.partner"].sudo().search([("name", "=", supplier_name)], limit=1)
+        if not partner:
+            partner = request.env["res.partner"].sudo().create({
+                "name": supplier_name,
+                "supplier_rank": 1,
+                "company_id": request.env.company.id,
+            })
+        else:
+            partner.supplier_rank = max(partner.supplier_rank, 1)
+
+        warehouse = self._warehouse(payload.get("warehouse"))
+        if not warehouse:
+            raise UserError("Warehouse is required.")
+
+        line_commands = []
+        for line in payload.get("items", []):
+            product = self._require_product(line.get("item") or line.get("itemId"))
+            qty = self._float_value(line.get("qty"), 0.0)
+            if qty <= 0:
+                raise UserError("Recurring purchase quantity must be greater than zero for %s." % product.display_name)
+            line_commands.append((0, 0, {
+                "product_id": product.id,
+                "qty": qty,
+                "uom_id": self._uom(line.get("uom"), product.uom_id).id,
+                "price_unit": self._float_value(line.get("rate") or line.get("priceUnit"), product.standard_price),
+            }))
+        if not line_commands:
+            raise UserError("Recurring purchase needs at least one item.")
+
+        vals = {
+            "name": payload.get("name") or "%s recurring purchase" % partner.name,
+            "partner_id": partner.id,
+            "warehouse_id": warehouse.id,
+            "frequency": payload.get("frequency") or "weekly",
+            "weekday": str(payload.get("weekday") if payload.get("weekday") is not None else "0"),
+            "next_date": payload.get("next_date") or payload.get("nextDate") or fields.Date.context_today(request.env.user),
+            "active": payload.get("active", True),
+            "company_id": request.env.company.id,
+            "line_ids": [(5, 0, 0)] + line_commands,
+        }
+        if plan:
+            plan.write(vals)
+            audit_action = "recurring_purchase.updated"
+        else:
+            plan = Recurring.create(vals)
+            audit_action = "recurring_purchase.created"
+
+        self._audit_event(
+            "procurement",
+            audit_action,
+            "Recurring purchase saved: %s" % plan.name,
+            "%s, %s line(s)" % (plan.partner_id.name, len(plan.line_ids)),
+            record=plan,
+            severity="success",
+            payload=payload,
+        )
+        return {"engine": "odoo_pos", "recurring_purchase": self._serialize_recurring_purchase(plan)}
 
     @http.route("/bayaan/api/purchase_order_action", type="jsonrpc", auth="user")
     def purchase_order_action(self, **kwargs):
@@ -2407,10 +3516,7 @@ class BayaanKioskApi(http.Controller):
         order = self._purchase_order(payload.get("po") or payload.get("purchase_order") or payload.get("order"))
         action = (payload.get("action") or "").lower()
 
-        if action in ("send", "sent"):
-            if order.state == "draft":
-                order.with_context(mark_rfq_as_sent=True).message_post(body="RFQ marked as sent from Bayaan.")
-        elif action in ("confirm", "approve", "approved"):
+        if action in ("confirm", "approve", "approved"):
             if order.state in ("draft", "sent"):
                 order.button_confirm()
         elif action in ("receive", "received", "complete", "done"):
@@ -2430,6 +3536,15 @@ class BayaanKioskApi(http.Controller):
             raise UserError("Unsupported purchase order action: %s" % (payload.get("action") or "empty value"))
 
         order.invalidate_recordset()
+        self._audit_event(
+            "procurement",
+            "purchase.%s" % action,
+            "Purchase order %s: %s" % (action or "updated", order.name),
+            "%s - receipt %s" % (order.partner_id.name, "done" if order.picking_ids and all(picking.state == "done" for picking in order.picking_ids) else "open"),
+            record=order,
+            severity="success" if action != "cancel" else "warning",
+            payload=payload,
+        )
         return {
             "id": order.id,
             "name": order.name,
@@ -2497,6 +3612,20 @@ class BayaanKioskApi(http.Controller):
             preserve_counted=False,
         )
 
+        self._audit_event(
+            "closing",
+            "shift_close.created",
+            "Shift close submitted: %s" % record.name,
+            "%s cash variance %.2f, stock variance %.2f" % (
+                kiosk.kiosk_code,
+                record.cash_variance,
+                record.ingredient_variance_value,
+            ),
+            record=record,
+            kiosk=kiosk,
+            severity="warning" if record.cash_variance or record.ingredient_variance_value else "success",
+            payload=payload,
+        )
         return {
             "id": record.id,
             "name": record.name,
@@ -2577,6 +3706,16 @@ class BayaanKioskApi(http.Controller):
             raise UserError("Unsupported close review decision: %s" % decision)
 
         close.write(vals)
+        self._audit_event(
+            "closing",
+            "shift_close.%s" % decision,
+            "Shift close %s: %s" % (decision, close.name),
+            note or "",
+            record=close,
+            kiosk=close.kiosk_id,
+            severity="success" if decision in ("approve", "approved") else "warning",
+            payload=payload,
+        )
         return {
             "id": close.id,
             "name": close.name,

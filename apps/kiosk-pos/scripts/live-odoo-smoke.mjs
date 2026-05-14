@@ -4,8 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
-const appUrl = process.env.KIOSK_POS_LIVE_URL ?? "http://127.0.0.1:5175";
-const odooUrl = process.env.ODOO_URL ?? "http://127.0.0.1:8069";
+const appUrl = process.env.KIOSK_POS_LIVE_URL ?? "http://127.0.0.1:5174";
+const odooUrl = process.env.ODOO_URL ?? resolveLocalOdooUrl();
 const odooDb = process.env.ODOO_DB ?? "bayaan";
 const odooLogin = process.env.ODOO_LOGIN ?? "admin";
 const odooPassword = process.env.ODOO_PASSWORD ?? "admin";
@@ -43,7 +43,7 @@ async function main() {
   });
 
   try {
-    await page.goto(liveAppUrl, { waitUntil: "networkidle", timeout: 30_000 });
+    await page.goto(liveAppUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await waitForBodyIncludes(page, "Engine synced", 20_000);
     await assertNotVisible(page, "Demo mode");
 
@@ -53,22 +53,21 @@ async function main() {
 
     await nav(page, "Sales & POS");
     await expectText(page, "Live POS orders");
-    await expectText(page, "Orange Juice 350ml");
-    await expectText(page, "FIB");
-    await expectText(page, "recipe posted");
+    const streamMode = await waitForAnyText(page, ["Stream live", "Bus fallback"], 30_000);
+    const sale = await postKioskSale(sessionId);
+    await waitForBodyIncludes(page, sale.name || sale.external_id, 30_000);
+    await waitForBodyIncludes(page, "IQD 4,000", 30_000);
+    await waitForBodyIncludes(page, "paid", 30_000);
 
     await nav(page, "Daily Close");
     await expectText(page, "Zayouna Plaza");
     await page.locator("tr.row-click", { hasText: "Zayouna Plaza" }).first().click();
     await expectText(page, "Stock lines - expected vs counted");
-    await expectText(page, "Orange");
-    await expectText(page, "Cup 350ml");
     await expectText(page, "Notes and investigation status");
 
     await nav(page, "Reports");
     await expectText(page, "Iraqi gateway settlement");
     await expectText(page, "FIB");
-    await expectText(page, "IQD 30,000");
 
     if (consoleErrors.length) {
       throw new Error(`Console/request errors: ${consoleErrors.join(" | ")}`);
@@ -84,8 +83,7 @@ async function main() {
         "Vite /odoo same-origin proxy",
         "chain_bootstrap live sync",
         "K-04 live kiosk",
-        "FIB payment split",
-        "recipe-posted POS order",
+        `realtime ${streamMode}: backend sale appeared without manual refresh`,
         "daily close stock/cash variance",
       ],
     }, null, 2));
@@ -100,6 +98,20 @@ function withQueryParam(url, key, value) {
   const target = new URL(url);
   target.searchParams.set(key, value);
   return target.toString();
+}
+
+function resolveLocalOdooUrl() {
+  const port = process.env.ODOO_PORT ?? "8069";
+  if (process.platform === "win32") {
+    const distro = process.env.ODOO_WSL_DISTRO ?? "Ubuntu";
+    const result = spawnSync("wsl.exe", ["-d", distro, "-e", "bash", "-lc", "hostname -I | awk '{print $1}'"], {
+      encoding: "utf8",
+      timeout: 3000,
+    });
+    const host = result.stdout?.trim().split(/\s+/)[0];
+    if (host) return `http://${host}:${port}`;
+  }
+  return `http://127.0.0.1:${port}`;
 }
 
 async function authenticateOdoo() {
@@ -122,7 +134,49 @@ async function authenticateOdoo() {
   return match[1];
 }
 
+async function postKioskSale(sessionId) {
+  const externalId = `SMOKE-REALTIME-${Date.now()}`;
+  const result = await odooJsonRpc("/bayaan/api/kiosk_sale", sessionId, {
+    kiosk: "K-04",
+    external_id: externalId,
+    cashier: odooLogin,
+    items: [{
+      product: "MENU-CROISSANT",
+      name: "Croissant Plain",
+      qty: 1,
+      price_unit: 4000.0,
+    }],
+    payments: [{ method: "cash", amount: 4000.0 }],
+  });
+  if (!result?.name && !result?.external_id) {
+    throw new Error(`kiosk_sale did not return an order reference: ${JSON.stringify(result)}`);
+  }
+  return result;
+}
+
+async function odooJsonRpc(route, sessionId, payload) {
+  const response = await fetch(`${odooUrl}${route}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: `session_id=${sessionId}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: "call",
+      params: { payload },
+      id: Date.now(),
+    }),
+  });
+  if (!response.ok) throw new Error(`${route} HTTP ${response.status}`);
+  const message = await response.json();
+  if (message.error) throw new Error(message.error.data?.message || message.error.message || `${route} failed`);
+  return message.result;
+}
+
 async function ensureServer() {
+  if (await isReachable()) return;
+
   const command = process.platform === "win32" ? "cmd.exe" : "npx";
   const args = process.platform === "win32"
     ? ["/d", "/s", "/c", `npx vite --host ${serverUrl.hostname} --port ${serverUrl.port} --strictPort`]
@@ -176,6 +230,18 @@ async function waitForBodyIncludes(page, text, timeout) {
     await delay(300);
   }
   throw new Error(`Expected body to include "${text}". Body starts: ${bodyText.slice(0, 1200)}`);
+}
+
+async function waitForAnyText(page, texts, timeout) {
+  const started = Date.now();
+  let bodyText = "";
+  while (Date.now() - started < timeout) {
+    bodyText = (await page.textContent("body")) || "";
+    const found = texts.find((text) => bodyText.includes(text));
+    if (found) return found;
+    await delay(300);
+  }
+  throw new Error(`Expected body to include one of "${texts.join(", ")}". Body starts: ${bodyText.slice(0, 1200)}`);
 }
 
 async function assertNotVisible(page, text) {

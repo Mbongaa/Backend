@@ -28,10 +28,31 @@ class BayaanTestBase(TransactionCase):
             "company_id": cls.company.id,
         })
 
-        # POS config bound to the kiosk location.
+        # POS config bound to the kiosk location. Use explicit test journals and
+        # a journal-less payment method so clean databases without a chart of
+        # accounts can load POS without triggering default bank-journal setup.
+        cls.pos_journal = cls.env["account.journal"]._ensure_company_account_journal()
+        cls.invoice_journal = cls.env["account.journal"].search([
+            ("code", "=", "BTST"),
+            ("company_id", "=", cls.company.id),
+        ], limit=1)
+        if not cls.invoice_journal:
+            cls.invoice_journal = cls.env["account.journal"].create({
+                "name": "Bayaan Test Sales",
+                "code": "BTST",
+                "type": "sale",
+                "company_id": cls.company.id,
+            })
+        cls.test_payment_method = cls.env["pos.payment.method"].create({
+            "name": "Bayaan Test Pay Later",
+            "company_id": cls.company.id,
+        })
         cls.pos_config = cls.env["pos.config"].create({
             "name": "K-TEST POS",
             "company_id": cls.company.id,
+            "journal_id": cls.pos_journal.id,
+            "invoice_journal_id": cls.invoice_journal.id,
+            "payment_method_ids": [(6, 0, [cls.test_payment_method.id])],
         })
         # Wire the POS picking type to use the kiosk location as source.
         cls.pos_config.picking_type_id.default_location_src_id = cls.kiosk_location

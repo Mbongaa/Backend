@@ -1,8 +1,10 @@
 import * as React from "react";
 import {
+  type BayaanAuthStatus,
   createSourceOfTruthGateway,
   type KioskSalePayload,
   type KioskWastePayload,
+  type LoginPayload,
   type SourceOfTruthGateway,
   type StockTransferPayload,
 } from "../services/sourceOfTruth";
@@ -29,12 +31,20 @@ export type ShiftSession = {
 export type SubmitOk = { ok: true; result: unknown; queued?: false };
 export type SubmitFail = { ok: false; error: string; queued: boolean };
 export type SubmitResult = SubmitOk | SubmitFail;
+export type AuthState = BayaanAuthStatus & {
+  checked: boolean;
+  busy: boolean;
+  error?: string;
+};
 
 export type BayaanContextValue = {
   mode: BayaanMode;
   setMode: (mode: BayaanMode) => void;
   gateway: SourceOfTruthGateway;
   hasBackend: boolean;
+  auth: AuthState;
+  login: (payload: LoginPayload) => Promise<SubmitResult>;
+  logout: () => Promise<void>;
   kioskId: string;
   setKioskId: (id: string) => void;
   shift: ShiftSession | null;
@@ -56,6 +66,35 @@ const BayaanContext = React.createContext<BayaanContextValue | null>(null);
 
 const MODE_KEY = "bayaan.mode.v1";
 const KIOSK_KEY = "bayaan.kiosk.v1";
+
+const EMPTY_AUTH_USER: BayaanAuthStatus["user"] = {
+  id: false,
+  name: "",
+  login: "",
+  roles: [],
+  primaryRole: null,
+  allowedNav: [],
+  allowedPanels: { admin: false, pos: false },
+  assignedKiosks: [],
+};
+
+const DEMO_AUTH: AuthState = {
+  checked: true,
+  busy: false,
+  authenticated: true,
+  user: {
+    ...EMPTY_AUTH_USER,
+    name: "Demo Owner",
+    login: "demo",
+    roles: ["superadmin"],
+    primaryRole: "superadmin",
+    allowedNav: [
+      "overview", "insights", "kiosks", "warehouses", "items", "sales", "closing",
+      "waste", "products", "suppliers", "inventory", "staff", "finance", "reports",
+    ],
+    allowedPanels: { admin: true, pos: true },
+  },
+};
 
 function readInitialMode(hasEnv: boolean): BayaanMode {
   if (typeof window === "undefined") return "demo";
@@ -83,6 +122,11 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
 
   const [shift, setShift] = React.useState<ShiftSession | null>(null);
   const [pending, setPending] = React.useState<QueueEntry[]>([]);
+  const [auth, setAuth] = React.useState<AuthState>(() =>
+    hasBackend
+      ? { checked: false, busy: false, authenticated: false, user: EMPTY_AUTH_USER }
+      : DEMO_AUTH,
+  );
   const isLive = mode === "live" && hasBackend;
 
   const queueRef = React.useRef<SaleQueue | null>(null);
@@ -97,6 +141,37 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
     setPending(queue.list());
   }, [queue]);
 
+  React.useEffect(() => {
+    let alive = true;
+    if (!hasBackend) {
+      setAuth(DEMO_AUTH);
+      return () => {
+        alive = false;
+      };
+    }
+    setAuth((current) => ({ ...current, checked: false, busy: false, error: undefined }));
+    void gateway.getAuthStatus()
+      .then((status) => {
+        if (!alive) return;
+        setAuth({ ...status, checked: true, busy: false });
+        const firstKiosk = status.user.assignedKiosks[0]?.kioskCode;
+        if (firstKiosk) setKioskIdState(firstKiosk);
+      })
+      .catch((error) => {
+        if (!alive) return;
+        setAuth({
+          checked: true,
+          busy: false,
+          authenticated: false,
+          user: EMPTY_AUTH_USER,
+          error: errorMessage(error),
+        });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [gateway, hasBackend]);
+
   const setMode = React.useCallback((next: BayaanMode) => {
     setModeState(next);
     if (typeof window !== "undefined") {
@@ -110,6 +185,41 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       window.localStorage.setItem(KIOSK_KEY, id);
     }
   }, []);
+
+  const login = React.useCallback<BayaanContextValue["login"]>(async (payload) => {
+    if (!hasBackend) {
+      setAuth(DEMO_AUTH);
+      return { ok: true, result: DEMO_AUTH };
+    }
+    setAuth((current) => ({ ...current, busy: true, error: undefined }));
+    try {
+      const status = await gateway.login(payload);
+      setAuth({ ...status, checked: true, busy: false });
+      const firstKiosk = status.user.assignedKiosks[0]?.kioskCode;
+      if (firstKiosk) setKioskId(firstKiosk);
+      return { ok: true, result: status };
+    } catch (error) {
+      const message = errorMessage(error);
+      setAuth({
+        checked: true,
+        busy: false,
+        authenticated: false,
+        user: EMPTY_AUTH_USER,
+        error: message,
+      });
+      return { ok: false, error: message, queued: false };
+    }
+  }, [gateway, hasBackend, setKioskId]);
+
+  const logout = React.useCallback<BayaanContextValue["logout"]>(async () => {
+    if (!hasBackend) {
+      setAuth(DEMO_AUTH);
+      return;
+    }
+    await gateway.logout().catch(() => undefined);
+    setShift(null);
+    setAuth({ checked: true, busy: false, authenticated: false, user: EMPTY_AUTH_USER });
+  }, [gateway, hasBackend]);
 
   const startShift = React.useCallback<BayaanContextValue["startShift"]>((s) => {
     const next = {
@@ -255,6 +365,9 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       setMode,
       gateway,
       hasBackend,
+      auth,
+      login,
+      logout,
       kioskId,
       setKioskId,
       shift,
@@ -272,6 +385,9 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       setMode,
       gateway,
       hasBackend,
+      auth,
+      login,
+      logout,
       kioskId,
       setKioskId,
       shift,

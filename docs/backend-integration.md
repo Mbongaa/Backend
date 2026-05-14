@@ -59,7 +59,7 @@ Product consumption modes:
 
 ## Current Frontend Flow
 
-The Vite app currently runs the exact fetched admin/POS/customer-display design from `design/exact-pos/kiosk-pos`. It uses demo data from the design bundle and is useful for client-facing UI review.
+The Vite app currently runs the exact fetched admin/POS/customer-display design from `design/exact-pos-v2/kiosk-pos`. It uses demo data from the design bundle and is useful for client-facing UI review.
 
 For the real cashier surface, the target is Odoo POS customization through the Bayaan addon, because Odoo POS already provides sessions, offline behavior, receipts, payments, and closing flows. The React POS should not become a second production POS engine in Phase 1.
 
