@@ -127,6 +127,99 @@ class BayaanKiosk(models.Model):
         self._bayaan_ensure_analytic_accounts()
         return {str(self.analytic_account_id.id): 100.0} if self.analytic_account_id else {}
 
+    @api.model
+    def _bayaan_hq_analytic_account(self, company=None):
+        company = company or self.env.company
+        plan = self._bayaan_branch_plan(company)
+        key = "bayaan.hq_analytic_account_id.%s" % company.id
+        params = self.env["ir.config_parameter"].sudo()
+        account_id = int(params.get_param(key) or 0)
+        account = self.env["account.analytic.account"].sudo().browse(account_id).exists()
+        if not account:
+            account = self.env["account.analytic.account"].sudo().search([
+                ("code", "=", "HQ"),
+                ("company_id", "=", company.id),
+                ("plan_id", "=", plan.id),
+            ], limit=1)
+        if not account:
+            account = self.env["account.analytic.account"].sudo().with_company(company).create({
+                "name": "HQ Cost Center",
+                "code": "HQ",
+                "company_id": company.id,
+                "plan_id": plan.id,
+            })
+        elif account.plan_id != plan or account.company_id != company:
+            account.sudo().write({
+                "plan_id": plan.id,
+                "company_id": company.id,
+            })
+        params.set_param(key, str(account.id))
+        return account
+
+    @api.model
+    def _bayaan_shared_expense_distribution(self, company=None, weights=None):
+        company = company or self.env.company
+        kiosks = self.sudo().search([
+            ("company_id", "=", company.id),
+            ("active", "=", True),
+        ])
+        if not kiosks:
+            return {}
+
+        kiosks._bayaan_ensure_analytic_accounts()
+        weights = weights or {}
+        weighted_kiosks = []
+        total_weight = 0.0
+        for kiosk in kiosks:
+            weight = float(weights.get(kiosk.kiosk_code, weights.get(kiosk.id, 1.0)))
+            if weight <= 0:
+                continue
+            weighted_kiosks.append((kiosk, weight))
+            total_weight += weight
+        if not weighted_kiosks or total_weight <= 0:
+            return {}
+
+        distribution = {}
+        remaining = 100.0
+        precision = self.env["decimal.precision"].precision_get("Percentage Analytic")
+        for index, (kiosk, weight) in enumerate(weighted_kiosks):
+            account_id = str(kiosk.analytic_account_id.id)
+            if index == len(weighted_kiosks) - 1:
+                percentage = remaining
+            else:
+                percentage = round((weight / total_weight) * 100.0, precision)
+                remaining -= percentage
+            distribution[account_id] = percentage
+        return distribution
+
+    @api.model
+    def _bayaan_ensure_hq_shared_expense_distribution_model(self, account_prefix, company=None, weights=None):
+        company = company or self.env.company
+        if not account_prefix:
+            raise ValidationError("An account prefix is required for HQ shared expense distribution.")
+        self._bayaan_hq_analytic_account(company)
+        distribution = self._bayaan_shared_expense_distribution(company, weights)
+        if not distribution:
+            raise ValidationError("At least one active kiosk is required for HQ shared expense distribution.")
+
+        DistributionModel = self.env["account.analytic.distribution.model"].sudo().with_company(company).with_context(
+            validate_analytic=True
+        )
+        model = DistributionModel.search([
+            ("company_id", "=", company.id),
+            ("account_prefix", "=", account_prefix),
+        ], limit=1)
+        values = {
+            "company_id": company.id,
+            "account_prefix": account_prefix,
+            "analytic_distribution": distribution,
+        }
+        if model:
+            model.write(values)
+        else:
+            model = DistributionModel.create(values)
+        return model
+
     @api.constrains("stock_location_id", "pos_config_id")
     def _check_kiosk_stock_location_matches_pos_config(self):
         for kiosk in self:

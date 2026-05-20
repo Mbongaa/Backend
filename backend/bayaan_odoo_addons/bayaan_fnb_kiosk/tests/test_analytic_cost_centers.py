@@ -50,6 +50,30 @@ class TestAnalyticCostCenters(BayaanTestBase):
         tax_results = AccountTax._prepare_tax_lines(base_lines, order.company_id)
         return tax_results["base_lines_to_update"][0][0]
 
+    def _create_extra_kiosk(self):
+        location = self.env["stock.location"].create({
+            "name": "Kiosk K-HQ2 Location",
+            "usage": "internal",
+            "location_id": self.warehouse.view_location_id.id,
+            "company_id": self.company.id,
+        })
+        pos_config = self.env["pos.config"].create({
+            "name": "K-HQ2 POS",
+            "company_id": self.company.id,
+            "journal_id": self.pos_journal.id,
+            "invoice_journal_id": self.invoice_journal.id,
+            "payment_method_ids": [(6, 0, [self.test_payment_method.id])],
+        })
+        pos_config.picking_type_id.default_location_src_id = location
+        return self.env["bayaan.kiosk"].create({
+            "name": "Mansour Test Kiosk",
+            "kiosk_code": "K-HQ2",
+            "pos_config_id": pos_config.id,
+            "stock_location_id": location.id,
+            "stock_deduction_policy": "warning",
+            "company_id": self.company.id,
+        })
+
     def test_kiosk_auto_creates_mandatory_branch_analytic_account(self):
         self.assertTrue(self.kiosk.analytic_account_id)
         self.assertEqual(self.kiosk.analytic_account_id.code, "K-TEST")
@@ -125,3 +149,64 @@ class TestAnalyticCostCenters(BayaanTestBase):
         })
         with self.assertRaises(ValidationError):
             move.action_post()
+
+    def test_hq_shared_expense_distribution_posts_to_configured_branch_percentages(self):
+        other_kiosk = self._create_extra_kiosk()
+        distribution_model = self.env["bayaan.kiosk"]._bayaan_ensure_hq_shared_expense_distribution_model(
+            "HQ",
+            self.company,
+            weights={
+                self.kiosk.kiosk_code: 60.0,
+                other_kiosk.kiosk_code: 40.0,
+            },
+        )
+        expected_distribution = {
+            str(self.kiosk.analytic_account_id.id): 60.0,
+            str(other_kiosk.analytic_account_id.id): 40.0,
+        }
+        self.assertTrue(self.env["bayaan.kiosk"]._bayaan_hq_analytic_account(self.company))
+        self.assertEqual(distribution_model.analytic_distribution, expected_distribution)
+
+        journal = self.env["account.journal"].create({
+            "name": "Bayaan HQ Expense Test",
+            "code": "BHQE",
+            "type": "general",
+            "company_id": self.company.id,
+        })
+        expense = self.env["account.account"].create({
+            "name": "Bayaan HQ Shared Expense",
+            "code": "HQE100",
+            "account_type": "expense",
+            "company_ids": [(6, 0, [self.company.id])],
+        })
+        offset = self.env["account.account"].create({
+            "name": "Bayaan HQ Expense Offset",
+            "code": "HQI100",
+            "account_type": "income",
+            "company_ids": [(6, 0, [self.company.id])],
+        })
+        move = self.env["account.move"].create({
+            "journal_id": journal.id,
+            "date": fields.Date.today(),
+            "line_ids": [
+                (0, 0, {
+                    "name": "HQ shared expense",
+                    "account_id": expense.id,
+                    "debit": 100.0,
+                    "credit": 0.0,
+                    "display_type": "product",
+                }),
+                (0, 0, {
+                    "name": "HQ shared expense offset",
+                    "account_id": offset.id,
+                    "debit": 0.0,
+                    "credit": 100.0,
+                    "display_type": "product",
+                }),
+            ],
+        })
+        self.assertEqual(move.line_ids.mapped("analytic_distribution"), [expected_distribution, expected_distribution])
+
+        move.action_post()
+
+        self.assertEqual(move.state, "posted")
