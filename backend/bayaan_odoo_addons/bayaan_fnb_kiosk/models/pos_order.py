@@ -55,6 +55,19 @@ class PosOrder(models.Model):
                 self.bayaan_kiosk_id = kiosk
         return kiosk
 
+    def _bayaan_analytic_distribution(self):
+        self.ensure_one()
+        kiosk = self._bayaan_resolve_kiosk()
+        return kiosk._bayaan_analytic_distribution() if kiosk else {}
+
+    def _get_invoice_lines_values(self, line_values, pos_line, move_type):
+        vals = super()._get_invoice_lines_values(line_values, pos_line, move_type)
+        if vals.get("display_type") not in ("line_section", "line_note"):
+            distribution = pos_line.order_id._bayaan_analytic_distribution()
+            if distribution:
+                vals["analytic_distribution"] = distribution
+        return vals
+
     def _bayaan_check_stock_policy(self, kiosk, ingredient, qty, uom):
         if kiosk.stock_deduction_policy != "strict":
             return
@@ -167,6 +180,7 @@ class PosOrder(models.Model):
                             "product_uom_id": recipe_line.uom_id.id,
                             "scrap_qty": ingredient_qty,
                             "location_id": kiosk.stock_location_id.id,
+                            "bayaan_kiosk_id": kiosk.id,
                             "company_id": order.company_id.id,
                             "origin": order.name,
                         })
@@ -225,8 +239,35 @@ class PosOrder(models.Model):
 class PosOrderLine(models.Model):
     _inherit = "pos.order.line"
 
+    def _prepare_base_line_for_taxes_computation(self):
+        base_line = super()._prepare_base_line_for_taxes_computation()
+        distribution = self.order_id._bayaan_analytic_distribution()
+        if distribution:
+            base_line["analytic_distribution"] = distribution
+        return base_line
+
     def _launch_stock_rule_from_pos_order_lines(self):
         stock_lines = self.filtered(
             lambda line: line.product_id.product_tmpl_id.bayaan_consumption_mode not in ("recipe", "none")
         )
         return super(PosOrderLine, stock_lines)._launch_stock_rule_from_pos_order_lines()
+
+
+class PosSession(models.Model):
+    _inherit = "pos.session"
+
+    def _get_sale_key(self, base_line):
+        key = super()._get_sale_key(base_line)
+        distribution = base_line.get("analytic_distribution") or {}
+        if distribution:
+            key["bayaan_analytic_distribution"] = tuple(
+                sorted((str(account_id), float(percent)) for account_id, percent in distribution.items())
+            )
+        return key
+
+    def _get_sale_vals(self, key, sale_vals):
+        vals = super()._get_sale_vals(key, sale_vals)
+        distribution = key.get("bayaan_analytic_distribution")
+        if distribution:
+            vals["analytic_distribution"] = dict(distribution)
+        return vals

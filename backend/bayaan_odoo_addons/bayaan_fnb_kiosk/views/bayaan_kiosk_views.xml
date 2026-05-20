@@ -16,6 +16,7 @@
         <field name="area"/>
         <field name="pos_config_id"/>
         <field name="stock_location_id"/>
+        <field name="analytic_account_id"/>
         <field name="stock_deduction_policy"/>
         <field name="manager_user_id"/>
         <field name="supervisor_user_id"/>
@@ -41,6 +42,7 @@
             <group>
               <field name="pos_config_id"/>
               <field name="stock_location_id"/>
+              <field name="analytic_account_id"/>
               <field name="manager_user_id"/>
               <field name="supervisor_user_id"/>
               <field name="cashier_user_ids" widget="many2many_tags"/>

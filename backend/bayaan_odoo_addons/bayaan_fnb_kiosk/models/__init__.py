@@ -8,7 +8,9 @@ from . import bayaan_shift_close
 from . import bayaan_waste
 from . import bayaan_audit_event
 from . import bayaan_realtime
+from . import account_move
 from . import pos_order
+from . import stock_scrap
 from . import stock_picking
 from . import bayaan_payment_transaction
 from . import bayaan_recurring_purchase

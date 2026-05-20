@@ -8,3 +8,4 @@ from . import test_payment_gateway_api
 from . import test_hr_payroll_api
 from . import test_realtime_api
 from . import test_ai_dashboard_api
+from . import test_analytic_cost_centers
