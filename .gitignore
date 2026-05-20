@@ -9,6 +9,9 @@ coverage/
 apps/kiosk-pos/verification/
 apps/kiosk-pos/test-output.txt
 
+# Local/reference dashboard checkout kept outside the main Bayaan runtime
+apps/bayaan-dashboard/
+
 # Python caches and virtual environments
 __pycache__/
 *.py[cod]

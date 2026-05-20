@@ -287,6 +287,111 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
         self.assertAlmostEqual(discrepancies[0]["receivedQty"], 5.5)
         self.assertAlmostEqual(discrepancies[0]["shortageQty"], 0.5)
 
+    def test_chain_bootstrap_stock_health_uses_product_target_quantities(self):
+        self.ingredient_orange.product_tmpl_id.write({
+            "bayaan_stock_target_qty": 100.0,
+            "bayaan_stock_reorder_qty": 40.0,
+            "bayaan_stock_critical_qty": 10.0,
+        })
+        current = self._qty(self.ingredient_orange, self.kiosk_location)
+        self.env["stock.quant"].sudo()._update_available_quantity(
+            self.ingredient_orange,
+            self.kiosk_location,
+            20.0 - current,
+        )
+
+        bootstrap = self._jsonrpc("/bayaan/api/chain_bootstrap", {})
+        if "error" in bootstrap:
+            self.fail("chain_bootstrap errored: %s" % bootstrap["error"])
+
+        stock_row = next(
+            row for row in bootstrap["result"]["kiosk_stock_rows"]
+            if row["kiosk"] == "K-TEST" and row["item"] == "ING-ORANGE"
+        )
+        self.assertEqual(stock_row["target_qty"], 100.0)
+        self.assertEqual(stock_row["reorder_qty"], 40.0)
+        self.assertEqual(stock_row["critical_qty"], 10.0)
+        self.assertEqual(stock_row["stock_percent"], 20.0)
+        self.assertEqual(stock_row["stock_status"], "low")
+        kiosk_summary = next(
+            row for row in bootstrap["result"]["summary"]["byKiosk"]
+            if row["kioskId"] == "K-TEST"
+        )
+        self.assertEqual(kiosk_summary["stockHealth"], 20)
+        suggestions = [
+            row for row in bootstrap["result"]["suggested_transfers"]
+            if row["kiosk"] == "K-TEST" and row["item"] == "ING-ORANGE"
+        ]
+        self.assertTrue(suggestions)
+        self.assertEqual(suggestions[0]["target_qty"], 100.0)
+        self.assertEqual(suggestions[0]["qty"], 80.0)
+
+    def test_chain_bootstrap_unconfigured_stock_does_not_auto_mark_100_percent(self):
+        self.ingredient_orange.product_tmpl_id.write({
+            "bayaan_stock_target_qty": 0.0,
+            "bayaan_stock_reorder_qty": 0.0,
+            "bayaan_stock_critical_qty": 0.0,
+            "bayaan_stock_max_qty": 0.0,
+        })
+        current = self._qty(self.ingredient_orange, self.kiosk_location)
+        self.env["stock.quant"].sudo()._update_available_quantity(
+            self.ingredient_orange,
+            self.kiosk_location,
+            20.0 - current,
+        )
+
+        bootstrap = self._jsonrpc("/bayaan/api/chain_bootstrap", {})
+        if "error" in bootstrap:
+            self.fail("chain_bootstrap errored: %s" % bootstrap["error"])
+
+        stock_row = next(
+            row for row in bootstrap["result"]["kiosk_stock_rows"]
+            if row["kiosk"] == "K-TEST" and row["item"] == "ING-ORANGE"
+        )
+        self.assertEqual(stock_row["target_qty"], 0.0)
+        self.assertEqual(stock_row["stock_percent"], 0.0)
+        self.assertEqual(stock_row["stock_status"], "unconfigured")
+        self.assertEqual(stock_row["target_source"], "unconfigured")
+        kiosk_summary = next(
+            row for row in bootstrap["result"]["summary"]["byKiosk"]
+            if row["kioskId"] == "K-TEST"
+        )
+        self.assertEqual(kiosk_summary["lowStockItems"], 0)
+        self.assertEqual(kiosk_summary["zeroStockItems"], 0)
+
+    def test_chain_bootstrap_warehouse_stock_uses_central_location_not_kiosk_stock(self):
+        warehouse_current = self._qty(self.ingredient_orange, self.warehouse.lot_stock_id)
+        kiosk_current = self._qty(self.ingredient_orange, self.kiosk_location)
+        warehouse_delta = 0.0 - warehouse_current
+        if warehouse_delta:
+            self.env["stock.quant"].sudo()._update_available_quantity(
+                self.ingredient_orange,
+                self.warehouse.lot_stock_id,
+                warehouse_delta,
+            )
+        kiosk_delta = 4.0 - kiosk_current
+        if kiosk_delta:
+            self.env["stock.quant"].sudo()._update_available_quantity(
+                self.ingredient_orange,
+                self.kiosk_location,
+                kiosk_delta,
+            )
+
+        bootstrap = self._jsonrpc("/bayaan/api/chain_bootstrap", {})
+        if "error" in bootstrap:
+            self.fail("chain_bootstrap errored: %s" % bootstrap["error"])
+
+        warehouse_row = next(
+            row for row in bootstrap["result"]["warehouse_stock"]
+            if row["item"] == "ING-ORANGE"
+        )
+        kiosk_row = next(
+            row for row in bootstrap["result"]["kiosk_stock_rows"]
+            if row["kiosk"] == "K-TEST" and row["item"] == "ING-ORANGE"
+        )
+        self.assertEqual(warehouse_row["actual_qty"], 0.0)
+        self.assertEqual(kiosk_row["actual_qty"], 4.0)
+
     def test_full_stock_loop_purchase_transfer_sale_waste_and_close(self):
         opened_at = datetime.now() - timedelta(minutes=10)
         warehouse_open = self._qty(self.ingredient_orange, self.warehouse.lot_stock_id)
@@ -399,15 +504,27 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
         close = self._jsonrpc("/bayaan/api/shift_close", {
             "kiosk": "K-TEST",
             "opened_at": fields.Datetime.to_string(datetime.now() - timedelta(minutes=30)),
-            "expected_cash": 0.0,
-            "actual_cash": 0.0,
+            "expected_cash": 100.0,
+            "actual_cash": 85.0,
         })
         if "error" in close:
             self.fail("shift_close errored: %s" % close["error"])
 
+        chain = self._jsonrpc("/bayaan/api/chain_bootstrap", {})
+        if "error" in chain:
+            self.fail("chain_bootstrap after variance close errored: %s" % chain["error"])
+        daily = chain["result"]["summary"]["reportPeriods"]["daily"]
+        self.assertAlmostEqual(daily["cashVariance"], -15.0)
+        self.assertAlmostEqual(daily["varianceImpact"], -15.0)
+        self.assertAlmostEqual(
+            daily["netProfit"],
+            daily["revenue"] - daily["cogs"] - daily["wasteCost"] + daily["varianceImpact"],
+        )
+
         approved = self._jsonrpc("/bayaan/api/shift_close_review", {
             "close_id": close["result"]["id"],
             "decision": "approved",
+            "note": "Manager accepted opening cash variance after recount.",
         })
         if "error" in approved:
             self.fail("shift_close_review approve errored: %s" % approved["error"])

@@ -170,6 +170,31 @@ class BayaanAttendance(models.Model):
             attendance.with_context(bayaan_skip_hr_attendance_sync=True).hr_attendance_id = hr_attendance.id
 
 
+class BayaanOperatingExpense(models.Model):
+    _name = "bayaan.operating.expense"
+    _description = "Bayaan Operating Expense"
+    _order = "date desc, id desc"
+
+    name = fields.Char(required=True)
+    category = fields.Char(required=True, default="General")
+    amount = fields.Monetary(required=True)
+    date = fields.Date(required=True, default=fields.Date.context_today)
+    note = fields.Char()
+    company_id = fields.Many2one(
+        "res.company",
+        required=True,
+        default=lambda self: self.env.company,
+        index=True,
+    )
+    currency_id = fields.Many2one(related="company_id.currency_id", store=True, readonly=True)
+
+    @api.constrains("amount")
+    def _check_amount(self):
+        for expense in self:
+            if expense.amount <= 0:
+                raise ValidationError("Operating expense amount must be greater than zero.")
+
+
 class BayaanStaffingCoverageRule(models.Model):
     _name = "bayaan.staffing.coverage.rule"
     _description = "Bayaan Kiosk Staffing Coverage Rule"
@@ -309,18 +334,28 @@ class BayaanPayrollAdjustment(models.Model):
     company_id = fields.Many2one(related="employee_id.company_id", store=True, readonly=True)
 
     def action_approve(self):
-        self.write({
-            "state": "approved",
-            "approved_by_id": self.env.user.id,
-            "approved_at": fields.Datetime.now(),
-        })
+        for adjustment in self:
+            if adjustment.state == "approved":
+                continue
+            if adjustment.state == "rejected":
+                raise UserError("Rejected payroll adjustments cannot be approved.")
+            adjustment.write({
+                "state": "approved",
+                "approved_by_id": self.env.user.id,
+                "approved_at": fields.Datetime.now(),
+            })
 
     def action_reject(self):
-        self.write({
-            "state": "rejected",
-            "approved_by_id": self.env.user.id,
-            "approved_at": fields.Datetime.now(),
-        })
+        for adjustment in self:
+            if adjustment.state == "rejected":
+                continue
+            if adjustment.state == "approved":
+                raise UserError("Approved payroll adjustments cannot be rejected.")
+            adjustment.write({
+                "state": "rejected",
+                "approved_by_id": self.env.user.id,
+                "approved_at": fields.Datetime.now(),
+            })
 
 
 class BayaanPayrollRun(models.Model):
@@ -448,6 +483,12 @@ class BayaanPayrollRun(models.Model):
     def action_approve(self):
         Adjustment = self.env["bayaan.payroll.adjustment"].sudo()
         for run in self:
+            if run.state == "paid":
+                continue
+            if run.state == "approved":
+                continue
+            if run.state == "cancelled":
+                raise UserError("Cancelled payroll cannot be approved.")
             draft_adjustments = Adjustment.search_count([
                 ("date", ">=", run.date_from),
                 ("date", "<=", run.date_to),
@@ -466,6 +507,8 @@ class BayaanPayrollRun(models.Model):
 
     def action_mark_paid(self):
         for run in self:
+            if run.state == "paid":
+                continue
             if run.state != "approved":
                 raise UserError("Only approved payroll can be marked paid.")
             run.state = "paid"

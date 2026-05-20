@@ -33,7 +33,14 @@ async function main() {
     const pageErrors = [];
 
     page.on("console", (message) => {
-      if (message.type() === "error") consoleErrors.push(message.text());
+      if (message.type() !== "error") return;
+      const text = message.text();
+      // The sandboxed Codex environment blocks outbound network access, so the
+      // Google Fonts loads in index.html/styles.css can surface as generic
+      // ERR_NETWORK_ACCESS_DENIED console errors. Ignore those so the smoke
+      // suite continues to enforce app-level errors while staying offline-safe.
+      if (text.includes("ERR_NETWORK_ACCESS_DENIED")) return;
+      consoleErrors.push(text);
     });
     page.on("pageerror", (error) => pageErrors.push(error.message));
     page.on("requestfailed", (request) => {
@@ -43,8 +50,11 @@ async function main() {
       }
     });
 
-    await page.goto(baseUrl, { waitUntil: "networkidle", timeout: 30_000 });
-    await expectText(page, "Maqha");
+    // Realtime/bootstrap requests can keep the browser from reaching networkidle.
+    // The visible text/image assertions below are the app readiness check.
+    await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await expectLoadedImage(page, '.master-top img[src="/brand/miza-logo.png"]');
+    await expectText(page, "- operations");
     // The BayaanProvider mode badge — Demo by default when no VITE_ODOO_URL is set.
     await expectText(page, "Demo mode");
     // New Overview is an always-on operations terminal (see design/exact-pos-v2/.../overview.jsx)
@@ -68,19 +78,19 @@ async function main() {
     await page.screenshot({ path: filePath("exact-admin-overview.png"), fullPage: true });
 
     for (const [nav, expectedText, screenshotName] of [
-      ["AI Insights", ["Today's brief", "Demo source rows - read-only", /orders\s+\d+/, /Daily summaries tier/], "exact-admin-ai-insights.png"],
+      ["AI Insights", ["assistant-ui", "New Thread", /Local preview|Live LLM/, /orders\s+\d+/, /Daily summaries tier/], "exact-admin-ai-insights.png"],
       ["Kiosks", "Active"],
-      ["Sales & POS", ["Live POS orders", "Gateway providers", "Zain Cash", "FIB"], "exact-admin-sales-pos.png"],
+      ["Sales & POS", ["Demo POS orders", "Gateway providers"], "exact-admin-sales-pos.png"],
       ["Warehouses", "Bayaan warehouse topology"],
-      ["Stock & Allocation", "Kiosk live stock needs", "exact-admin-stock-allocation.png"],
+      ["Stock & Allocation", "Kiosk stock needs", "exact-admin-stock-allocation.png"],
       ["Products & Recipes", ["Recipe cost and margin control", "Demo persistence"], "exact-admin-products-recipes.png"],
       ["Daily Close", ["Variance loop", "Today's closes", "Digital payments", "Investigation"], "exact-admin-daily-close.png"],
-      ["Waste & Loss", ["Waste reason control", "Pattern detected"]],
+      ["Waste & Loss", ["Waste reason control", "Demo pattern"]],
       ["Purchases & Suppliers", ["Open purchase orders", "Supplier item catalog", "Suppliers"]],
       ["Staff", ["Cashier performance", "Roster"]],
-      ["Reports", ["Management report pack", "Payment methods", "Iraqi gateway settlement", "Zain Cash", "FIB", "Profit & loss", "Export pack"]],
+      ["Reports", ["Management report pack", "Payment methods", "Iraqi gateway settlement", "Profit & loss", "Export pack"]],
     ]) {
-      await page.locator(".nav-item", { hasText: nav }).first().click();
+      await navigateAdmin(page, nav);
       const headings = Array.isArray(expectedText) ? expectedText : [expectedText];
       for (const heading of headings) {
         await expectText(page, heading);
@@ -108,14 +118,27 @@ async function main() {
         await expectText(page, "Save");
         await page.getByRole("button", { name: "Cancel" }).click();
       }
+      if (nav === "Warehouses") {
+        await expectText(page, /Central Warehouse[\s\S]*12,340/);
+      }
       if (nav === "Stock & Allocation") {
         await expectText(page, "Create transfer");
+        await assertStockAllocationReleaseGate(page);
         await page.getByRole("button", { name: /Create transfer/ }).first().click();
         await expectText(page, /Review suggested transfer before creating/);
         await expectText(page, "New stock transfer");
         await page.locator("[role='dialog']").getByRole("button", { name: /Create transfer/ }).click();
         await expectText(page, /Draft transfer prepared/);
-        await expectText(page, /DRAFT-K-04-oat-milk-1l/);
+        const draftId = "DRAFT-K-04-oat-milk-1l";
+        await expectText(page, new RegExp(draftId));
+        await clickStockTransferAction(page, draftId, "Approve");
+        await expectStockTransferRow(page, draftId, /approved/i, "stock transfer draft did not move to approved");
+        await clickStockTransferAction(page, draftId, "Pick");
+        await expectStockTransferRow(page, draftId, /picked/i, "stock transfer did not move to picked");
+        await clickStockTransferAction(page, draftId, "Dispatch");
+        await expectStockTransferRow(page, draftId, /dispatched[\s\S]*waiting kiosk/i, "stock transfer did not move to dispatched waiting-kiosk state");
+        await clickStockTransferAction(page, draftId, "Receive");
+        await expectStockTransferRow(page, draftId, /received/i, "stock transfer did not expose and persist the receive action");
         await page.waitForTimeout(3800);
         await scrollAdminToTop(page);
         await page.screenshot({ path: filePath("exact-admin-stock-transfer-draft.png"), fullPage: true });
@@ -131,7 +154,7 @@ async function main() {
     await page.waitForTimeout(900);
     await page.screenshot({ path: filePath("exact-admin-reports.png"), fullPage: true });
 
-    await page.locator(".nav-item", { hasText: "Kiosks" }).first().click();
+    await navigateAdmin(page, "Kiosks");
     await page.locator(".card", { hasText: "Karrada Center" }).first().click();
     await expectText(page, "Daily stock reconciliation");
     await expectText(page, "Expected consumed from POS sales");
@@ -142,6 +165,7 @@ async function main() {
     await expectText(page, "Good morning");
     await expectText(page, "Customer-facing display");
     await expectText(page, "Step up when ready");
+    await expectLoadedImage(page, '.tablet-portrait img[src="/brand/miza-logo.png"]');
     await page.screenshot({ path: filePath("exact-pos-login.png"), fullPage: true });
 
     await page.getByRole("button", { name: /Maya Ahmed/ }).click();
@@ -197,7 +221,7 @@ async function main() {
 
     await page.locator(".lang button").nth(1).click();
     assert(await page.locator(".app-frame").getAttribute("dir") === "rtl", "Arabic mode did not switch the app to RTL");
-    await expectText(page, "مقهى");
+    await expectText(page, "ميزا");
     await assertNoVisibleMojibake(page);
     await page.screenshot({ path: filePath("exact-arabic-pos.png"), fullPage: true });
 
@@ -206,7 +230,7 @@ async function main() {
       window.localStorage.setItem("bayaan.mode.v1", "demo");
       window.localStorage.setItem("bayaan.kiosk.v1", "K-01");
     });
-    await mobile.goto(baseUrl, { waitUntil: "networkidle", timeout: 30_000 });
+    await mobile.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
     const mobileText = (await mobile.textContent("body"))?.trim() ?? "";
     assert(mobileText.length > 200, "Mobile render is blank or near blank");
     await mobile.screenshot({ path: filePath("exact-mobile-admin.png"), fullPage: true });
@@ -245,11 +269,15 @@ async function main() {
 }
 
 async function launchBrowserOrNull() {
+  const defaultCandidate = { label: "chromium default", options: { headless: true } };
+  const chromeCandidate = { label: "chromium channel=chrome", options: { headless: true, channel: "chrome" } };
+  const edgeCandidate = { label: "chromium channel=msedge", options: { headless: true, channel: "msedge" } };
+  const platformCandidates = process.platform === "win32"
+    ? [edgeCandidate, chromeCandidate, defaultCandidate]
+    : [defaultCandidate, chromeCandidate, edgeCandidate];
   const candidates = [
     preferredChannel ? { label: `chromium channel=${preferredChannel}`, options: { headless: true, channel: preferredChannel } } : null,
-    { label: "chromium default", options: { headless: true } },
-    { label: "chromium channel=chrome", options: { headless: true, channel: "chrome" } },
-    { label: "chromium channel=msedge", options: { headless: true, channel: "msedge" } },
+    ...platformCandidates,
   ].filter(Boolean);
 
   let lastError;
@@ -353,11 +381,12 @@ async function smokeLite() {
 
   const bundle = jsFiles.map((f) => fs.readFileSync(f, "utf8")).join("\n");
   for (const needle of [
-    "Maqha",
+    "Miza",
+    "/brand/miza-logo.png",
     "STREAM ACTIVE",
     "Top performers",
     "AI Insights",
-    "Today's brief",
+    "assistant-ui",
     "Customer-facing display",
     "Step up when ready",
     "Amount due",
@@ -372,7 +401,7 @@ async function smokeLite() {
     ok: true,
     mode: "smoke-lite",
     baseUrl,
-    checkedStrings: 10,
+    checkedStrings: 11,
   }, null, 2));
 }
 
@@ -427,6 +456,15 @@ async function expectText(page, text) {
   await page.getByText(text, { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
 }
 
+async function expectLoadedImage(page, selector) {
+  const image = page.locator(selector).first();
+  await image.waitFor({ state: "visible", timeout: 10_000 });
+  const loaded = await image.evaluate((img) =>
+    img instanceof HTMLImageElement && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0,
+  );
+  assert(loaded, `Image did not load: ${selector}`);
+}
+
 async function clickExactButton(page, name) {
   let lastError;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -455,6 +493,111 @@ async function assertNoVisibleMojibake(page) {
 
 async function scrollAdminToTop(page) {
   await page.locator("main .scroll").evaluate((node) => { node.scrollTop = 0; }).catch(() => {});
+}
+
+async function navigateAdmin(page, label) {
+  const navItem = page.locator(".nav-item", { hasText: label }).first();
+  if (await navItem.isVisible({ timeout: 500 }).catch(() => false)) {
+    await navItem.click();
+    return;
+  }
+  const section = adminSectionId(label);
+  assert(section, `No admin section mapping for ${label}`);
+  const changed = await page.evaluate((nextSection) => {
+    if (typeof window.__bayaanSetAdminSection !== "function") return false;
+    window.__bayaanSetAdminSection(nextSection);
+    return true;
+  }, section);
+  assert(changed, `Admin navigation helper was not available for ${label}`);
+}
+
+function adminSectionId(label) {
+  return {
+    "AI Insights": "insights",
+    "Kiosks": "kiosks",
+    "Sales & POS": "sales",
+    "Warehouses": "warehouses",
+    "Items Catalog": "items",
+    "Stock & Allocation": "inventory",
+    "Products & Recipes": "products",
+    "Daily Close": "closing",
+    "Waste & Loss": "waste",
+    "Purchases & Suppliers": "suppliers",
+    "Staff": "staff",
+    "Finance": "finance",
+    "Reports": "reports",
+  }[label];
+}
+
+async function assertStockAllocationReleaseGate(page) {
+  const ledger = page.locator('[data-testid="inventory-ledger-card"]');
+  await ledger.waitFor({ state: "visible", timeout: 10_000 });
+  await expectText(page, /Showing 1-10 of \d+ stock rows/);
+  await expectText(page, "Rows per page");
+  await expectText(page, /Page 1 of \d+/);
+
+  const ledgerRows = ledger.locator("tbody tr");
+  await waitForCountAtLeast(ledgerRows, 10, "inventory ledger must render a full Studio table page");
+  const firstPageFirstRow = await ledgerRows.first().innerText();
+
+  const chartBox = await page.locator('[data-testid="inventory-health-chart"]').boundingBox();
+  const listBox = await page.locator('[data-testid="inventory-health-list"]').boundingBox();
+  assert(chartBox && listBox, "inventory health chart/list boxes were not measurable");
+  await page.locator('[data-testid="inventory-health-chart"] .recharts-surface').waitFor({ state: "visible", timeout: 10_000 });
+  const overlaps = chartBox.x < listBox.x + listBox.width
+    && chartBox.x + chartBox.width > listBox.x
+    && chartBox.y < listBox.y + listBox.height
+    && chartBox.y + chartBox.height > listBox.y;
+  assert(!overlaps, "inventory health pie chart overlaps the status list");
+
+  await page.getByRole("link", { name: "Go to next page" }).click();
+  await expectText(page, /Page 2 of \d+/);
+  await waitForCountAtLeast(ledgerRows, 2, "inventory ledger next page did not render rows");
+  const secondPageFirstRow = await ledgerRows.first().innerText();
+  assert(firstPageFirstRow !== secondPageFirstRow, "inventory ledger pagination did not change visible rows");
+  await page.getByRole("link", { name: "Go to previous page" }).click();
+  await expectText(page, /Page 1 of \d+/);
+}
+
+async function waitForCountAtLeast(locator, expected, message, timeoutMs = 10_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await locator.count() >= expected) return;
+    await delay(120);
+  }
+  throw new Error(`${message}; saw ${await locator.count()}, expected at least ${expected}`);
+}
+
+async function expectStockTransferRow(page, rowId, pattern, message, timeoutMs = 8_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    for (const row of stockTransferRowCandidates(page, rowId)) {
+      const text = await row.innerText({ timeout: 500 }).catch(() => "");
+      if (pattern.test(text)) return text;
+    }
+    await delay(160);
+  }
+  throw new Error(message);
+}
+
+async function clickStockTransferAction(page, rowId, actionName) {
+  for (const row of stockTransferRowCandidates(page, rowId)) {
+    const action = row.getByRole("button", { name: actionName });
+    if (await action.count()) {
+      await action.first().click();
+      return;
+    }
+  }
+  throw new Error(`Could not find ${actionName} action for transfer ${rowId}`);
+}
+
+function stockTransferRowCandidates(page, rowId) {
+  const text = page.getByText(rowId, { exact: false }).first();
+  return [
+    page.locator("tr", { hasText: rowId }).first(),
+    text.locator("xpath=ancestor::div[.//button][1]"),
+    text.locator("xpath=ancestor::div[contains(@class,'grid')][1]"),
+  ];
 }
 
 function filePath(name) {

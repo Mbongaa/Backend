@@ -1,6 +1,6 @@
 # Bayaan Production Gap Plan
 
-Current date: 2026-05-13
+Current date: 2026-05-17
 
 This plan traces what is still missing before Bayaan can be called production-ready for a real F&B kiosk pilot. It is intentionally stricter than "demo-ready." Odoo Community remains the hidden source of truth. Bayaan is the branded workflow layer.
 
@@ -8,13 +8,20 @@ This plan traces what is still missing before Bayaan can be called production-re
 
 | Gate | Status | Evidence |
 | --- | --- | --- |
-| Frontend release gate | Green | `npm run verify` passed on 2026-05-13: 42 Vitest tests, stricter wiring gate, production build, Playwright smoke |
-| Odoo addon test gate | Green | Temp DB `bayaan_codex_release_gate_0513`, Bayaan addon post-tests: 51 tests, 0 failed, 0 errors; stats: 69 tests |
-| Live Odoo realtime smoke | Green | `npm run smoke:live` passed on 2026-05-13 against WSL Odoo: authenticated session, live sync, `Stream live`, backend sale appeared in Sales & POS without manual refresh |
+| Frontend scripted gate | Green | `npm run verify` passed on 2026-05-17 after the simulation sale-balance, POS price-total, sale source-reference, sale stock/recipe, waste, close, transfer-create, purchase-create, stock-item-create, supplier-create, product-catalog-create, recipe-version-create, recurring-plan-create, recurring-run, HR/payroll payload validation, attendance worked-hours, shift-state persistence, live operating-expense gateway routing, draft cash-shortage deduction approval/rejection, terminal adjustment decision controls, duplicate adjustment retry reuse, duplicate attendance/expense retry proof, paid-period payroll adjustment locking, payroll export adjustment traceability, operating-expense P&L/export persistence, HR/payroll source-count audit/source-cite/AI-chip traceability, simulation negative report-period profit preservation, summary net-after-payroll totals, unique closed-kiosk audit checks, approved-close review locking, KPI negative money styling, finance favorable-variance reserve handling, payroll-run retry/recompute/export/paid-state hardening, and kiosk-detail/Sparkline hardening: 163 Vitest tests, wiring gate, production build, and browser smoke |
+| Simulation dashboard flow gate | Green | `npm run simulation:audit` and `npm run smoke:simulation` passed on 2026-05-17. The browser smoke now proves zero-start, x2/x5/x10 speed, loop, 60-minute final state, dark mode, all 10 individual kiosk detail Sales tabs showing minute-50+ POS orders, manual POS/waste/close, transfers, purchases, suppliers, product/recipe creation, HR/payroll, Reports/export traceability, and the 30-minute final scenario. Proof includes `apps/kiosk-pos/verification/simulation-kiosk-detail-late-orders.png` plus the simulation screenshot set |
+| Dashboard component parity gate | Yellow | The active Vite runtime only imports Studio Admin dashboard components for Stock & Allocation and Waste & Loss. Sales & POS, Kiosk Detail, Staff, Finance/Reports, Suppliers, Products, Closing, Warehouses, Overview, and AI Insights still rely on legacy/self-made Exact dashboard sections. Those surfaces now have smoke coverage for the confirmed kiosk-detail order bug, but the Studio Admin migration/parity inventory is not complete |
+| Odoo addon test gate | Green via Ubuntu WSL | `wsl.exe -d Ubuntu -- bash -lc "cd '/mnt/c/Users/hassa/OneDrive/Desktop/Bayaan.ai/bayaan POS' && DROP_FAILED_DB=1 TEST_TIMEOUT_SECONDS=1800 bash scripts/odoo-addon-test.sh"` passed on 2026-05-17 against disposable DB `bayaan_codex_20260517_150409`: 52 post-tests, 70 addon tests, 0 failed, 0 errors |
+| Live Odoo realtime smoke | Green | `npm run smoke:live` passed on 2026-05-16 against WSL Odoo: authenticated session, live sync, `Stream live`, backend sale, stock transfer, purchase receipt, waste, shift close, manager close review, forced Odoo bus fallback sale, and browser WebSocket-close fallback sale appeared without manual refresh; proof screenshots are written to `apps/kiosk-pos/verification/live-odoo-*.png` |
 | Odoo local runtime | Green on demand | Local Odoo 19 was started through WSL for the gate, then stopped after smoke |
-| Docker local stack | Not part of this pass | Docker Desktop CLI is available, but this gate used the existing WSL Odoo runtime |
-| Local pilot workflow gate | Green | Purchases, suppliers, recurring purchases, stock transfer receive, POS receive visibility, stock variance, HR/payroll, realtime audit/debugging, and live UI smoke are covered |
+| Docker local stack | Blocked locally | `make odoo-test` still depends on `docker compose`; Docker reports missing `//./pipe/dockerDesktopLinuxEngine` in this workspace session. Use `make odoo-test-local` inside WSL/Linux as the non-Docker fallback |
+| Local pilot workflow gate | Yellow | Deterministic simulation/backend/frontend flows are passing, but pilot release is held open by the Dashboard component parity gate until each legacy/self-made operational surface is either migrated to the Studio Admin component stack or explicitly covered by a section-level screenshot/interaction gate |
 | Full production gate | Red | Deployment, hardware, accountant validation, backups/restore, and ops hardening are incomplete or external; online payments are intentionally excluded from this slice |
+
+Backend addon runner note:
+- `scripts/odoo-addon-test.sh` was added as the non-Docker WSL/Linux path for disposable clean-db addon tests.
+- The runner scopes tests to `/$ADDON` by default so it no longer runs Odoo core/base tests accidentally.
+- A 2026-05-17 full Ubuntu WSL run passed when invoked explicitly through the `Ubuntu` distro. Plain `bash scripts/odoo-addon-test.sh` from PowerShell can still hit the stopped default `docker-desktop` WSL distro, so CI/local scripts should use the Ubuntu/WSL path explicitly or set Ubuntu as the default distro.
 
 Latest production slice completed:
 - Purchase orders can now be sent and received through `/bayaan/api/purchase_order_action`.
@@ -24,6 +31,103 @@ Latest production slice completed:
 - Receiving a transfer validates the Odoo internal picking and moves stock from warehouse to kiosk.
 - Frontend live-mode buttons call these backend routes and refresh from Odoo.
 - Realtime dashboard/POS streaming now uses Odoo's bus/websocket layer with authenticated scoped channels, bus polling fallback, and bootstrap resync after events.
+- Live smoke now forces the Odoo bus polling fallback for a real backend sale and verifies the Sales & POS surface updates without manual refresh.
+- Frontend realtime unit coverage now verifies WebSocket transport, forced bus polling, and WebSocket-close fallback into Odoo bus polling.
+- Simulation audit now proves custom per-kiosk target-order profiles are audited with their supplied targets instead of falling back to defaults, including 30-minute causality without double-scaling.
+- Simulation source-of-truth tests now prove manual FIB/digital POS sales increase digital/bank-app reports without inflating expected cash.
+- Simulation source-count traceability now reconciles purchase orders, suppliers, recurring purchase plans, product rows, warehouse stock rows, transfer rows, HR employee/shift/attendance rows, payroll adjustments/runs, and operating expenses into summary/report-period counts, deterministic audit checks, source-cite text, and the management export traceability section.
+- Simulation close-review hardening now recomputes the unresolved close/variance alert count when a pending close is approved/rejected, preventing approved close rows from leaving stale unresolved-alert totals.
+- Simulation close-review hardening now treats approved closes as locked terminal source facts, so a later reject/note retry cannot reopen or mutate the approved close.
+- Simulation close-review replay hardening now rejects unknown close ids and replays manager review history sequentially so an approved close cannot be overwritten by a later conflicting review row during source rebuild.
+- Simulation close-review gateway hardening now rejects unsupported manager decision names before appending to the replay log, so invalid decisions cannot poison future source rebuilds.
+- Simulation shift-close replay hardening now enforces stale-stock/count validation in the source-row apply helper before variance rows can be created.
+- Simulation stock-suggestion hardening now recomputes transfer suggestions and low-stock alert counts after POS recipe consumption, waste, and received transfers, preventing fulfilled needs from staying in the recommendation panel.
+- Simulation purchase-receipt hardening now supports partial receipts by adding only the received quantity to warehouse stock, leaving the PO partial until the remaining quantity is received, and consuming duplicate-item receipt requests only once across matching PO lines.
+- Simulation transfer-receipt hardening now caps received transfer quantity at source warehouse availability and records the shortage, preventing negative warehouse stock or invented kiosk stock.
+- Simulation transfer state-machine hardening now blocks receipt stock movement until a transfer is dispatched.
+- Simulation transfer quantity hardening now keeps requested transfer quantity separate from `doneQty`/`receivedQty`, so draft/dispatched stock cannot reconcile as received before receipt.
+- Simulation transfer row totals now reconcile completed transfer `movedQty` to the received line quantities used by kiosk and warehouse stock.
+- Simulation transfer action replay now applies approve -> pick -> dispatch -> receive history in order after simulated refresh instead of collapsing to the latest action.
+- Simulation transfer action replay hardening now rejects actions for missing transfer source rows before stock or state can mutate.
+- Simulation transfer gateway action hardening now rejects unsupported action names before appending to the replay log, preventing invented transfer states from entering source rebuilds.
+- Simulation purchase action replay now respects terminal cancelled/received states, preventing cancelled POs from receiving stock and received POs from being cancelled after stock is posted.
+- Simulation purchase action replay hardening now rejects actions for missing purchase orders and positive receipt lines outside the PO before warehouse stock can move.
+- Simulation purchase gateway action hardening now validates receipt item lines and action names before appending to the replay log, so rejected actions cannot poison later source bootstrap rebuilds.
+- Simulation retry/idempotency hardening now prevents duplicate manual POS sales, waste entries, and shift closes from double-counting stock, cash, waste, closed kiosks, or unresolved variance alerts.
+- Simulation source-row retry hardening now prevents duplicate manual transfers, purchase orders, stock items, and suppliers from inflating traceability/source-count rows.
+- Simulation partial-receipt and recurring-plan retry hardening now prevents duplicate partial PO receive actions from adding warehouse stock twice and duplicate recurring plans from inflating source counts.
+- Simulation gateway retry hardening now prevents duplicate recurring-plan run retries from creating duplicate source purchase orders.
+- Simulation gateway action hardening now returns the actual source state for blocked transfer actions and terminal duplicate purchase receipts, instead of reporting an impossible requested state.
+- Simulation transfer receipt retry hardening now proves duplicate receive replays do not move warehouse/kiosk stock twice.
+- Simulation partial-transfer hardening now supports receive-line quantities, keeps transfers partial until remaining quantities are received, and dedupes duplicate partial receipt retries.
+- Simulation transfer receipt replay hardening now rejects received item lines that are not part of the transfer request before stock can move.
+- Simulation gateway receipt-state hardening now returns partial for incomplete purchase/transfer receipts instead of prematurely reporting done/received.
+- Simulation gateway operator retry hardening now returns the original POS sale, waste, and close source identities and prevents duplicate source rows on retry.
+- Simulation operator replay hardening now enforces POS sale line/payment balance and waste stock/cost validation in the source-row apply helpers, preventing bad replay data from bypassing gateway validation.
+- Simulation gateway setup/procurement retry hardening now returns the original transfer, purchase order, stock item, supplier, and recurring purchase identities and prevents duplicate source rows on retry.
+- Simulation partial-transfer terminal-state hardening now prevents a partially received transfer from being cancelled after warehouse/kiosk stock has already moved.
+- Simulation inactive recurring-plan hardening now blocks inactive plans from running into source purchase orders.
+- Simulation transfer receipt-shortage hardening now records shortage during partial receipts when the requested quantity exceeds warehouse availability.
+- Simulation no-op receipt hardening now prevents zero or non-matching purchase/transfer receipt actions from mutating source rows without stock movement.
+- Simulation transfer-create validation now rejects gateway transfer drafts with unknown kiosks/items or non-positive quantities before source transfer rows are created.
+- Simulation purchase-create validation now rejects gateway purchase orders with unknown suppliers/items or non-positive quantities/rates before source purchase rows are created.
+- Simulation transfer/purchase creation replay hardening now enforces the same validation inside the source-row apply helpers, preventing bad replay rows from bypassing gateway checks.
+- Simulation stock-item-create validation now rejects gateway stock items with empty names, unknown suppliers, or non-positive unit costs before source product/warehouse rows are created.
+- Simulation stock-item/recurring-plan replay hardening now enforces the same setup validation inside source-row apply helpers, including supplier and rate checks.
+- Simulation supplier-create validation now rejects gateway suppliers with empty names before source supplier rows are created.
+- Simulation supplier replay hardening now rejects empty supplier names inside the source-row apply helper before supplier source rows are created.
+- Simulation product-catalog-create validation now rejects gateway menu products with empty names, non-positive sellable prices, or negative standard costs before source product rows are created.
+- Simulation recipe-version-create validation now rejects gateway recipes with unknown products, unknown ingredients, non-positive quantities, or missing units before source recipe rows are created.
+- Simulation product/recipe source-row hardening now makes Product & Recipes writes real in simulation mode, with recipe versions feeding later POS consumption ledger rows instead of falling through the no-op gateway.
+- Simulation product/recipe replay hardening now enforces product catalog and recipe-version validation inside source-row apply helpers before source rows are created.
+- Simulation HR/payroll source-row hardening now makes Staff writes real in simulation mode: staff, roster shifts, coverage rules, attendance, payroll adjustments, and payroll runs persist into the same simulated source snapshot and report payroll expense.
+- Simulation HR/payroll replay hardening now validates manual employee, shift, coverage, attendance, adjustment, payroll-run, and operating-expense source rows before they can mutate payroll/report totals.
+- Simulation HR attendance hardening now records operator check-in/check-out through the source gateway, computes worked hours from the timestamps, refreshes the Staff attendance surface from the HR source snapshot, and includes attendance rows in payroll export.
+- Simulation HR scheduling/expense hardening now preserves source-created shift state, records operating expenses through the simulation source gateway, includes the persisted expense rows in payroll export, and subtracts those expenses from Reports P&L and the management export.
+- Simulation HR/payroll browser proof now creates source-backed staff, shift, held cash-shortage deductions, manager adjustment approval/rejection, bonus adjustment, payroll review, payroll approval, and paid-state marking in simulation mode, then captures the persisted Staff screenshot.
+- Simulation HR/payroll adjustment hardening now treats approved/rejected adjustment decisions as terminal source facts, makes duplicate same-action retries idempotent, rejects opposite-action reversals, and screenshots Staff without reversal controls after decision.
+- Simulation HR/payroll adjustment retry hardening now reuses the original adjustment row across duplicate draft and create-with-approve retries, including browser proof that a duplicate cash-shortage retry does not add a second Staff row.
+- Simulation HR attendance and operating-expense retry hardening now browser-proves duplicate source submissions do not add duplicate Staff rows or double-count payroll/profit impact.
+- Simulation HR/payroll paid-period hardening now blocks late cash-shortage adjustments after a payroll run is approved or paid in the backend route, simulation source gateway, and Staff UI proof flow.
+- Simulation HR/payroll export hardening now includes individual payroll adjustment rows with signed payroll impact and cites attendance, payroll adjustment, payroll run, and operating-expense source rows in the Reports management source badge and management CSV source-cite row.
+- Simulation AI Insights traceability now screenshots visible source chips for attendance, payroll adjustments, payroll runs, and operating expenses after those rows change payroll and net profit.
+- Simulation HR/payroll run hardening now rejects unsupported adjustment/run actions before state mutation, requires approval before paid marking, and recomputes reviewed payroll runs after held adjustments are approved without creating a second run row.
+- Simulation HR/payroll gateway hardening now validates payroll adjustment types and payroll run date ranges before appending to the replay log, so invalid payroll rows cannot poison later source rebuilds.
+- Backend HR/payroll route parity now reuses same-period payroll runs, makes paid retries idempotent, prevents approval retries from downgrading paid payroll, and blocks recompute from mutating approved or paid payroll runs.
+- Backend HR/payroll adjustment create now reuses duplicate same employee/date/type/amount/reason submissions, including draft-to-approved create retries, instead of double-posting payroll impact.
+- Backend HR attendance create now reuses duplicate same employee/check-in/check-out/manual-hours/note submissions instead of double-posting worked hours into payroll.
+- Backend HR operating expenses now persist as `bayaan.operating.expense` rows, reuse duplicate same name/category/amount/date/note submissions, appear in HR snapshots and chain source counts, and are wired through the live frontend source gateway.
+- Live Odoo chain bootstrap report periods now expose payroll expense, operating expenses, net profit after payroll, and HR/payroll/expense source-count rows so Reports uses source-backed labor and expense numbers instead of simulation-only fields.
+- Live Odoo chain bootstrap report periods now accrue active employee salary plus approved adjustment impact when no payroll run overlaps the period, then switch to prorated payroll-run totals once a reviewed/approved/paid run exists.
+- Live Odoo chain bootstrap report periods now add accrual for days not covered by a partial payroll run, preventing monthly labor from dropping uncovered days after a mid-period run.
+- Simulation payroll reports now freeze on the reviewed/approved/paid payroll-run net until an explicit recompute refreshes the run, so approved adjustments do not silently mutate a reviewed payroll report.
+- Live Odoo and source-backed simulation report/export net profit after payroll now preserves negative operating results instead of clamping losses to zero.
+- Peak simulation report periods now preserve negative net profit after payroll once operations begin, while keeping the minute-zero simulation snapshot at zero activity.
+- Report KPI styling now treats currency-prefixed negative money values, such as `IQD -9,500`, as down/negative instead of forcing green positive styling.
+- Manual simulation waste and shift-close variance rows now scale into weekly/monthly/yearly synthetic report periods consistently with manual sales, keeping report-period net profit and net profit after payroll reconciled.
+- Manual simulation sales, waste, and close variance now recompute report-period net profit after payroll from the updated source-backed net profit, payroll, and operating-expense fields, so first activity after a zero-start snapshot cannot skip payroll.
+- Generated and manual simulation summary totals now mirror source-backed daily net profit after payroll after sales, waste, or close variance, preventing dashboard fallback totals from diverging from Reports.
+- Manual simulation close rows now update dashboard open/closed kiosk totals by unique kiosk id rather than by close-row count, preventing repeated same-kiosk closes from overstating closed kiosks.
+- Generated peak simulation summaries now also count closed kiosks by unique kiosk id, keeping the base 30/60-minute simulation aligned with manual close behavior.
+- Simulation HR/payroll updates now mirror source-backed payroll expense, operating expenses, and net profit after payroll onto summary totals as well as report periods, keeping dashboard fallback surfaces reconciled.
+- Reports and management export now consume the source-backed `netProfitAfterPayroll` report field when present, instead of recomputing it on the client from rounded display components.
+- Finance account allocation now exposes a loss shortfall row when source-backed net profit after payroll is negative, rather than hiding the loss as zero savings.
+- Finance account allocation now keeps favorable variance out of the reserve cost bucket, so positive close variance is not treated like payroll/waste loss reserve.
+- Live Odoo chain bootstrap report periods now include cash variance, stock variance value, and variance impact from shift-close rows in report net profit, matching the simulation variance loop.
+- Simulation HR/payroll report/export proof now verifies the Reports P&L, exported management CSV, and exported payroll-run CSV pick up source-backed payroll changes; duplicate payroll compute/approve/paid retries do not create duplicate payroll run rows or downgrade paid runs.
+- Simulation recurring-plan-create validation now rejects gateway recurring purchase plans with unknown suppliers/items or non-positive quantities/rates before source recurring rows are created.
+- Simulation recurring-run validation now revalidates the generated source purchase-order payload and preserves supplier, item code, quantity, unit cost, and PO total.
+- Simulation supplier seed data now includes Iraq Pack as the packaging supplier for cups, lids, and straws, so valid purchase flows reference a real supplier source row.
+- Simulation sale-balance hardening now rejects gateway POS sales whose line total does not match payment total before source order/payment rows are created.
+- Simulation sale source-reference hardening now rejects gateway POS sales with unknown products, unknown kiosks, non-positive line/payment values, or unrecognized payment methods before source order/payment/ledger rows are created.
+- Simulation sale stock/recipe hardening now rejects gateway POS sales that would exceed current kiosk stock or post recipe/hybrid products without a matching active recipe version.
+- POS sale payload hardening now allocates the exact cashier-displayed total into Odoo-facing line `price_unit` values so the exact UI's VAT display cannot create unbalanced order/payment rows.
+- Simulation waste validation now rejects gateway waste rows with unknown kiosk/item references, non-positive or over-available quantities, or costs that do not reconcile to source stock unit cost.
+- Simulation shift-close validation now rejects gateway close rows for unknown kiosks, missing stock counts, unknown items, stale expected stock, or negative counted cash/stock before close rows are created.
+- Simulation close-review validation now rejects nonexistent close reviews and treats duplicate approvals as idempotent source-state reads.
+- Simulation daily-close hardening now increments unresolved close/variance alert totals when a manual close is submitted, then decrements/recomputes after manager review.
+- Simulation Overview now renders the minute/hour pulse bars again while simulation mode is active, so speed changes and minute-by-minute demand are visible instead of falling back to the fiscal sales-flow chart.
+- Simulation smoke now verifies non-zero management-export traceability rows and uses the current Stock & Allocation transfer-card/badge UI when proving manual transfer draft -> approved -> picked -> dispatched persistence and POS kiosk receipt reconciliation.
 - Full Odoo stock-loop regression now verifies: PO receipt -> warehouse stock increase -> transfer receipt -> kiosk stock increase -> POS recipe deduction -> ingredient waste scrap -> daily close expected-vs-actual variance.
 - Ingredient waste for storable ingredient products now creates real `stock.scrap` instead of only recording a waste entry.
 - API role checks now enforce kiosk scope server-side even where routes use `sudo()` for Odoo writes.
@@ -42,6 +146,8 @@ Active local pilot workflow goal:
 ## Release Gate Definition
 
 Bayaan is production-ready only when all of these are green:
+
+Gate promotion rule: before any release gate is called green or changed to green, the verifier must run the required automated gates and then complete a full dashboard verification walkthrough in the active Vite app. The walkthrough must exercise every active dashboard section and major drill-down, capture/update screenshots, verify dark mode where relevant, check for browser console/page errors, and record Studio Admin vs legacy/self-made component parity status. A narrow smoke, unit test run, build, or backend test run is not enough by itself to move a gate green.
 
 1. Odoo addon installs, updates, and tests on a clean database.
 2. Frontend tests, production build, and browser smoke pass.
@@ -68,7 +174,7 @@ Current state:
 - Sales monitor and dashboard surfaces resync from Odoo after realtime events; manual refresh is a fallback, not the normal workflow.
 - POS transfer surfaces subscribe to the same stream and reload transfer state when transfer, purchase, or assigned-kiosk events arrive.
 - Audit log listens to the realtime stream; `/bayaan/api/audit_log` polling is now only fallback behavior.
-- `npm run smoke:live` posts a real backend sale and verifies that Sales & POS updates without manual browser refresh.
+- `npm run smoke:live` posts real backend sale, stock transfer, purchase receipt, waste, shift close, manager close-review, forced Odoo bus fallback sale, and browser WebSocket-close fallback sale actions, verifies that the matching dashboard surfaces update without manual browser refresh, and captures live proof screenshots.
 
 Implemented:
 - Backend event publisher in the Bayaan addon using Odoo's built-in bus/websocket layer, without editing Odoo core.
@@ -76,13 +182,18 @@ Implemented:
 - Event families emitted from audit/security writes plus recipe consumption state changes; this covers sale, payment, waste, transfer, purchase, shift close, and review actions that already call `_audit_event`.
 - Scoped channels by company and user with signed unguessable channel names; websocket subscriptions are filtered server-side.
 - Frontend subscription service uses native websocket first and falls back to authenticated `/websocket/peek_notifications` polling when websocket transport fails.
-- Release smoke proves a backend sale appears in the Sales & POS monitor without manual refresh.
+- Release smoke proves backend sale, stock transfer, purchase receipt, waste, shift close, manager close-review, forced Odoo bus fallback sale, and browser WebSocket-close fallback sale actions appear on their matching dashboard surfaces without manual refresh.
 
 Acceptance:
 - Green locally: a sale posted at K-04 appears in the Sales & POS monitor without browser refresh.
-- Green locally: stream disconnect/reconnect does not corrupt numbers; the client resyncs from Odoo/Bayaan and keeps deterministic backend state authoritative.
+- Green locally: a stock transfer posted and dispatched for K-04 appears in Stock & Allocation without browser refresh.
+- Green locally: a purchase order posted and received appears in Purchases & Suppliers without browser refresh.
+- Green locally: a waste entry posted for K-04 appears in Waste & Loss without browser refresh.
+- Green locally: a shift close submitted for K-04 appears in Daily Close without browser refresh.
+- Green locally: manager close approval appears in Daily Close without browser refresh.
+- Green locally: WebSocket close falls back to authenticated Odoo bus polling in unit coverage, and the live browser smoke proves both forced Odoo bus fallback and browser WebSocket-close fallback for real backend sales without manual refresh.
 - Green locally: unauthorized channel subscription is filtered server-side by the signed-channel guard.
-- Still broaden before pilot CI: add live smoke cases for transfer, waste, and close surfaces using the same stream path.
+- Still needed before pilot CI: wire `npm run smoke:live` into CI against a disposable Odoo database.
 
 ### 2. Auth, Roles, And Kiosk Scoping
 
@@ -332,7 +443,7 @@ Acceptance:
 
 ### Phase 1: Truthful Core Operations
 
-1. Broaden live Odoo smoke from sale realtime proof to purchase -> receive -> transfer -> sale -> waste -> close no-manual-refresh assertions.
+1. Wire the current sale/transfer/purchase/waste/close/review/fallback realtime proof into CI against a disposable Odoo database.
 2. Add PO receive modal and partial receipt/damage capture.
 3. Add multi-line transfer UI and discrepancy capture.
 4. Complete daily close operator flow.
@@ -379,4 +490,4 @@ This should make Odoo installs/tests faster and reduce file-lock/sync weirdness.
 
 ## Current Verdict
 
-Bayaan is now green for the local pilot workflow gate: frontend verify passes, the Bayaan Odoo addon test gate passes on a clean database, and live Odoo smoke proves a backend sale streams into the Sales & POS monitor without manual refresh. It is not yet green for real production release because deployment, backups/restore, hardware, accountant validation, and ops hardening are incomplete or outside this local repo. Online payments are intentionally outside this slice. The stock loop is verified end-to-end in Odoo, role/kiosk scoping is enforced server-side, daily close approval is locked and manager-controlled, HR/payroll persists in backend models, recurring purchases create confirmed Odoo purchase orders, and realtime streaming is locally proven.
+Bayaan is green for the frontend, simulation, Odoo addon, and live Odoo realtime local pilot workflow gates: frontend verify passes, simulation audit/smoke passes, the Ubuntu WSL addon runner passes, and live Odoo smoke proves backend sale, stock transfer, purchase receipt, waste, shift close, manager close review, forced Odoo bus fallback sale, and browser WebSocket-close fallback sale updates without manual refresh. It is not yet green for real production release because deployment, backups/restore, hardware, accountant validation, and ops hardening are incomplete or external. Online payments are intentionally outside this slice. The stock loop has clean-DB Odoo coverage, role/kiosk scoping is enforced server-side, daily close approval is locked and manager-controlled, HR/payroll persists in backend models, recurring purchases create confirmed Odoo purchase orders, and realtime streaming is locally proven.

@@ -10,7 +10,7 @@ ADDON    := bayaan_fnb_kiosk
 DB       := bayaan
 DC       := docker compose
 
-.PHONY: help install dev build test smoke verify up down logs seed odoo-shell odoo-test odoo-update reset-db backup
+.PHONY: help install dev build test smoke verify up down logs seed odoo-shell odoo-test odoo-test-local odoo-update reset-db backup
 
 help:
 > @echo "Bayaan make targets:"
@@ -27,6 +27,7 @@ help:
 > @echo "  make logs      — tail Odoo logs"
 > @echo "  make seed      — install $(ADDON) into the $(DB) database with demo data"
 > @echo "  make odoo-test — run the $(ADDON) test suite against the $(DB) database"
+> @echo "  make odoo-test-local — run $(ADDON) tests through scripts/odoo-addon-test.sh on WSL/Linux"
 > @echo "  make odoo-update — re-install $(ADDON) without demo data (production reload)"
 
 install:
@@ -64,6 +65,9 @@ seed:
 
 odoo-test:
 > $(DC) run --rm odoo odoo -d $(DB) -i $(ADDON) --test-enable --stop-after-init
+
+odoo-test-local:
+> scripts/odoo-addon-test.sh
 
 odoo-update:
 > $(DC) run --rm odoo odoo -d $(DB) -u $(ADDON) --without-demo=all --stop-after-init

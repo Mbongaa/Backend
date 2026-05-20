@@ -66,6 +66,19 @@ describe("buildKioskSalePayload", () => {
     const payload = buildKioskSalePayload({ ...baseInput, sessionId: 42 });
     expect(payload.session_id).toBe(42);
   });
+
+  it("allocates tax-inclusive cashier totals into Odoo line prices", () => {
+    const payload = buildKioskSalePayload({
+      ...baseInput,
+      cart: [
+        { key: "latte:Reg", id: 4, image: "latte", name: "Latte", price: 4500, qty: 1 },
+      ],
+      total: 4725,
+    });
+
+    expect(payload.items[0].price_unit).toBe(4725);
+    expect(payload.payments[0].amount).toBe(4725);
+  });
 });
 
 describe("generateExternalId", () => {
@@ -108,6 +121,15 @@ describe("buildWastePayload", () => {
       item: { name: "Croissant", price: 1500 },
     });
     expect(payload.item).toBe("Croissant");
+  });
+
+  it("preserves live stock item codes for ingredient waste", () => {
+    const payload = buildWastePayload({
+      ...baseInput,
+      item: { id: "COFFEE-BEANS", name: "Coffee beans", price: 18000 },
+    });
+    expect(payload.item).toBe("COFFEE-BEANS");
+    expect(payload.name).toBe("Coffee beans");
   });
 
   it("rejects qty <= 0", () => {

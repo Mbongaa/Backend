@@ -13,6 +13,7 @@ This file provides guidance to AI coding agents when working with code in this r
 - "Command `Z` does W" → run it (read-only) or read the source. Don't predict from name.
 - "The other agent did/built X" → read the actual file and `docs/hourly-reports/` before asserting.
 - "Test/build/smoke is green" → run `npm run verify` and the addon test gate. Don't infer.
+- "Release gate is green" → first run the required gates, then complete a full dashboard verification walkthrough of every active section and major drill-down, including screenshots, dark mode where relevant, console/page-error checks, and Studio Admin vs legacy/self-made component parity status. Do not promote a gate to green from tests alone.
 - "AGENTS.md and CLAUDE.md agree" → `diff` them. They have diverged before.
 - "Memory says X" → memory is point-in-time. Re-verify against current code before acting.
 - For questions a `grep` answers in one line, do the `grep` instead of asking the user.
@@ -98,7 +99,7 @@ There must be exactly one backend database. Bayaan must not run a second account
 - Failure must be visible: paid orders without a recipe are flagged `missing_recipe`; posting failures are flagged `failed` with the error on the chatter. Silent failure is not allowed.
 
 Bayaan API routes (in `backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py`):
-`/bayaan/api/chain_bootstrap`, `/warehouse_setup`, `/payment_gateways`, `/create_warehouse`, `/create_kiosk`, `/recipe_version`, `/pos_sale` (guardrail), `/open_session`, `/kiosk_sale`, `/waste`, `/stock_transfer`, `/stock_transfer_action`, `/purchase_order`, `/purchase_order_action`, `/shift_close`, `/shift_close_review`. **Re-grep before quoting this list — Codex adds routes regularly.**
+`/bayaan/api/auth_status`, `/auth_logout`, `/audit_log`, `/realtime_config`, `/warehouse_setup`, `/payment_gateways`, `/ai_dashboard_plan`, `/payment_transaction`, `/payment_transaction_action`, `/hr_snapshot`, `/hr_employee`, `/hr_attendance`, `/operating_expense`, `/hr_schedule`, `/payroll_adjustment`, `/payroll_adjustment_action`, `/payroll_run`, `/payroll_run_action`, `/create_warehouse`, `/create_kiosk`, `/create_supplier`, `/create_stock_item`, `/product_catalog`, `/chain_bootstrap`, `/recipe_version`, `/pos_sale` (guardrail), `/open_session`, `/kiosk_sale`, `/waste`, `/stock_transfer`, `/stock_transfer_action`, `/purchase_order`, `/recurring_purchase`, `/purchase_order_action`, `/shift_close`, `/shift_close_review`, plus `/bayaan/payment/webhook/<provider>`. **Re-grep before quoting this list — Codex adds routes regularly.**
 
 ## Architecture: Product Consumption Modes
 
@@ -160,5 +161,5 @@ P1+ items (also in the gap plan): supplier price catalog, warehouse setup flow, 
 - TypeScript is configured with `noUnusedLocals`, `noUnusedParameters`, `erasableSyntaxOnly`, `verbatimModuleSyntax`, `noFallthroughCasesInSwitch` (see `apps/kiosk-pos/tsconfig.json`). Builds will fail on unused names — clean as you go.
 - The exact-design runtime files (`ExactKioskApp.jsx`, `exact.css`) are a port; preserve their structure and class names rather than rewriting in idiomatic React, or the design fidelity drifts.
 - Bilingual UI is required: text comes through `LocalText { en, ar }` and the app supports an Arabic RTL toggle. The smoke test asserts `dir="rtl"` after switching language — don't break it.
-- The smoke test verifies fixed copy strings ("Maqha", "STREAM ACTIVE", "Top performers", per-section headings including "Today's brief" on AI Insights, "Customer-facing display", "Step up when ready", "Amount due", "Payment complete", "Record waste"). Renaming user-facing text requires updating `apps/kiosk-pos/scripts/smoke.mjs`.
+- The smoke test verifies fixed copy strings ("Miza", "STREAM ACTIVE", "Top performers", per-section headings including "Today's brief" on AI Insights, "Customer-facing display", "Step up when ready", "Amount due", "Payment complete", "Record waste"). Renaming user-facing text requires updating `apps/kiosk-pos/scripts/smoke.mjs`.
 - Narrow-screen rendering is intentional horizontal scroll, not responsive collapse — the exact desktop/tablet canvas must not be crushed.

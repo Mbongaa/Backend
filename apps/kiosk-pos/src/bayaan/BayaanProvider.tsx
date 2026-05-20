@@ -5,6 +5,7 @@ import {
   type KioskSalePayload,
   type KioskWastePayload,
   type LoginPayload,
+  type ShiftClosePayload,
   type SourceOfTruthGateway,
   type StockTransferPayload,
 } from "../services/sourceOfTruth";
@@ -29,7 +30,7 @@ export type ShiftSession = {
 };
 
 export type SubmitOk = { ok: true; result: unknown; queued?: false };
-export type SubmitFail = { ok: false; error: string; queued: boolean };
+export type SubmitFail = { ok: false; error: string; queued: boolean; queueStatus?: QueueEntry["status"] };
 export type SubmitResult = SubmitOk | SubmitFail;
 export type AuthState = BayaanAuthStatus & {
   checked: boolean;
@@ -52,6 +53,8 @@ export type BayaanContextValue = {
   endShift: () => void;
   pending: QueueEntry[];
   pendingCount: number;
+  blockedCount: number;
+  online: boolean;
   submitSale: (input: { cart: CartItem[]; tender: TenderId | string; total: number }) => Promise<SubmitResult>;
   submitWaste: (input: {
     item: { id?: string | number; name: string; price: number };
@@ -59,6 +62,7 @@ export type BayaanContextValue = {
     reason: string;
   }) => Promise<SubmitResult>;
   submitTransfer: (input: StockTransferPayload) => Promise<SubmitResult>;
+  submitShiftClose: (payload: ShiftClosePayload) => Promise<SubmitResult>;
   flushQueue: () => Promise<{ ok: number; failed: number; remaining: number }>;
 };
 
@@ -98,6 +102,15 @@ const DEMO_AUTH: AuthState = {
 
 function readInitialMode(hasEnv: boolean): BayaanMode {
   if (typeof window === "undefined") return "demo";
+  const params = new URLSearchParams(window.location.search);
+  if (
+    params.get("bayaanSimulation") === "peak"
+    || params.get("bayaanSimulation") === "peak-full"
+    || params.get("bayaanMode") === "simulation"
+    || window.localStorage.getItem("BAYAAN_SIMULATION") === "peak"
+  ) {
+    return "live";
+  }
   const stored = window.localStorage.getItem(MODE_KEY);
   if (stored === "live" || stored === "demo") return stored;
   return hasEnv ? "live" : "demo";
@@ -105,7 +118,16 @@ function readInitialMode(hasEnv: boolean): BayaanMode {
 
 function readInitialKiosk(envKiosk: string | undefined): string {
   if (typeof window === "undefined") return envKiosk || "K-01";
-  return window.localStorage.getItem(KIOSK_KEY) || envKiosk || "K-01";
+  const params = new URLSearchParams(window.location.search);
+  return params.get("bayaanKiosk") || window.localStorage.getItem(KIOSK_KEY) || envKiosk || "K-01";
+}
+
+function preferredAssignedKiosk(current: string, status: BayaanAuthStatus): string | null {
+  const assigned = status.user.assignedKiosks
+    .map((kiosk) => kiosk.kioskCode)
+    .filter((code): code is string => Boolean(code));
+  if (!assigned.length) return null;
+  return assigned.includes(current) ? current : assigned[0];
 }
 
 export function BayaanProvider({ children }: { children: React.ReactNode }) {
@@ -122,12 +144,14 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
 
   const [shift, setShift] = React.useState<ShiftSession | null>(null);
   const [pending, setPending] = React.useState<QueueEntry[]>([]);
+  const [online, setOnline] = React.useState<boolean>(() => browserOnline());
   const [auth, setAuth] = React.useState<AuthState>(() =>
     hasBackend
       ? { checked: false, busy: false, authenticated: false, user: EMPTY_AUTH_USER }
       : DEMO_AUTH,
   );
   const isLive = mode === "live" && hasBackend;
+  const sourceOnlyWithoutBackend = mode === "live" && !hasBackend;
 
   const queueRef = React.useRef<SaleQueue | null>(null);
   if (queueRef.current === null) {
@@ -138,7 +162,13 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
   const queue = queueRef.current;
 
   React.useEffect(() => {
-    setPending(queue.list());
+    let alive = true;
+    void queue.list().then((entries) => {
+      if (alive) setPending(entries);
+    });
+    return () => {
+      alive = false;
+    };
   }, [queue]);
 
   React.useEffect(() => {
@@ -154,8 +184,14 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       .then((status) => {
         if (!alive) return;
         setAuth({ ...status, checked: true, busy: false });
-        const firstKiosk = status.user.assignedKiosks[0]?.kioskCode;
-        if (firstKiosk) setKioskIdState(firstKiosk);
+        setKioskIdState((current) => {
+          const nextKiosk = preferredAssignedKiosk(current, status);
+          if (!nextKiosk || nextKiosk === current) return current;
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(KIOSK_KEY, nextKiosk);
+          }
+          return nextKiosk;
+        });
       })
       .catch((error) => {
         if (!alive) return;
@@ -195,8 +231,8 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
     try {
       const status = await gateway.login(payload);
       setAuth({ ...status, checked: true, busy: false });
-      const firstKiosk = status.user.assignedKiosks[0]?.kioskCode;
-      if (firstKiosk) setKioskId(firstKiosk);
+      const nextKiosk = preferredAssignedKiosk(kioskId, status);
+      if (nextKiosk) setKioskId(nextKiosk);
       return { ok: true, result: status };
     } catch (error) {
       const message = errorMessage(error);
@@ -209,7 +245,7 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       });
       return { ok: false, error: message, queued: false };
     }
-  }, [gateway, hasBackend, setKioskId]);
+  }, [gateway, hasBackend, kioskId, setKioskId]);
 
   const logout = React.useCallback<BayaanContextValue["logout"]>(async () => {
     if (!hasBackend) {
@@ -222,6 +258,7 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
   }, [gateway, hasBackend]);
 
   const startShift = React.useCallback<BayaanContextValue["startShift"]>((s) => {
+    if (sourceOnlyWithoutBackend) return;
     const next = {
       ...s,
       openedAt: s.openedAt ?? new Date().toISOString(),
@@ -239,12 +276,14 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
           : current,
       );
     }).catch(() => undefined);
-  }, [gateway, isLive]);
+  }, [gateway, isLive, sourceOnlyWithoutBackend]);
 
   const endShift = React.useCallback(() => setShift(null), []);
 
   const flushQueue = React.useCallback(async () => {
-    if (!isLive) return { ok: 0, failed: 0, remaining: queue.size() };
+    if (!isLive || !browserOnline()) {
+      return { ok: 0, failed: 0, remaining: await queue.size() };
+    }
     return queue.flush(async (entry) => {
       switch (entry.kind) {
         case "sale":
@@ -253,24 +292,48 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
           return gateway.submitKioskWaste(entry.payload as KioskWastePayload);
         case "transfer":
           return gateway.submitStockTransfer(entry.payload as StockTransferPayload);
+        case "shift_close":
+          return gateway.submitShiftClose(entry.payload as ShiftClosePayload);
       }
+    }, {
+      shouldRetry: (error) => shouldQueue(error),
     });
   }, [gateway, isLive, queue]);
 
   // Auto-flush every 30s while live
   React.useEffect(() => {
     if (!isLive) return undefined;
-    void flushQueue();
+    const markOnline = () => {
+      setOnline(true);
+      void flushQueue();
+    };
+    const markOffline = () => setOnline(false);
+    const flushVisible = () => {
+      if (document.visibilityState === "visible") void flushQueue();
+    };
+    window.addEventListener("online", markOnline);
+    window.addEventListener("offline", markOffline);
+    document.addEventListener("visibilitychange", flushVisible);
+    setOnline(browserOnline());
+    if (browserOnline()) void flushQueue();
     const handle = window.setInterval(() => {
       void flushQueue();
     }, 30_000);
-    return () => window.clearInterval(handle);
+    return () => {
+      window.removeEventListener("online", markOnline);
+      window.removeEventListener("offline", markOffline);
+      document.removeEventListener("visibilitychange", flushVisible);
+      window.clearInterval(handle);
+    };
   }, [isLive, flushQueue]);
 
   const submitSale: BayaanContextValue["submitSale"] = React.useCallback(
     async (input) => {
       if (!shift) {
         return { ok: false, error: "No active shift", queued: false };
+      }
+      if (sourceOnlyWithoutBackend) {
+        return { ok: false, error: "Connect the source engine before recording source sales", queued: false };
       }
       let payload: KioskSalePayload;
       try {
@@ -290,24 +353,48 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
         return { ok: true, result: { demo: true, external_id: payload.external_id } };
       }
 
+      let entry: QueueEntry;
       try {
-        const result = await gateway.submitKioskSale(payload);
-        return { ok: true, result };
+        entry = await queue.enqueue({
+          kind: "sale",
+          kioskId: shift.kioskId,
+          cashier: shift.cashier,
+          receiptNumber: payload.external_id,
+          payload,
+        });
       } catch (error) {
-        if (shouldQueue(error)) {
-          queue.enqueue({ kind: "sale", kioskId: shift.kioskId, payload });
-          return { ok: false, error: errorMessage(error), queued: true };
-        }
         return { ok: false, error: errorMessage(error), queued: false };
       }
+
+      if (!browserOnline()) {
+        return { ok: false, error: "Network offline; sale saved locally", queued: true, queueStatus: "pending" };
+      }
+
+      try {
+        const result = await gateway.submitKioskSale(payload);
+        await queue.remove(entry.id);
+        return { ok: true, result };
+      } catch (error) {
+        const retryable = shouldQueue(error);
+        const updated = await queue.markFailed(entry.id, error, { retryable });
+        return {
+          ok: false,
+          error: retryable ? errorMessage(error) : `Server rejected sale; saved for reconciliation: ${errorMessage(error)}`,
+          queued: true,
+          queueStatus: updated?.status ?? (retryable ? "pending" : "blocked"),
+        };
+      }
     },
-    [gateway, isLive, queue, shift],
+    [gateway, isLive, queue, shift, sourceOnlyWithoutBackend],
   );
 
   const submitWaste: BayaanContextValue["submitWaste"] = React.useCallback(
     async (input) => {
       if (!shift) {
         return { ok: false, error: "No active shift", queued: false };
+      }
+      if (sourceOnlyWithoutBackend) {
+        return { ok: false, error: "Connect the source engine before recording source waste", queued: false };
       }
       let payload: KioskWastePayload;
       try {
@@ -326,37 +413,101 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
         return { ok: true, result: { demo: true, external_id: payload.external_id } };
       }
 
+      let entry: QueueEntry;
       try {
-        const result = await gateway.submitKioskWaste(payload);
-        return { ok: true, result };
+        entry = await queue.enqueue({
+          kind: "waste",
+          kioskId: shift.kioskId,
+          cashier: shift.cashier,
+          receiptNumber: payload.external_id,
+          payload,
+        });
       } catch (error) {
-        if (shouldQueue(error)) {
-          queue.enqueue({ kind: "waste", kioskId: shift.kioskId, payload });
-          return { ok: false, error: errorMessage(error), queued: true };
-        }
         return { ok: false, error: errorMessage(error), queued: false };
       }
+
+      if (!browserOnline()) {
+        return { ok: false, error: "Network offline; waste saved locally", queued: true, queueStatus: "pending" };
+      }
+
+      try {
+        const result = await gateway.submitKioskWaste(payload);
+        await queue.remove(entry.id);
+        return { ok: true, result };
+      } catch (error) {
+        const retryable = shouldQueue(error);
+        const updated = await queue.markFailed(entry.id, error, { retryable });
+        return {
+          ok: false,
+          error: retryable ? errorMessage(error) : `Server rejected waste; saved for reconciliation: ${errorMessage(error)}`,
+          queued: true,
+          queueStatus: updated?.status ?? (retryable ? "pending" : "blocked"),
+        };
+      }
     },
-    [gateway, isLive, queue, shift],
+    [gateway, isLive, queue, shift, sourceOnlyWithoutBackend],
   );
 
   const submitTransfer: BayaanContextValue["submitTransfer"] = React.useCallback(
     async (input) => {
+      if (sourceOnlyWithoutBackend) {
+        return { ok: false, error: "Connect the source engine before creating source stock transfers", queued: false };
+      }
       if (!isLive) {
         return { ok: true, result: { demo: true, kiosk: input.kioskId, item: input.itemId, qty: input.qty } };
       }
+      let entry: QueueEntry;
+      try {
+        entry = await queue.enqueue({
+          kind: "transfer",
+          kioskId: input.kioskId,
+          payload: input,
+        });
+      } catch (error) {
+        return { ok: false, error: errorMessage(error), queued: false };
+      }
+
+      if (!browserOnline()) {
+        return { ok: false, error: "Network offline; transfer saved locally", queued: true, queueStatus: "pending" };
+      }
+
       try {
         const result = await gateway.submitStockTransfer(input);
+        await queue.remove(entry.id);
         return { ok: true, result };
       } catch (error) {
-        if (shouldQueue(error)) {
-          queue.enqueue({ kind: "transfer", kioskId: input.kioskId, payload: input });
-          return { ok: false, error: errorMessage(error), queued: true };
-        }
+        const retryable = shouldQueue(error);
+        const updated = await queue.markFailed(entry.id, error, { retryable });
+        return {
+          ok: false,
+          error: retryable ? errorMessage(error) : `Server rejected transfer; saved for reconciliation: ${errorMessage(error)}`,
+          queued: true,
+          queueStatus: updated?.status ?? (retryable ? "pending" : "blocked"),
+        };
+      }
+    },
+    [gateway, isLive, queue, sourceOnlyWithoutBackend],
+  );
+
+  const submitShiftClose: BayaanContextValue["submitShiftClose"] = React.useCallback(
+    async (payload) => {
+      if (sourceOnlyWithoutBackend) {
+        return { ok: false, error: "Connect the source engine before submitting source shift close", queued: false };
+      }
+      if (pending.length > 0) {
+        return { ok: false, error: "Sync offline queue before closing shift", queued: false };
+      }
+      if (!isLive) {
+        return { ok: true, result: { demo: true, kiosk: payload.kioskId } };
+      }
+      try {
+        const result = await gateway.submitShiftClose(payload);
+        return { ok: true, result };
+      } catch (error) {
         return { ok: false, error: errorMessage(error), queued: false };
       }
     },
-    [gateway, isLive, queue],
+    [gateway, isLive, pending.length, sourceOnlyWithoutBackend],
   );
 
   const value = React.useMemo<BayaanContextValue>(
@@ -375,9 +526,12 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       endShift,
       pending,
       pendingCount: pending.length,
+      blockedCount: pending.filter((entry) => entry.status === "blocked").length,
+      online,
       submitSale,
       submitWaste,
       submitTransfer,
+      submitShiftClose,
       flushQueue,
     }),
     [
@@ -394,9 +548,11 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       startShift,
       endShift,
       pending,
+      online,
       submitSale,
       submitWaste,
       submitTransfer,
+      submitShiftClose,
       flushQueue,
     ],
   );
@@ -413,6 +569,10 @@ export function useBayaan(): BayaanContextValue {
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function browserOnline(): boolean {
+  return typeof navigator === "undefined" ? true : navigator.onLine;
 }
 
 function shouldQueue(error: unknown): boolean {

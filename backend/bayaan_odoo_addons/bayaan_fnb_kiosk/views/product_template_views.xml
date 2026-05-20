@@ -6,6 +6,11 @@
     <field name="arch" type="xml">
       <xpath expr="//field[@name='type']" position="after">
         <field name="bayaan_consumption_mode"/>
+        <field name="bayaan_stock_target_qty"/>
+        <field name="bayaan_stock_reorder_qty"/>
+        <field name="bayaan_stock_critical_qty"/>
+        <field name="bayaan_stock_max_qty"/>
+        <field name="bayaan_stock_priority_weight"/>
       </xpath>
     </field>
   </record>

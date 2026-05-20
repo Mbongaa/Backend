@@ -26,6 +26,8 @@ export type BayaanRealtimeStatus =
   | "error"
   | "closed";
 
+export type BayaanRealtimeTransport = "auto" | "polling";
+
 export type BayaanRealtimeSubscription = {
   close: () => void;
 };
@@ -34,6 +36,7 @@ export type BayaanRealtimeOptions = {
   onEvent: (event: BayaanRealtimeEvent) => void;
   onStatus?: (status: BayaanRealtimeStatus) => void;
   onError?: (error: Error) => void;
+  transport?: BayaanRealtimeTransport;
 };
 
 type RealtimeConfig = {
@@ -173,7 +176,7 @@ export function subscribeBayaanRealtime(
     try {
       const config = await client.json<RealtimeConfig>("/bayaan/api/realtime_config");
       last = Number(config.last || 0);
-      const websocketStarted = openSocket(config);
+      const websocketStarted = options.transport === "polling" ? false : openSocket(config);
       if (!websocketStarted) startPolling(config);
     } catch (error) {
       fail(error);

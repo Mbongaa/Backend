@@ -1,8 +1,28 @@
 import React from "react";
 import { flushSync } from "react-dom";
+import {
+  AssistantRuntimeProvider,
+  ComposerPrimitive,
+  MessagePrimitive,
+  ThreadPrimitive,
+  useAuiState,
+  useRemoteThreadListRuntime,
+  useLocalRuntime,
+  useThreadRuntime,
+  RuntimeAdapterProvider,
+} from "@assistant-ui/react";
+import { createAssistantStream } from "assistant-stream";
 import { JuiceLottie } from "../components/JuiceLottie";
 import { SuccessLottie } from "../components/SuccessLottie";
+import { StudioInventoryWorkspace } from "../components/studio-dashboard/StudioInventoryWorkspace";
+import { StudioWasteEntriesTable, StudioWasteReasonControl } from "../components/studio-dashboard/StudioWasteWorkspace";
+import { Thread } from "../components/thread";
+import { ThreadListSidebar } from "../components/threadlist-sidebar";
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "../components/ui/sidebar";
+import { Area, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Label, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { buildAccountAllocationRows } from "./accountAllocation";
 import { createSourceOfTruthGateway } from "../services/sourceOfTruth";
+import { getDashboardComponent } from "../ai-dashboard/componentRegistry";
 import { BayaanProvider, useBayaan } from "../bayaan/BayaanProvider";
 import {
   clearCatalog,
@@ -19,7 +39,14 @@ import {
 // where supported (Chromium 111+). Falls back to plain state updates elsewhere.
 const withMotion = (callback) => {
   if (typeof document !== "undefined" && document.startViewTransition) {
-    document.startViewTransition(() => flushSync(callback));
+    try {
+      const transition = document.startViewTransition(() => flushSync(callback));
+      transition?.ready?.catch?.(() => undefined);
+      transition?.finished?.catch?.(() => undefined);
+      transition?.updateCallbackDone?.catch?.(() => undefined);
+    } catch {
+      callback();
+    }
   } else {
     callback();
   }
@@ -51,6 +78,24 @@ function useTweenedNumber(value, durationMs = 700) {
 
 /* This file is a mechanical Vite port of design/exact-pos-v2/kiosk-pos/project/Kiosk POS.html and its imports. */
 
+const BRAND = {
+  name: "Miza",
+  arabic: "ميزا",
+  logoSrc: "/brand/miza-logo.png",
+};
+
+function BrandLogo({ className = "", alt = BRAND.name, ...props }) {
+  return (
+    <img
+      className={`brand-logo ${className}`.trim()}
+      src={BRAND.logoSrc}
+      alt={alt}
+      draggable="false"
+      {...props}
+    />
+  );
+}
+
 /* ===== data.jsx ===== */
 
 /* ============================================================
@@ -59,7 +104,7 @@ function useTweenedNumber(value, durationMs = 700) {
 
 const MOCK = {
   today: { date: "Saturday, May 9, 2026" },
-  brand: { name: "Maqha", arabic: "مقهى" },
+  brand: { name: BRAND.name, arabic: BRAND.arabic },
 
   kpis: {
     revenueToday: 49_900_000,
@@ -568,7 +613,7 @@ const MOCK = {
 /* ===== Product catalog context =====
    Persists products + recipes + uploaded image overrides to localStorage so the
    Products & Recipes admin page survives soft reloads. The shape mirrors what a
-   future /bayaan/api/products endpoint will return — when that lands, this
+   source-backed /bayaan/api/product_catalog route returns; until then this
    provider's loader is the only thing that has to change.
 */
 
@@ -857,7 +902,7 @@ function ToastProvider({ children }) {
             color: "var(--terminal-ink)", fontSize: 12.5, lineHeight: 1.45,
             boxShadow: "0 12px 32px rgba(0,0,0,0.22), 0 2px 4px rgba(0,0,0,0.08)",
             display: "flex", alignItems: "flex-start", gap: 9,
-            pointerEvents: "auto",
+            pointerEvents: "none",
             border: "1px solid rgba(255,255,255,0.08)",
           }}>
             <span style={{
@@ -892,15 +937,21 @@ const { useState, useEffect, useRef, useMemo, createContext, useContext } = Reac
 // ---------- Icons (single stroke, 14px) ----------
 const Icon = ({ name, size = 14, stroke = 1.5, className = "", style }) => {
   const paths = {
+    gauge: <><path d="M21 12A9 9 0 103 12"/><path d="M12 12L16 8"/><path d="M7 13H7.01"/><path d="M17 13H17.01"/><path d="M12 7H12.01"/></>,
+    brain: <><path d="M8 6A3 3 0 015 9C3.8 9 3 10 3 11.4C3 12.5 3.6 13.3 4.5 13.7C4.2 15.4 5.4 17 7.1 17C7.5 18.7 9 20 10.8 20H12V5.8C11.4 4.7 10.2 4 9 4C8.6 4 8.2 4.1 7.8 4.2"/><path d="M16 6A3 3 0 0119 9C20.2 9 21 10 21 11.4C21 12.5 20.4 13.3 19.5 13.7C19.8 15.4 18.6 17 16.9 17C16.5 18.7 15 20 13.2 20H12V5.8C12.6 4.7 13.8 4 15 4C15.4 4 15.8 4.1 16.2 4.2"/></>,
     grid: <><rect x="3" y="3" width="7" height="7" rx="1.2"/><rect x="14" y="3" width="7" height="7" rx="1.2"/><rect x="3" y="14" width="7" height="7" rx="1.2"/><rect x="14" y="14" width="7" height="7" rx="1.2"/></>,
     list: <><path d="M8 6H21"/><path d="M8 12H21"/><path d="M8 18H21"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></>,
     store: <><path d="M3 9V20H21V9"/><path d="M3 9L5 4H19L21 9"/><path d="M9 20V14H15V20"/></>,
+    warehouse: <><path d="M3 21V8L12 3L21 8V21"/><path d="M7 21V12H17V21"/><path d="M7 15H17"/><path d="M7 18H17"/></>,
     chart: <><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20V13"/><path d="M22 20H2"/></>,
     box: <><path d="M21 7.5L12 3L3 7.5V16.5L12 21L21 16.5V7.5Z"/><path d="M3 7.5L12 12L21 7.5"/><path d="M12 12V21"/></>,
+    packageSearch: <><path d="M21 8L12 3L3 8V16L12 21L15 19.3"/><path d="M3 8L12 13L21 8"/><path d="M12 13V21"/><circle cx="18" cy="17" r="3"/><path d="M20.2 19.2L22 21"/></>,
     trash: <><path d="M3 6H21"/><path d="M8 6V4C8 3 9 2 10 2H14C15 2 16 3 16 4V6"/><path d="M5 6L6 20C6 21 7 22 8 22H16C17 22 18 21 18 20L19 6"/></>,
     truck: <><rect x="1" y="6" width="14" height="11"/><path d="M15 9H19L22 12V17H15"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="19" r="2"/></>,
     users: <><path d="M16 21V19C16 17 15 16 13 16H6C4 16 3 17 3 19V21"/><circle cx="9.5" cy="7.5" r="3.5"/><path d="M21 21V19C21 17 20 16 18 16"/><path d="M16 4C17 4 18 5 18 7C18 9 17 10 16 10"/></>,
     sparkles: <><path d="M12 3L13.5 8.5L19 10L13.5 11.5L12 17L10.5 11.5L5 10L10.5 8.5L12 3Z"/><path d="M19 17L19.5 19L21 19.5L19.5 20L19 22L18.5 20L17 19.5L18.5 19L19 17Z"/></>,
+    clipboardCheck: <><path d="M9 4H7C6 4 5 5 5 6V20C5 21 6 22 7 22H17C18 22 19 21 19 20V6C19 5 18 4 17 4H15"/><rect x="9" y="2" width="6" height="4" rx="1"/><path d="M8 13L11 16L16 10"/></>,
+    fileText: <><path d="M14 2H6C5 2 4 3 4 4V20C4 21 5 22 6 22H18C19 22 20 21 20 20V8Z"/><path d="M14 2V8H20"/><path d="M8 13H16"/><path d="M8 17H14"/></>,
     pin: <><path d="M12 22V14"/><path d="M8 14H16L15 8H9L8 14Z"/><path d="M9 8L10 3H14L15 8"/></>,
     search: <><circle cx="11" cy="11" r="7"/><path d="M21 21L16 16"/></>,
     bell: <><path d="M18 8C18 6 17 4 15 3C13 2 11 2 9 3C7 4 6 6 6 8C6 14 3 14 3 17H21C21 14 18 14 18 8Z"/><path d="M14 21C13 22 11 22 10 21"/></>,
@@ -917,6 +968,7 @@ const Icon = ({ name, size = 14, stroke = 1.5, className = "", style }) => {
     arrowLeft: <path d="M19 12H5M12 5L5 12L12 19"/>,
     refresh: <><path d="M20 6V11H15"/><path d="M4 18V13H9"/><path d="M18 9A7 7 0 006 7L4 9"/><path d="M6 15A7 7 0 0018 17L20 15"/></>,
     plus: <path d="M12 5V19M5 12H19"/>,
+    plusCircle: <><circle cx="12" cy="12" r="9"/><path d="M12 8V16M8 12H16"/></>,
     minus: <path d="M5 12H19"/>,
     x: <path d="M6 6L18 18M6 18L18 6"/>,
     check: <path d="M5 12L10 17L20 7"/>,
@@ -934,6 +986,7 @@ const Icon = ({ name, size = 14, stroke = 1.5, className = "", style }) => {
     zap: <path d="M13 2L4 14H12L11 22L20 10H12L13 2Z"/>,
     eye: <><path d="M2 12C2 12 6 5 12 5C18 5 22 12 22 12C22 12 18 19 12 19C6 19 2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></>,
     flag: <><path d="M5 22V4C5 3 6 2 7 2H17L15 6L17 10H7"/></>,
+    mail: <><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7L12 13L21 7"/></>,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -945,18 +998,25 @@ const Icon = ({ name, size = 14, stroke = 1.5, className = "", style }) => {
 
 // ---------- Sparkline ----------
 const Spark = ({ data, width = 80, height = 26, color }) => {
-  const min = Math.min(...data), max = Math.max(...data);
+  const values = Array.isArray(data) ? data.map(Number).filter(Number.isFinite) : [];
+  const sparkValues = values.length === 1 ? [values[0], values[0]] : values;
+  const min = sparkValues.length ? Math.min(...sparkValues) : 0;
+  const max = sparkValues.length ? Math.max(...sparkValues) : 0;
   const r = max - min || 1;
-  const pts = data.map((v, i) => [
-    (i / (data.length - 1)) * width,
+  const pts = sparkValues.map((v, i) => [
+    (i / Math.max(1, sparkValues.length - 1)) * width,
     height - ((v - min) / r) * (height - 2) - 1
   ]);
-  const d = "M" + pts.map(p => p.join(",")).join(" L");
+  const d = pts.length ? "M" + pts.map(p => p.join(",")).join(" L") : "";
   const a = d + ` L${width},${height} L0,${height} Z`;
+  const last = pts[pts.length - 1] || [0, 0];
   return (
-    <svg width={width} height={height} className="spark">
-      <path className="area" d={a} fill={color || "currentColor"} opacity="0.06"/>
-      <path className="line" d={d} stroke={color || "currentColor"} fill="none" strokeWidth="1.25"/>
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="spark" preserveAspectRatio="none">
+      <line className="grid-line" x1="0" x2={width} y1={Math.round(height * 0.33)} y2={Math.round(height * 0.33)}/>
+      <line className="grid-line" x1="0" x2={width} y1={Math.round(height * 0.66)} y2={Math.round(height * 0.66)}/>
+      {d && <path className="area" d={a} fill={color || undefined}/>}
+      {d && <path className="line" d={d} stroke={color || undefined} fill="none"/>}
+      {d && <circle className="spark-dot" cx={last[0]} cy={last[1]} r="2"/>}
     </svg>
   );
 };
@@ -966,11 +1026,11 @@ const MiniBars = ({ data, width = 80, height = 26, accentIndex = -1 }) => {
   const max = Math.max(...data);
   const bw = width / data.length - 1;
   return (
-    <svg width={width} height={height}>
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="chart-mini-bars" preserveAspectRatio="none">
       {data.map((v, i) => {
         const h = (v / max) * (height - 2);
         return <rect key={i} x={i * (bw + 1)} y={height - h} width={bw} height={h}
-          fill={i === accentIndex ? "var(--accent)" : "var(--ink-2)"} opacity={i === accentIndex ? 1 : 0.5} rx="0.5"/>;
+          className={i === accentIndex ? "mini-bar-active" : "mini-bar-muted"} rx="1.5"/>;
       })}
     </svg>
   );
@@ -978,10 +1038,12 @@ const MiniBars = ({ data, width = 80, height = 26, accentIndex = -1 }) => {
 
 // ---------- KPI ----------
 const KPI = ({ label, value, sub, delta, deltaDir, spark, sparkData, footer, size }) => {
-  const dirClass = deltaDir === "up" ? "delta-pos" : deltaDir === "down" ? "delta-neg" : "delta-flat";
-  const arrow = deltaDir === "up" ? "+" : deltaDir === "down" ? "-" : "";
+  const valueText = String(value ?? "").replace(/[−–—]/g, "-");
+  const effectiveDeltaDir = deltaDir === "up" && /(^|[\s(])-\s?\d/.test(valueText) ? "down" : deltaDir;
+  const dirClass = effectiveDeltaDir === "up" ? "delta-pos" : effectiveDeltaDir === "down" ? "delta-neg" : "delta-flat";
+  const arrow = effectiveDeltaDir === "up" ? "+" : effectiveDeltaDir === "down" ? "-" : "";
   return (
-    <div className="card card-pad" style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 120 }}>
+    <div className="card analytics-kpi-card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div className="between">
         <div className="t-micro">{label}</div>
         {sparkData && <Spark data={sparkData} width={64} height={20}/>}
@@ -1034,10 +1096,10 @@ const Avatar = ({ name, size = 24, color }) => {
 // Product thumbnail with first-letter fallback. Resolves /products/<slug>.webp.
 // If a slug has no static file or uploaded override, the tile renders a
 // first-letter fallback — no broken image icons.
-const ProductImage = ({ slug, name, size = 36, radius = 8, fill = false }) => {
+const ProductImage = ({ slug, name, size = 36, radius = 8, fill = false, useOverride = true }) => {
   const [errored, setErrored] = React.useState(false);
   const catalog = React.useContext(CatalogContext);
-  const override = slug && catalog?.state.imagesBySlug?.[slug];
+  const override = useOverride && slug && catalog?.state.imagesBySlug?.[slug];
   // Reset error state when the source changes (override added or slug swapped).
   React.useEffect(() => { setErrored(false); }, [override, slug]);
   const baseStyle = fill
@@ -1071,18 +1133,796 @@ const ProductImage = ({ slug, name, size = 36, radius = 8, fill = false }) => {
 };
 
 // ---------- Number formatters ----------
+const coerceNumber = (value) => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+};
+const isFiniteNumber = (value) => coerceNumber(value) != null;
+
 const fmtMoney = (n, currency = "IQD") => {
+  const value = coerceNumber(n);
+  if (value == null) return "—";
   const opts = { minimumFractionDigits: 0, maximumFractionDigits: 0 };
-  return `${currency} ${n.toLocaleString("en", opts)}`;
+  return `${currency} ${value.toLocaleString("en", opts)}`;
 };
 const fmtMoneyShort = (n, currency = "IQD") => {
-  const abs = Math.abs(n);
-  if (abs >= 1_000_000_000) return `${currency} ${(n / 1_000_000_000).toFixed(2)}B`;
-  if (abs >= 1_000_000) return `${currency} ${(n / 1_000_000).toFixed(abs >= 10_000_000 ? 1 : 2)}M`;
-  if (abs >= 1_000) return `${currency} ${(n / 1_000).toFixed(0)}K`;
-  return `${currency} ${n.toLocaleString("en")}`;
+  const value = coerceNumber(n);
+  if (value == null) return "—";
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000) return `${currency} ${(value / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) return `${currency} ${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 1 : 2)}M`;
+  if (abs >= 1_000) return `${currency} ${(value / 1_000).toFixed(0)}K`;
+  return `${currency} ${value.toLocaleString("en")}`;
 };
-const fmtNum = (n) => n.toLocaleString("en");
+const fmtNum = (n) => {
+  const value = coerceNumber(n);
+  return value == null ? "—" : value.toLocaleString("en");
+};
+
+const UI_TEXT = {
+  accountAllocation: { en: "Account Allocation", ar: "توزيع الحسابات" },
+  activeStaff: { en: "Active staff", ar: "الموظفون النشطون" },
+  addExpense: { en: "Add expense", ar: "إضافة مصروف" },
+  addShift: { en: "Add shift", ar: "إضافة وردية" },
+  adjustment: { en: "Adjustment", ar: "التعديل" },
+  allCovered: { en: "All covered", ar: "الكل مغطى" },
+  allKiosks: { en: "All kiosks", ar: "كل الأكشاك" },
+  allPlannedSlotsCovered: { en: "All planned slots covered", ar: "كل الخانات المخططة مغطاة" },
+  allPlannedShiftsCovered: { en: "All planned shifts are covered for this kiosk.", ar: "كل الورديات المخططة مغطاة لهذا الكشك." },
+  amountIqd: { en: "Amount IQD", ar: "المبلغ بالدينار" },
+  approve: { en: "Approve", ar: "اعتماد" },
+  assignShift: { en: "Assign shift", ar: "تعيين وردية" },
+  attendanceExceptions: { en: "Attendance exceptions", ar: "استثناءات الحضور" },
+  attendanceNeedsStaff: { en: "Attendance needs a staff member", ar: "تسجيل الحضور يحتاج موظفاً" },
+  attendanceNeedsTime: { en: "Attendance needs times or manual hours", ar: "تسجيل الحضور يحتاج أوقاتاً أو ساعات يدوية" },
+  attendanceNote: { en: "Attendance note", ar: "ملاحظة الحضور" },
+  attendanceRecordedSourceBacked: { en: "Attendance recording is source-backed in simulation/live mode", ar: "تسجيل الحضور مرتبط بالمصدر في وضع المحاكاة أو التشغيل" },
+  attendanceSourceBacked: { en: "Source-backed check-in and check-out record", ar: "سجل دخول وخروج مرتبط بالمصدر" },
+  avgWeeklyHours: { en: "Avg weekly hrs", ar: "متوسط الساعات الأسبوعية" },
+  base: { en: "Base", ar: "الأساس" },
+  cancel: { en: "Cancel", ar: "إلغاء" },
+  cashShortage: { en: "Cash shortage", ar: "عجز النقد" },
+  cashier: { en: "Cashier", ar: "الكاشير" },
+  cashierPerformance: { en: "Cashier performance", ar: "أداء الكاشير" },
+  cashierPerformanceSub: { en: "Cash shortages, voids, refunds, and throughput", ar: "عجز النقد والإلغاءات والمرتجعات وسرعة الخدمة" },
+  closeShift: { en: "Close shift", ar: "إغلاق الوردية" },
+  confirmed: { en: "Confirmed", ar: "مؤكدة" },
+  confirmArrived: { en: "Confirm arrived", ar: "تأكيد الوصول" },
+  confirmedAtKiosk: { en: "Confirmed at kiosk", ar: "تم التأكيد في الكشك" },
+  countedCash: { en: "Counted cash", ar: "النقد المعدود" },
+  coverageGaps: { en: "Coverage gaps", ar: "فجوات التغطية" },
+  coverageGapsSub: { en: "Missing roles for this work week", ar: "أدوار ناقصة في أسبوع العمل" },
+  coverageNeedsKiosk: { en: "Coverage rule needs a kiosk", ar: "قاعدة التغطية تحتاج كشكاً" },
+  coverageNeedsValidTime: { en: "Coverage needs valid time and headcount", ar: "التغطية تحتاج وقتاً وعدد موظفين صحيحين" },
+  coverageRuleAdded: { en: "Coverage rule added", ar: "تمت إضافة قاعدة التغطية" },
+  coverageSlot: { en: "Coverage slot", ar: "خانة تغطية" },
+  coverageSlotSub: { en: "Required kiosk headcount by weekday and time", ar: "عدد الموظفين المطلوب حسب اليوم والوقت" },
+  createPo: { en: "Create PO", ar: "إنشاء طلب شراء" },
+  dataSource: { en: "Data source", ar: "مصدر البيانات" },
+  date: { en: "Date", ar: "التاريخ" },
+  day: { en: "Day", ar: "اليوم" },
+  demoData: { en: "Demo data", ar: "بيانات تجريبية" },
+  demoEvents: { en: "Demo events", ar: "أحداث تجريبية" },
+  editShift: { en: "Edit shift", ar: "تعديل الوردية" },
+  end: { en: "End", ar: "النهاية" },
+  expenseName: { en: "Expense name", ar: "اسم المصروف" },
+  expenseNeedsName: { en: "Expense needs name and amount", ar: "المصروف يحتاج اسماً ومبلغاً" },
+  expenseRecorded: { en: "Expense recorded", ar: "تم تسجيل المصروف" },
+  expenses: { en: "Expenses", ar: "المصروفات" },
+  expensesSub: { en: "Non-stock and payroll-adjacent costs", ar: "تكاليف غير مخزنية وقريبة من الرواتب" },
+  expectedTransfers: { en: "Expected transfers", ar: "التحويلات المتوقعة" },
+  exportPayroll: { en: "Export payroll", ar: "تصدير الرواتب" },
+  headcount: { en: "Headcount", ar: "عدد الموظفين" },
+  hours: { en: "Hours", ar: "الساعات" },
+  hoursMonthly: { en: "Hours (mo)", ar: "الساعات شهرياً" },
+  hrPayroll: { en: "HR & Payroll", ar: "الموظفون والرواتب" },
+  hrPayrollSub: { en: "Staff, attendance, payroll approval, and expenses", ar: "الموظفون والحضور واعتماد الرواتب والمصروفات" },
+  impact: { en: "Impact", ar: "الأثر" },
+  issue: { en: "Issue", ar: "المشكلة" },
+  kiosk: { en: "Kiosk", ar: "الكشك" },
+  kioskCoverage: { en: "Kiosk coverage", ar: "تغطية الأكشاك" },
+  kioskCoverageSub: { en: "Required slots and missing staff", ar: "الخانات المطلوبة والموظفون الناقصون" },
+  kioskReceivesOnlyArrived: { en: "{kioskId} receives only what arrived here", ar: "{kioskId} يستلم فقط ما وصل إلى هذا الكشك" },
+  kioskTeam: { en: "Kiosk team", ar: "فريق الكشك" },
+  kioskTeamSub: { en: "Assigned staff and current workload", ar: "الموظفون المعينون والعبء الحالي" },
+  liveActionLog: { en: "Live action log", ar: "سجل النظام المباشر" },
+  liveOnly: { en: "Live only", ar: "تشغيل فقط" },
+  loading: { en: "Loading", ar: "جار التحميل" },
+  logUnavailable: { en: "Log unavailable", ar: "السجل غير متاح" },
+  manualHoursOverride: { en: "Manual hours override", ar: "تعديل ساعات يدوي" },
+  missingStaff: { en: "missing staff", ar: "نقص موظفين" },
+  monthlyPayroll: { en: "Monthly payroll", ar: "رواتب الشهر" },
+  nameSalaryHoursRequired: { en: "Name, salary, and hours are required", ar: "الاسم والراتب والساعات مطلوبة" },
+  need: { en: "Need", ar: "المطلوب" },
+  netPay: { en: "Net pay", ar: "صافي الراتب" },
+  netPayroll: { en: "Net payroll", ar: "صافي الرواتب" },
+  next: { en: "Next", ar: "التالي" },
+  noEventsYet: { en: "No events yet", ar: "لا توجد أحداث بعد" },
+  noExpectedTransfers: { en: "No expected transfers", ar: "لا توجد تحويلات متوقعة" },
+  noSourceKioskStock: { en: "No source kiosk stock loaded", ar: "لا يوجد مخزون كشك من المصدر محمل" },
+  noSourceKiosksLoaded: { en: "No source kiosks loaded", ar: "لا توجد أكشاك من المصدر محملة" },
+  noSourceStaffLoaded: { en: "No source staff loaded", ar: "لا يوجد موظفون من المصدر محملون" },
+  noSourceWarehousesLoaded: { en: "No source warehouses loaded", ar: "لا توجد مستودعات من المصدر محملة" },
+  noStaffLoaded: { en: "No staff loaded", ar: "لا يوجد موظفون محملون" },
+  noStaffForKiosk: { en: "No staff loaded for this kiosk.", ar: "لا يوجد موظفون محملون لهذا الكشك." },
+  noStockMovementsForKiosk: { en: "No stock movements for this kiosk today.", ar: "لا توجد حركات مخزون لهذا الكشك اليوم." },
+  note: { en: "Note", ar: "ملاحظة" },
+  people: { en: "People", ar: "الأشخاص" },
+  payrollAdjustment: { en: "Payroll adjustment", ar: "تعديل الرواتب" },
+  payrollAdjustmentAdded: { en: "Payroll adjustment added", ar: "تمت إضافة تعديل الرواتب" },
+  payrollAdjustmentSub: { en: "Advances, deductions, and bonuses before approval", ar: "السلف والاستقطاعات والمكافآت قبل الاعتماد" },
+  payrollAdjustments: { en: "Payroll adjustments", ar: "تعديلات الرواتب" },
+  payrollAdjustmentsSub: { en: "Shortages, advances, bonuses, and approval state", ar: "العجز والسلف والمكافآت وحالة الاعتماد" },
+  payrollAlreadyPaid: { en: "Payroll already paid", ar: "تم دفع الرواتب بالفعل" },
+  payrollApproved: { en: "Payroll approved", ar: "تم اعتماد الرواتب" },
+  payrollExported: { en: "Payroll exported as {filename}", ar: "تم تصدير الرواتب باسم {filename}" },
+  payrollMarkedPaid: { en: "Payroll marked paid", ar: "تم تعليم الرواتب كمدفوعة" },
+  payrollMarkedReviewed: { en: "Payroll marked reviewed", ar: "تمت مراجعة الرواتب" },
+  payrollPeriodLocked: { en: "Payroll period already approved or paid; use the next run", ar: "فترة الرواتب معتمدة أو مدفوعة؛ استخدم التشغيل التالي" },
+  payrollRun: { en: "Payroll run", ar: "تشغيل الرواتب" },
+  payrollRunSub: { en: "Base salary, overtime, advances, deductions, and net pay", ar: "الراتب الأساسي والإضافي والسلف والاستقطاعات والصافي" },
+  planned: { en: "Planned", ar: "مخططة" },
+  plannedHours: { en: "Planned", ar: "المخطط" },
+  planEveryKioskDay: { en: "Plan every kiosk day by day", ar: "خطط كل كشك يوماً بيوم" },
+  planKioskSlot: { en: "Plan who works each kiosk slot", ar: "حدد من يعمل في كل خانة كشك" },
+  prev: { en: "Prev", ar: "السابق" },
+  reason: { en: "Reason", ar: "السبب" },
+  realtimeStream: { en: "Realtime stream", ar: "تدفق مباشر" },
+  receiving: { en: "Receiving...", ar: "جار الاستلام..." },
+  recordAttendance: { en: "Record attendance", ar: "تسجيل الحضور" },
+  refresh: { en: "Refresh", ar: "تحديث" },
+  reject: { en: "Reject", ar: "رفض" },
+  reportPayroll: { en: "report payroll", ar: "رواتب التقرير" },
+  requiredSlotsForWeek: { en: "Required slots for {week}", ar: "الخانات المطلوبة لأسبوع {week}" },
+  role: { en: "Role", ar: "الدور" },
+  roster: { en: "Roster", ar: "الجدول" },
+  saveAdjustment: { en: "Save adjustment", ar: "حفظ التعديل" },
+  saveAttendance: { en: "Save attendance", ar: "حفظ الحضور" },
+  saveExpense: { en: "Save expense", ar: "حفظ المصروف" },
+  saveSlot: { en: "Save slot", ar: "حفظ الخانة" },
+  scheduled: { en: "scheduled", ar: "مجدول" },
+  simulation: { en: "Simulation", ar: "محاكاة" },
+  simulationPulse: { en: "Simulation pulse", ar: "نبض المحاكاة" },
+  slot: { en: "Slot", ar: "الخانة" },
+  staff: { en: "Staff", ar: "الموظفون" },
+  staffAssigned: { en: "Staff assigned", ar: "الموظفون المعينون" },
+  staffMember: { en: "Staff member", ar: "الموظف" },
+  start: { en: "Start", ar: "البداية" },
+  state: { en: "State", ar: "الحالة" },
+  status: { en: "Status", ar: "الحالة" },
+  stockCount: { en: "Stock count", ar: "عد المخزون" },
+  submitClose: { en: "Submit close", ar: "إرسال الإغلاق" },
+  submitting: { en: "Submitting", ar: "جار الإرسال" },
+  systemChangesAppear: { en: "System changes will appear here after they are committed.", ar: "ستظهر تغييرات النظام هنا بعد اعتمادها." },
+  today: { en: "Today", ar: "اليوم" },
+  transferArrivedWaiting: { en: "Arrived - waiting for kiosk confirmation", ar: "وصلت - بانتظار تأكيد الكشك" },
+  transferReceiptEmpty: { en: "Dispatched warehouse transfers will appear here for kiosk receipt.", ar: "ستظهر تحويلات المستودع المرسلة هنا لاستلام الكشك." },
+  transfersWaiting: { en: "{count} transfer{suffix} waiting for kiosk confirmation", ar: "{count} تحويل بانتظار تأكيد الكشك" },
+  updateKioskWorkWeek: { en: "Update {kiosk} work week", ar: "تحديث أسبوع عمل {kiosk}" },
+  updateShift: { en: "Update shift", ar: "تحديث الوردية" },
+  varianceRecordSub: { en: "These counted values become the variance record", ar: "هذه القيم المعدودة تصبح سجل الفرق لدى المدير" },
+  voidRefund: { en: "Void/refund", ar: "إلغاء/مرتجع" },
+  week: { en: "Week", ar: "الأسبوع" },
+  weekHours: { en: "Week hours", ar: "ساعات الأسبوع" },
+  weeklyShiftRoster: { en: "Weekly shift roster", ar: "جدول الورديات الأسبوعي" },
+  workWeek: { en: "Work week", ar: "أسبوع العمل" },
+};
+
+const uiText = (lang, key, vars = {}) => {
+  const entry = UI_TEXT[key] || {};
+  const text = entry[lang] || entry.en || key;
+  return Object.entries(vars).reduce((value, [name, replacement]) => (
+    value.replaceAll(`{${name}}`, String(replacement))
+  ), text);
+};
+
+const ui = (ar, key, vars) => uiText(ar ? "ar" : "en", key, vars);
+
+const AR_TERM_MAP = {
+  "14d ago": "قبل 14 يوم",
+  "Accountant": "محاسب",
+  "Action": "إجراء",
+  "Admin": "الإدارة",
+  "All": "الكل",
+  "All day": "طوال اليوم",
+  "All kiosks": "كل الأكشاك",
+  "All categories": "كل الفئات",
+  "All cities": "كل المدن",
+  "All locations": "كل المواقع",
+  "All payments": "كل طرق الدفع",
+  "Americano": "أمريكانو",
+  "Anomaly - Margin": "شذوذ - الهامش",
+  "Approve": "اعتماد",
+  "Approved": "معتمد",
+  "Auto-PO drafted - Baghdad Dairy": "تم تجهيز طلب شراء تلقائي - ألبان بغداد",
+  "Auto-PO drafted for dairy - awaiting approval": "تم تجهيز طلب شراء للألبان - بانتظار الاعتماد",
+  "Avg inventory": "متوسط المخزون",
+  "Avg waste": "متوسط الهدر",
+  "Al Mansour Mall": "مول المنصور",
+  "Al Jadriya": "الجادرية",
+  "AsiaHawala": "آسيا حوالة",
+  "Awaiting order": "بانتظار الطلب",
+  "Amount IQD": "المبلغ بالدينار",
+  "Attendance logged": "تم تسجيل الحضور",
+  "Baghdad Area Warehouse": "مستودع منطقة بغداد",
+  "Baghdad Central Warehouse": "مستودع بغداد المركزي",
+  "Baghdad Dairy": "ألبان بغداد",
+  "Baghdad Mall": "بغداد مول",
+  "Baghdad Area": "منطقة بغداد",
+  "Baghdad kiosks - heat correlation 0.84": "أكشاك بغداد - ارتباط الحرارة 0.84",
+  "Baghdad industrial area": "منطقة بغداد الصناعية",
+  "Baghdad": "بغداد",
+  "Bakery / Nuts": "مخبوزات / مكسرات",
+  "Bakery": "المخبوزات",
+  "Babel Roasters": "محمصة بابل",
+  "Bank app": "تطبيق بنك",
+  "Bank apps": "تطبيقات بنك",
+  "Bank app - gateway batch": "تطبيق بنك - دفعة بوابة",
+  "Bank card terminal": "جهاز بطاقة بنكية",
+  "Barista": "باريستا",
+  "Basra Mall": "مول البصرة",
+  "Basra TS K-09 - Karim": "البصرة TS K-09 - كريم",
+  "Basra Times Square": "البصرة تايمز سكوير",
+  "Basra": "البصرة",
+  "Bayaan account": "حساب بيان",
+  "Bayaan is reading the source engine": "بيان يقرأ من محرك المصدر",
+  "Bayaan warehouse topology": "هيكل مستودعات بيان",
+  "Bus fallback": "استرجاع عبر الناقل",
+  "Cake slice": "شريحة كيك",
+  "Cake": "الكيك",
+  "Cappuccino": "كابتشينو",
+  "Card": "بطاقة",
+  "Cards": "بطاقات",
+  "Cash": "نقد",
+  "Cash variance - Karrada Branch": "فرق نقد - فرع الكرادة",
+  "Cashier": "كاشير",
+  "Central warehouse": "مستودع مركزي",
+  "Central Warehouse": "المستودع المركزي",
+  "Central Warehouse / Stock": "المستودع المركزي / المخزون",
+  "Central": "المركزي",
+  "Cheesecake": "تشيز كيك",
+  "Chocolate - 70%": "شوكولاتة 70%",
+  "Chocolate Fondant": "فوندو الشوكولاتة",
+  "Chocolate fondant base": "قاعدة فوندو الشوكولاتة",
+  "Chocolate sauce 1L": "صوص شوكولاتة 1 لتر",
+  "Cinnamon roll - frozen": "سينابون مجمد",
+  "Cold Brew": "كولد برو",
+  "Cold brew concentrate": "مركز كولد برو",
+  "Condensed milk": "حليب مكثف",
+  "Confirmed": "مؤكدة",
+  "Confirm with cashier when ready": "أكد مع الكاشير عند الانتهاء",
+  "Coffee beans": "حبوب قهوة",
+  "Coffee beans - house": "حبوب قهوة البيت",
+  "Coffee": "القهوة",
+  "COGS": "تكلفة البضاعة",
+  "Covered": "مغطى",
+  "Create central warehouse": "إنشاء مستودع مركزي",
+  "Create in engine": "إنشاء في المحرك",
+  "Create kiosk location": "إنشاء موقع كشك",
+  "Create synced kiosk": "إنشاء كشك متزامن",
+  "Creating...": "جار الإنشاء...",
+  "Critical": "حرج",
+  "Croissant - Chocolate": "كرواسون - شوكولاتة",
+  "Croissant - Plain": "كرواسون سادة",
+  "Croissant - almond frozen": "كرواسون لوز مجمد",
+  "Croissant - chocolate": "كرواسون شوكولاتة",
+  "Croissant - chocolate frozen": "كرواسون شوكولاتة مجمد",
+  "Croissant - frozen": "كرواسون مجمد",
+  "Croissant - plain": "كرواسون سادة",
+  "Croissant waste up 240% vs 7-day avg. Likely overproduction.": "هدر الكرواسون أعلى 240% من متوسط 7 أيام. الاحتمال: إنتاج زائد.",
+  "Cups 12oz": "أكواب 12 أونصة",
+  "Cups 16oz": "أكواب 16 أونصة",
+  "Daily": "يومي",
+  "Daily summaries tier": "باقة الملخصات اليومية",
+  "Daily summaries tier - 18% monthly budget used": "باقة الملخصات اليومية - 18% من الميزانية الشهرية مستخدمة",
+  "Daily summaries tier - compact aggregate snapshot": "باقة الملخصات اليومية - لقطة مجمعة مختصرة",
+  "Dairy": "الألبان",
+  "Demo": "تجريبي",
+  "demo": "تجريبي",
+  "Demo Owner": "مالك العرض التجريبي",
+  "Demo source rows - read-only": "صفوف مصدر تجريبية - للقراءة فقط",
+  "Demo warehouse": "مستودع تجريبي",
+  "Digital payments": "مدفوعات رقمية",
+  "Online payments": "مدفوعات رقمية",
+  "Dispatch": "إرسال",
+  "Draft transfer prepared": "تم تجهيز تحويل كمسودة",
+  "Eid pull-forward - weather +34C": "طلب مبكر للعيد - الطقس +34م",
+  "Empire Mall": "إمباير مول",
+  "Engine": "المحرك",
+  "Engine record": "سجل المحرك",
+  "Engine synced": "تمت مزامنة المحرك",
+  "Erbil Syrups": "شرابات أربيل",
+  "Erbil industrial zone": "منطقة أربيل الصناعية",
+  "Erbil": "أربيل",
+  "Espresso": "إسبريسو",
+  "Espresso beans - house": "حبوب إسبريسو البيت",
+  "Espresso shot": "جرعة إسبريسو",
+  "Every card is backed by the single backend database, not a separate Bayaan-only store.": "كل بطاقة مدعومة بقاعدة البيانات الخلفية الواحدة، وليست مخزنا منفصلا خاصا ببيان.",
+  "Expected cash": "النقد المتوقع",
+  "Export": "تصدير",
+  "Family Mall G2": "فاميلي مول G2",
+  "FastPay": "فاست باي",
+  "Finance": "المالية",
+  "Finished stock move only": "حركة مخزون جاهز فقط",
+  "Forecast": "توقع",
+  "Friday revenue": "إيراد الجمعة",
+  "Fulfilled": "منفذ",
+  "Generic QR": "QR عام",
+  "Gross profit": "إجمالي الربح",
+  "Healthy": "سليم",
+  "Honey": "عسل",
+  "Hot Coffee": "قهوة ساخنة",
+  "Iced Americano": "أمريكانو مثلج",
+  "Iced Coffee": "قهوة مثلجة",
+  "Iced Latte": "لاتيه مثلج",
+  "Iced Mocha": "موكا مثلجة",
+  "Iced Spanish": "سبانش لاتيه مثلج",
+  "Iced drinks +31% w/w": "المشروبات المثلجة +31% أسبوعيا",
+  "Iced latte": "لاتيه مثلج",
+  "Ingredient consumption": "استهلاك المكونات",
+  "Insights": "الرؤى",
+  "Inventory": "المخزون",
+  "Inventory health": "صحة المخزون",
+  "Inventory ledger": "دفتر المخزون",
+  "Investment Account": "حساب الاستثمار",
+  "Iraq Pack": "عراق باك",
+  "Iraq": "العراق",
+  "IQD Balance": "رصيد الدينار",
+  "Items Catalog": "كتالوج البنود",
+  "Juice": "العصائر",
+  "Karim Fahmy": "كريم فهمي",
+  "Karrada Center": "مركز الكرادة",
+  "Karrada": "الكرادة",
+  "Kiosk": "كشك",
+  "Kiosk performance": "أداء الأكشاك",
+  "Kiosk stock": "مخزون الكشك",
+  "Kiosk stock source": "مصدر مخزون الكشك",
+  "Kiosks": "الأكشاك",
+  "Layla Hassan": "ليلى حسن",
+  "Latte": "لاتيه",
+  "Light theme": "الوضع الفاتح",
+  "Linked": "مرتبط",
+  "List": "قائمة",
+  "Live activity": "النشاط المباشر",
+  "Logistics": "اللوجستيات",
+  "Lotus biscuit spread": "دهن بسكويت لوتس",
+  "Lotus cake base": "قاعدة كيك لوتس",
+  "Low": "منخفض",
+  "Loss Shortfall": "عجز الخسائر",
+  "Main Warehouse": "المستودع الرئيسي",
+  "Main Wallet": "المحفظة الرئيسية",
+  "Mango": "مانجو",
+  "Mango Juice": "عصير مانجو",
+  "Mango juice": "عصير مانجو",
+  "Mango pulp": "لب مانجو",
+  "Manual": "يدوي",
+  "Manual bank transfer": "تحويل بنكي يدوي",
+  "Manual digital": "رقمي يدوي",
+  "manager verified": "موثق من المدير",
+  "Margin": "الهامش",
+  "May": "مايو",
+  "Median": "الوسيط",
+  "Mesopotamia Foods": "أغذية الرافدين",
+  "Mesopotamia Foods raised paste price 18%. Recipe uses 12g vs peer median 9g - reformulation could recover 4.5 pts.": "رفعت أغذية الرافدين سعر المعجون 18%. الوصفة تستخدم 12غ مقابل وسيط 9غ للأكشاك المشابهة - تعديل الوصفة قد يستعيد 4.5 نقطة.",
+  "Milk": "حليب",
+  "Milk stock critical at 4 kiosks": "مخزون الحليب حرج في 4 أكشاك",
+  "Mint - fresh": "نعناع طازج",
+  "Mint Lemonade": "ليموناضة بالنعناع",
+  "Mint, lemons": "نعناع، ليمون",
+  "Mobile wallet": "محفظة موبايل",
+  "Mocha": "موكا",
+  "Monthly": "شهري",
+  "Mansour District": "منطقة المنصور",
+  "Manager": "مدير",
+  "Maya Ahmed": "مايا أحمد",
+  "Majidi Mall": "ماجدي مول",
+  "Najaf Fresh": "نجف فريش",
+  "Najaf wholesale market": "سوق النجف للجملة",
+  "NassWallet": "ناس واليت",
+  "NassWallet / NASS Pay": "ناس واليت / ناس باي",
+  "New Transfer": "تحويل جديد",
+  "New transfer": "تحويل جديد",
+  "Next morning": "صباح اليوم التالي",
+  "Needs action": "يحتاج إجراء",
+  "No automated actions without verified engine inputs.": "لا توجد إجراءات تلقائية من دون مدخلات موثقة من المحرك.",
+  "No city": "لا توجد مدينة",
+  "No source suppliers loaded": "لا يوجد موردون من المصدر محملون",
+  "No POS config": "لا يوجد ضبط POS",
+  "No recurring purchase plans yet.": "لا توجد خطط شراء متكررة بعد.",
+  "No verified alerts from the engine yet.": "لا توجد تنبيهات موثقة من المحرك بعد.",
+  "No verified supplier price changes loaded from the engine.": "لا توجد تغييرات أسعار موردين موثقة محملة من المحرك.",
+  "Nour Ibrahim": "نور إبراهيم",
+  "Oat milk": "حليب شوفان",
+  "Oat milk 1L": "حليب شوفان 1 لتر",
+  "On hand": "المتوفر",
+  "Open attendance": "حضور مفتوح",
+  "Operations": "العمليات",
+  "Operating expenses": "المصروفات التشغيلية",
+  "Orange": "برتقال",
+  "Orange Juice": "عصير برتقال",
+  "Orange Juice 350ml": "عصير برتقال 350 مل",
+  "Oranges": "برتقال",
+  "Staff meal allowance": "بدل وجبات الموظفين",
+  "Maintenance": "الصيانة",
+  "Transport": "النقل",
+  "Utilities": "الخدمات",
+  "Omar Khaled": "عمر خالد",
+  "Other": "أخرى",
+  "Other digital": "رقمي آخر",
+  "Owner": "المالك",
+  "Packaging": "التغليف",
+  "Paid": "مدفوع",
+  "Pantry": "المخزن الجاف",
+  "Payment methods": "طرق الدفع",
+  "Payments": "المدفوعات",
+  "payments": "المدفوعات",
+  "Payroll": "الرواتب",
+  "Pick": "تجهيز",
+  "Pistachio -6 pts": "الفستق -6 نقاط",
+  "Pistachio Cake": "كيك الفستق",
+  "Pistachio cake base": "قاعدة كيك الفستق",
+  "Pistachio cake margin dropped 6 pts": "هامش كيك الفستق انخفض 6 نقاط",
+  "Pistachio cake slice": "شريحة كيك الفستق",
+  "Pistachio paste": "معجون فستق",
+  "POS orders": "طلبات POS",
+  "Pressure": "الضغط",
+  "Prep": "التحضير",
+  "Produce": "الخضار والفواكه",
+  "Product profitability": "ربحية المنتجات",
+  "Products & Recipes": "المنتجات والوصفات",
+  "Planned": "مخططة",
+  "policy": "سياسة",
+  "Qi Card": "كي كارد",
+  "Qi Card / SuperQi": "كي كارد / سوبر كي",
+  "Receive": "استلام",
+  "Receipts": "الاستلامات",
+  "Recipe held": "الوصفة معلقة",
+  "Verified aggregate sources": "مصادر مجمعة موثقة",
+  "Verified source rows": "صفوف مصدر موثقة",
+  "Returns": "مرتجعات",
+  "Refunded": "مسترد",
+  "Returned": "مرتجع",
+  "Revenue": "الإيراد",
+  "Revenue today": "إيراد اليوم",
+  "Net profit": "صافي الربح",
+  "Reserve Account": "حساب الاحتياطي",
+  "Rashid Al-Tikriti": "راشد التكريتي",
+  "Reserved": "محجوز",
+  "Review variance inputs": "مراجعة مدخلات الفرق",
+  "Sales & POS": "المبيعات ونقاط البيع",
+  "Sales flow": "تدفق المبيعات",
+  "Savings Account": "حساب التوفير",
+  "Sara Younis": "سارة يونس",
+  "Same day": "نفس اليوم",
+  "Short code": "رمز قصير",
+  "Sign in": "دخول",
+  "Sign out": "خروج",
+  "Sort": "ترتيب",
+  "Spanish Latte": "سبانش لاتيه",
+  "Staff": "الموظفون",
+  "Status": "الحالة",
+  "strict policy": "سياسة صارمة",
+  "Stock": "المخزون",
+  "Stock & Allocation": "المخزون والتوزيع",
+  "Stock availability": "توفر المخزون",
+  "Stock health": "صحة المخزون",
+  "Stock inventory": "مخزون",
+  "Stock item": "بند مخزون",
+  "Stock item catalog": "كتالوج بنود المخزون",
+  "Stock location": "موقع المخزون",
+  "Stock runway by category": "مدة كفاية المخزون حسب الفئة",
+  "Stock value": "قيمة المخزون",
+  "Strawberry": "فراولة",
+  "Strawberry puree": "مهروس فراولة",
+  "Straws": "مصاصات",
+  "Sugar": "سكر",
+  "Supplier": "المورد",
+  "Syrups": "الشرابات",
+  "Supervisor": "مشرف",
+  "Table": "جدول",
+  "Tigris Bakery": "مخبز دجلة",
+  "Tiramisu": "تيراميسو",
+  "Tiramisu cup": "كوب تيراميسو",
+  "Today": "اليوم",
+  "Today's brief": "ملخص اليوم",
+  "Today's revenue": "إيراد اليوم",
+  "Top risk": "أعلى خطر",
+  "Total": "الإجمالي",
+  "Trend": "اتجاه",
+  "Two cashiers above peer median": "كاشيران أعلى من وسيط الأقران",
+  "Type": "النوع",
+  "Variance impact": "أثر الفرق",
+  "Unknown loss": "فاقد مجهول",
+  "Unpaid": "غير مدفوع",
+  "User": "مستخدم",
+  "USD Balance": "رصيد الدولار",
+  "Euro Balance": "رصيد اليورو",
+  "GBP Balance": "رصيد الجنيه",
+  "Vanilla syrup 750ml": "شراب فانيلا 750 مل",
+  "Zayouna Plaza - 7:30 to 7:45": "ساحة زيونة - 7:30 إلى 7:45",
+  "Warehouse": "المستودع",
+  "Warehouse name": "اسم المستودع",
+  "Warehouse transfers": "تحويلات المستودع",
+  "Warehouse": "المستودع",
+  "Warehouses": "المستودعات",
+  "Wallet": "محفظة",
+  "Wallet - gateway batch": "محفظة - دفعة بوابة",
+  "Wallets": "محافظ",
+  "Waste": "الهدر",
+  "Waste & loss": "الهدر والخسارة",
+  "Waste today": "هدر اليوم",
+  "warning policy": "سياسة تحذير",
+  "Weekly": "أسبوعي",
+  "Yearly": "سنوي",
+  "Yusuf Saleh": "يوسف صالح",
+  "Zain Cash": "زين كاش",
+  "Zayouna Plaza": "ساحة زيونة",
+  "Zayouna K-04 - Sara": "زيونة K-04 - سارة",
+  "Za'atar manakeesh - frozen": "مناقيش زعتر مجمدة",
+  accountant: "محاسب",
+  active: "نشط",
+  advance: "سلفة",
+  approved: "معتمد",
+  "bank batch": "دفعة بنكية",
+  bonus: "مكافأة",
+  cancelled: "ملغاة",
+  card: "بطاقة",
+  cash_shortage: "عجز نقدي",
+  confirmed: "مؤكدة",
+  critical: "حرج",
+  deduction: "استقطاع",
+  expenses: "مصروفات",
+  dispatched: "مرسل",
+  draft: "مسودة",
+  fulfilled: "منفذ",
+  "gateway batch": "دفعة بوابة",
+  "ledger": "دفتر الاستهلاك",
+  "Ledger": "دفتر الاستهلاك",
+  good: "سليم",
+  healthy: "سليم",
+  hold: "معلق",
+  leave: "إجازة",
+  "low stock": "مخزون منخفض",
+  "needs closing": "يحتاج إغلاق",
+  "open / watch": "مفتوح / مراقبة",
+  "Cash shortage review": "مراجعة عجز نقدي",
+  "Leave": "إجازة",
+  "Normal shift": "وردية عادية",
+  "Overtime": "عمل إضافي",
+  open: "مفتوح",
+  "operations": "العمليات",
+  "or manual digital": "أو رقمي يدوي",
+  paid: "مدفوع",
+  pending: "بانتظار",
+  planned: "مخططة",
+  payroll: "رواتب",
+  picked: "مجهز",
+  ready: "جاهز",
+  received: "مستلم",
+  returned: "مرتجع",
+  "read-only": "قراءة فقط",
+  rendered: "معروض",
+  inline: "داخل الرسالة",
+  "live LLM ready": "النموذج المباشر جاهز",
+  "live LLM": "النموذج المباشر",
+  "compact aggregate snapshot": "لقطة مجمعة مختصرة",
+  "Drill-down window": "نافذة التفصيل",
+  rows: "صفوف",
+  review: "مراجعة",
+  reviewed: "تمت المراجعة",
+  synced: "متزامن",
+  "shift cash count": "عد نقد الوردية",
+  "shift close lines": "سطور إغلاق الوردية",
+  "variance issue": "مشكلة فرق",
+  variances: "الفروقات",
+  wallet: "محفظة",
+  watch: "مراقبة",
+  warning: "تحذير",
+  "leave-adjusted": "معدل للإجازة",
+  "K-07 review": "مراجعة K-07",
+  "3 variances": "3 فروقات",
+  "Oranges -1.4 kg": "برتقال -1.4 كغم",
+  "Croissants 42%": "كرواسون 42%",
+  "Which stalls need action or coaching": "أي الأكشاك تحتاج إجراء أو تدريب",
+  "Which prices or recipes should change": "أي الأسعار أو الوصفات يجب تغييرها",
+  "What to transfer or buy tomorrow": "ما الذي يجب تحويله أو شراؤه غدا",
+  "What waste reason is driving margin loss": "أي سبب هدر يقود خسارة الهامش",
+  "How much was cash": "كم كان النقد",
+  "card": "بطاقة",
+  cash: "نقد",
+  "wallet": "محفظة",
+  "or manual digital": "أو رقمي يدوي",
+  "Which labor and operating costs changed net profit": "أي تكاليف عمالة وتشغيل غيرت صافي الربح",
+  "How much cash should be counted and deposited": "كم نقد يجب عده وإيداعه",
+  "12g to 9g - awaiting approval": "12غ إلى 9غ - بانتظار الاعتماد",
+  "2-3 days": "2-3 أيام",
+  "5 days ago": "قبل 5 أيام",
+  "8 days ago": "قبل 8 أيام",
+  "12 days ago": "قبل 12 يوم",
+  "Al Jadriya, Baghdad": "الجادرية، بغداد",
+  "Address not set": "العنوان غير مضبوط",
+  "Americano - Plain Croissant": "أمريكانو - كرواسون سادة",
+  "Apr": "أبريل",
+  "Aug": "أغسطس",
+  "Avocado": "أفوكادو",
+  "BAGHDAD - UTC+3": "بغداد - UTC+3",
+  "Bakery Al Jadriya, Baghdad Next morning Yesterday": "مخبز الجادرية، بغداد صباح اليوم التالي أمس",
+  "Bakery / Nuts Mansour, Baghdad 2-3 days Today": "مخبوزات / مكسرات المنصور، بغداد 2-3 أيام اليوم",
+  "Cappuccino L - Croissant": "كابتشينو L - كرواسون",
+  "Carrot Cake": "كيك الجزر",
+  "Carrot cake base": "قاعدة كيك الجزر",
+  "Chocolate sauce 1L": "صوص شوكولاتة 1 لتر",
+  "Cinnamon Roll": "سينابون",
+  "Cold Brew L - Cheesecake": "كولد برو L - تشيز كيك",
+  "Coffee Erbil industrial zone Weekly 5 days ago": "قهوة منطقة أربيل الصناعية أسبوعي قبل 5 أيام",
+  "Croissant - Almond": "كرواسون - لوز",
+  "Cups 12oz pc Iraq Pack Weekly": "أكواب 12 أونصة قطعة عراق باك أسبوعي",
+  "Dairy Karrada, Baghdad Same day 2 days ago": "ألبان الكرادة، بغداد نفس اليوم قبل يومين",
+  "Dec": "ديسمبر",
+  "Estimated runout in 6 hours at current pace. Auto-PO drafted to Baghdad Dairy.": "نفاد متوقع خلال 6 ساعات بالمعدل الحالي. تم تجهيز طلب شراء تلقائي إلى ألبان بغداد.",
+  "Feb": "فبراير",
+  "Flat White": "فلات وايت",
+  "Fri": "الجمعة",
+  "From purchase orders": "من طلبات الشراء",
+  "From purchase records": "من سجلات الشراء",
+  "HR payroll & expenses": "رواتب ومصروفات الموارد البشرية",
+  "Iced Latte M - Pistachio Cake": "لاتيه مثلج M - كيك الفستق",
+  "Investment Account": "حساب الاستثمار",
+  "Jan": "يناير",
+  "Jul": "يوليو",
+  "Jun": "يونيو",
+  "KIOSKS ONLINE": "الأكشاك متصلة",
+  "Karrada, Baghdad": "الكرادة، بغداد",
+  "LATENCY": "زمن الاستجابة",
+  "Loss Shortfall": "عجز الخسائر",
+  "Lotus Cake": "كيك لوتس",
+  "Main Wallet": "المحفظة الرئيسية",
+  "Mango Juice L": "عصير مانجو L",
+  "Mansour, Baghdad": "المنصور، بغداد",
+  "Mar": "مارس",
+  "Milk (whole) 1L": "حليب كامل الدسم 1 لتر",
+  "Milk x 4 kiosks - IQD 1.2M": "حليب × 4 أكشاك - 1.2M د.ع",
+  "Mocha L - Cinnamon Roll": "موكا L - سينابون",
+  "Mon": "الاثنين",
+  "Najaf wholesale market": "سوق النجف للجملة",
+  "Nov": "نوفمبر",
+  "Oct": "أكتوبر",
+  "Orange Juice L": "عصير برتقال L",
+  "Pistachio recipe flagged": "تم تعليم وصفة الفستق للمراجعة",
+  "Plain Croissant": "كرواسون سادة",
+  "Pre-prep schedule shifted": "تم تعديل جدول التحضير المسبق",
+  "Produce Najaf wholesale market Next morning Today": "خضار وفواكه سوق النجف للجملة صباح اليوم التالي اليوم",
+  "Recurring purchase saved": "تم حفظ الشراء المتكرر",
+  "Review": "مراجعة",
+  "Reserve Account": "حساب الاحتياطي",
+  "Savings Account": "حساب التوفير",
+  "Sat": "السبت",
+  "Sep": "سبتمبر",
+  "Spanish Latte M - Tiramisu": "سبانش لاتيه M - تيراميسو",
+  "STREAM ACTIVE": "التدفق نشط",
+  "Supplier item catalog": "كتالوج بنود الموردين",
+  "Syrups Erbil 2-3 days 8 days ago": "شرابات أربيل 2-3 أيام قبل 8 أيام",
+  "Thu": "الخميس",
+  "Today": "اليوم",
+  "Tue": "الثلاثاء",
+  "Vanilla syrup 750ml": "شراب فانيلا 750 مل",
+  "Waste/loss": "الهدر والخسارة",
+  "Waste spike - Mansour Kiosk": "ارتفاع الهدر - كشك المنصور",
+  "Wed": "الأربعاء",
+  "Yesterday": "أمس",
+  "Za'atar Manakeesh": "مناقيش زعتر",
+  "zaatar-manakeesh": "مناقيش زعتر",
+  "americano": "أمريكانو",
+  "cake-carrot": "كيك الجزر",
+  "cake-cheesecake": "تشيز كيك",
+  "cake-chocolate-fondant": "فوندون الشوكولاتة",
+  "cake-lotus": "كيك لوتس",
+  "cake-pistachio": "كيك الفستق",
+  "cake-tiramisu": "تيراميسو",
+  "cappuccino": "كابتشينو",
+  "carrot cake": "كيك الجزر",
+  "cinnamon-roll": "سينابون",
+  "cold-brew": "كولد برو",
+  "cortado": "كورتادو",
+  "Cortado": "كورتادو",
+  "croissant-almond": "كرواسون لوز",
+  "croissant-chocolate": "كرواسون شوكولاتة",
+  "croissant-plain": "كرواسون سادة",
+  "espresso": "إسبريسو",
+  "flat-white": "فلات وايت",
+  "iced-americano": "أمريكانو مثلج",
+  "iced-latte": "لاتيه مثلج",
+  "iced-mocha": "موكا مثلجة",
+  "iced-spanish": "سبانش لاتيه مثلج",
+  "juice-avocado": "عصير أفوكادو",
+  "juice-mango": "عصير مانجو",
+  "juice-orange": "عصير برتقال",
+  "juice-strawberry": "عصير فراولة",
+  "latte": "لاتيه",
+  "margin watch": "مراقبة الهامش",
+  "mint-lemonade": "ليموناضة بالنعناع",
+  "mocha": "موكا",
+  "spanish-latte": "سبانش لاتيه",
+  "Demo source rows": "صفوف مصدر تجريبية",
+  "Re-train on combo shortcuts -> ~40 min/day saved": "إعادة تدريب على اختصارات الطلبات المركبة -> توفير ~40 دقيقة/يوم",
+  "Orders": "الطلبات",
+  "Stock": "المخزون",
+  "Waste": "الهدر",
+  "Cash flow": "التدفق النقدي",
+  "cash flow": "التدفق النقدي",
+  "How much was cash, card, QR, wallet, FIB, or manual digital": "كم كان النقد والبطاقة وQR والمحفظة وFIB أو الرقمي اليدوي",
+};
+
+const arTerm = (lang, value) => {
+  if (lang !== "ar" || value == null) return value;
+  const text = String(value);
+  const exact = AR_TERM_MAP[text] || AR_TERM_MAP[text.toLowerCase()];
+  if (exact) return exact;
+  let localized = text;
+  Object.entries(AR_TERM_MAP)
+    .filter(([source]) => source && /[A-Za-z]/.test(source))
+    .sort((a, b) => b[0].length - a[0].length)
+    .forEach(([source, replacement]) => {
+      const escaped = source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = /^[A-Za-z0-9 ]+$/.test(source)
+        ? new RegExp(`\\b${escaped}\\b`, "gi")
+        : new RegExp(escaped, "g");
+      localized = localized.replace(pattern, replacement);
+    });
+  localized = localized
+    .replace(/\bnow\b/gi, "الآن")
+    .replace(/\bmin ago\b/gi, "دقيقة مضت")
+    .replace(/\bhr ago\b/gi, "ساعة مضت")
+    .replace(/\bday\b/gi, "يوم")
+    .replace(/\bdays\b/gi, "أيام")
+    .replace(/\bstaff\b/gi, "موظفين")
+    .replace(/\bin queue\b/gi, "في الطابور")
+    .replace(/\bsale\b/gi, "بيع")
+    .replace(/\bago\b/gi, "مضت")
+    .replace(/\blow-stock alerts\b/gi, "تنبيهات مخزون منخفض")
+    .replace(/\blow\b/gi, "منخفض")
+    .replace(/\bstocked\b/gi, "متوفر")
+    .replace(/\bcritical\b/gi, "حرج")
+    .replace(/\bitems in good standing\b/gi, "بنود بحالة جيدة")
+    .replace(/\brunout\b/gi, "نفاد خلال")
+    .replace(/\btarget\b/gi, "الهدف")
+    .replace(/\bestimated loss\b/gi, "خسارة تقديرية")
+    .replace(/\bpts over\b/gi, "نقاط فوق")
+    .replace(/\bcards\b/gi, "بطاقات")
+    .replace(/\bgenerated just now\b/gi, "تم توليده الآن")
+    .replace(/\bconf\b/gi, "ثقة")
+    .replace(/\bscore\b/gi, "درجة")
+    .replace(/\borders\b/gi, "طلبات")
+    .replace(/\bstock\b/gi, "مخزون")
+    .replace(/\bwaste\b/gi, "هدر")
+    .replace(/\bsource rows\b/gi, "صفوف المصدر")
+    .replace(/\bmonthly budget used\b/gi, "من الميزانية الشهرية المستخدمة")
+    .replace(/\bsince\b/gi, "منذ")
+    .replace(/\bprice hike\b/gi, "زيادة السعر")
+    .replace(/pts\b/gi, "نقاط")
+    .replace(/\bcard\b/gi, "بطاقة")
+    .replace(/\battach\b/gi, "إرفاق")
+    .replace(/\bmargin\b/gi, "هامش")
+    .replace(/\brange\b/gi, "النطاق")
+    .replace(/\btoday\b/gi, "اليوم")
+    .replace(/\bactual\b/gi, "فعلي")
+    .replace(/\bqueued\b/gi, "بانتظار")
+    .replace(/\bpayroll\b/gi, "رواتب")
+    .replace(/\bexpenses\b/gi, "مصروفات")
+    .replace(/\bgateway batch\b/gi, "دفعة بوابة")
+    .replace(/\bbank batch\b/gi, "دفعة بنكية")
+    .replace(/\bshift cash count\b/gi, "عد نقد الوردية")
+    .replace(/\bmanager verified\b/gi, "موثق من المدير")
+    .replace(/\bpolicy\b/gi, "سياسة")
+    .replace(/\bready\b/gi, "جاهز")
+    .replace(/\breceived\b/gi, "مستلم")
+    .replace(/\bcreatedReceive\b/gi, "تم إنشاء الاستلام");
+  return localized;
+};
 
 const unwrapOdoo = (payload) => {
   if (!payload || typeof payload !== "object") return payload;
@@ -1150,9 +1990,76 @@ const markLiveOnlyWarehouseSetup = (payload) => {
 };
 
 const isLiveOnlyPayload = (payload) => Boolean(unwrapOdoo(payload)?.[LIVE_ONLY_KEY]);
-const canUseDemoFallback = (payload) => !isLiveOnlyPayload(payload);
+const isSimulationPayload = (payload) => unwrapOdoo(payload)?.engine === "bayaan_peak_simulation";
+const isSimulationRuntime = () => {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search);
+  return (
+    params.get("bayaanSimulation") === "peak"
+    || params.get("bayaanSimulation") === "peak-full"
+    || params.get("bayaanMode") === "simulation"
+    || window.localStorage.getItem("BAYAAN_SIMULATION") === "peak"
+  );
+};
+const canUseDemoFallback = (payload) => !isLiveOnlyPayload(payload) && !isSimulationPayload(payload) && !isSimulationRuntime();
+const isSourceDrivenPayload = (payload) => isLiveOnlyPayload(payload) || isSimulationPayload(payload) || isSimulationRuntime();
+const simulationRuntimeSpeed = () => {
+  if (typeof window === "undefined") return 1;
+  const params = new URLSearchParams(window.location.search);
+  const speed = Number(params.get("bayaanSimSpeed") || window.localStorage.getItem("BAYAAN_SIMULATION_SPEED") || 1);
+  return [1, 2, 5, 10].includes(speed) ? speed : 1;
+};
+const simulationRuntimeMinutes = () => {
+  if (typeof window === "undefined") return 60;
+  const params = new URLSearchParams(window.location.search);
+  const minutes = Number(params.get("bayaanSimMinutes") || window.localStorage.getItem("BAYAAN_SIMULATION_MINUTES") || 60);
+  return Number.isFinite(minutes) && minutes >= 30 ? Math.min(120, Math.trunc(minutes)) : 60;
+};
 
 const odooSummary = (bootstrap) => unwrapOdoo(bootstrap)?.summary || null;
+
+const odooMinutePulse = (bootstrap) => {
+  const summary = odooSummary(bootstrap);
+  const rows = summary?.minutePulse;
+  if (!(isSimulationPayload(bootstrap) || isSimulationRuntime()) || !Array.isArray(rows) || !rows.length) return null;
+  const activeIndex = rows.reduce((last, row, index) => Number(row?.orders || 0) > 0 ? index : last, -1);
+  const avgRevenue = rows.reduce((sum, row) => sum + Number(row?.revenue || 0), 0) / Math.max(1, rows.length);
+  return rows.map((row, index) => ({
+    label: index % 5 === 0 ? String(index).padStart(2, "0") : "",
+    value: Number(row?.revenue || 0),
+    expected: Math.max(avgRevenue * 0.72, Number(row?.revenue || 0) * 0.82),
+    state: index === activeIndex ? "current" : index < activeIndex ? "past" : "future",
+  }));
+};
+
+const odooHourlyPulse = (bootstrap) => {
+  const summary = odooSummary(bootstrap);
+  const source = summary?.hourlySales || summary?.hourlyPulse;
+  if (!source) return null;
+  const buckets = Array(24).fill(0);
+  if (Array.isArray(source)) {
+    if (source.every((value) => Number.isFinite(Number(value)))) {
+      source.slice(0, 24).forEach((value, hour) => {
+        buckets[hour] = Number(value || 0);
+      });
+    } else {
+      source.forEach((row, index) => {
+        const hour = Number(row?.hour ?? row?.hourOfDay ?? row?.h ?? index);
+        const value = Number(row?.revenue ?? row?.sales ?? row?.amount ?? row?.total ?? row?.value ?? 0);
+        if (hour >= 0 && hour < 24) buckets[hour] = value;
+      });
+    }
+  } else if (typeof source === "object") {
+    Object.entries(source).forEach(([hourKey, value]) => {
+      const hour = Number(hourKey);
+      const amount = typeof value === "object"
+        ? Number(value?.revenue ?? value?.sales ?? value?.amount ?? value?.total ?? value?.value ?? 0)
+        : Number(value || 0);
+      if (hour >= 0 && hour < 24) buckets[hour] = amount;
+    });
+  }
+  return buckets.some((value) => Number(value || 0) > 0) ? buckets : null;
+};
 
 const normalizeLookup = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 
@@ -1319,7 +2226,7 @@ const DEMO_WAREHOUSE_SETUP = {
   engine: "demo",
   company: { id: "demo", name: "Bayaan Demo Company" },
   warehouses: [
-    { id: "WH-MAIN", name: "Central Warehouse", code: "MAIN", stock_location: "Central Warehouse / Stock" },
+    { id: "WH-MAIN", name: "Central Warehouse", code: "MAIN", stock_location_id: "LOC-MAIN", stock_location: "Central Warehouse / Stock" },
   ],
   locations: [
     { id: "LOC-MAIN", name: "Stock", complete_name: "Central Warehouse / Stock", kind: "central", quantity: 12340, reserved_quantity: 0 },
@@ -1389,6 +2296,15 @@ const odooKioskRows = (bootstrap) => {
     const summary = summaryRows.find((row) => matchesKiosk(row.kioskId || row.name, kiosk));
     const sales = Object.entries(salesByKiosk).find(([key]) => matchesKiosk(key, kiosk))?.[1] || {};
     const stockRows = Object.entries(snapshot.kiosk_stock || {}).find(([key]) => matchesKiosk(key, kiosk))?.[1] || [];
+    const stockRowsWithStatus = stockRows.map((row) => ({
+      row,
+      status: inventoryStatusFor(Number(row.actual_qty || 0), row),
+    }));
+    const trackedStockRows = stockRowsWithStatus.filter((entry) => entry.status !== "unconfigured");
+    const actionableStockRows = stockRowsWithStatus.filter((entry) => isInventoryActionStatus(entry.status));
+    const stockItems = Number(summary?.stockItems ?? stockRows.length ?? 0);
+    const lowStockItems = Number(summary?.lowStockItems ?? actionableStockRows.length ?? 0);
+    const zeroStockItems = Number(summary?.zeroStockItems ?? stockRowsWithStatus.filter((entry) => entry.status === "crit" && Number(entry.row.actual_qty || 0) <= 0).length ?? 0);
     const wasteRows = (snapshot.today?.waste || []).filter((row) => row.kiosk === kiosk.kiosk_code || row.kiosk === kiosk.name);
     const revenue = Math.round(Number(summary?.sales ?? sales.revenue ?? fallback.revenue));
     const orders = Math.round(Number(summary?.orders ?? sales.orders ?? fallback.orders));
@@ -1396,8 +2312,12 @@ const odooKioskRows = (bootstrap) => {
     const waste = revenue ? Number(((wasteCost / revenue) * 100).toFixed(1)) : fallback.waste;
     const stockHealth = summary?.stockHealth != null
       ? Number(summary.stockHealth)
-      : stockRows.length
-      ? Math.max(20, Math.round(100 - stockRows.filter((row) => Number(row.actual_qty || 0) <= 0).length * 22 - stockRows.filter((row) => Number(row.actual_qty || 0) < 5).length * 9))
+      : trackedStockRows.length
+      ? Math.round(trackedStockRows.reduce((sum, entry) => {
+          const explicit = Number(entry.row.stock_percent ?? entry.row.stockPercent);
+          if (Number.isFinite(explicit) && explicit > 0) return sum + explicit;
+          return sum + (entry.status === "ok" ? 100 : entry.status === "low" ? 50 : 10);
+        }, 0) / trackedStockRows.length)
       : fallback.stockHealth;
     const wasteLoad = Math.min(100, Math.round((waste / 6) * 100));
     const summaryStatus = String(summary?.status || "");
@@ -1421,8 +2341,11 @@ const odooKioskRows = (bootstrap) => {
       waste,
       wasteLoad,
       stockHealth,
+      stockItems,
+      lowStockItems,
+      zeroStockItems,
       status,
-      criticalStock: stockRows.find((row) => Number(row.actual_qty || 0) < 5)?.item || fallback.criticalStock,
+      criticalStock: actionableStockRows[0]?.row?.item || fallback.criticalStock,
       issue: status === "crit" ? "Stock or waste needs action" : status === "warn" ? "Watch stock levels" : "Synced from engine",
     };
   });
@@ -1436,17 +2359,43 @@ const inventoryCategoryFor = (mode, fallback = "") => {
   return "Stock item";
 };
 
-const inventoryStatusFor = (qty) => {
-  if (qty <= 5) return "crit";
-  if (qty <= 25) return "low";
+const INVENTORY_UNCONFIGURED_STATUSES = new Set(["unconfigured", "not_configured", "no_target"]);
+const INVENTORY_ACTION_STATUSES = new Set(["crit", "low"]);
+const isInventoryActionStatus = (status) => INVENTORY_ACTION_STATUSES.has(String(status || "").toLowerCase());
+
+const inventoryStatusFor = (qty, row = {}) => {
+  const sourceStatus = String(row.stock_status || row.status || "").toLowerCase();
+  if (INVENTORY_UNCONFIGURED_STATUSES.has(sourceStatus)) return "unconfigured";
+  if (["empty", "critical", "crit"].includes(sourceStatus)) return "crit";
+  if (["low", "watch"].includes(sourceStatus)) return "low";
+  if (["ok", "over_target"].includes(sourceStatus)) return "ok";
+  const critical = Number(row.critical_qty || row.critical || 0);
+  const reorder = Number(row.reorder_qty || row.reorder || 0);
+  const target = Number(row.target_qty || row.target || row.targetQty || 0);
+  if (!target && !critical && !reorder) return "unconfigured";
+  if (critical && qty <= critical) return "crit";
+  if (reorder && qty <= reorder) return "low";
+  if (qty <= 0) return "crit";
   return "ok";
+};
+
+const isInventoryActionable = (row) => isInventoryActionStatus(row?.status);
+
+const inventoryDaysFor = (row, status, useDemoEstimate) => {
+  const explicit = row.days ?? row.days_cover ?? row.cover_days ?? row.coverDays;
+  if (explicit !== undefined && explicit !== null && explicit !== "") {
+    return Number(explicit);
+  }
+  if (!useDemoEstimate) return null;
+  return status === "crit" ? 0.6 : status === "low" ? 1.8 : 6.4;
 };
 
 const odooInventoryRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
+  const useDemo = canUseDemoFallback(bootstrap);
   if (!snapshot?.warehouse_stock?.length && !snapshot?.kiosk_stock_rows?.length) {
-    return canUseDemoFallback(bootstrap)
-      ? MOCK.inventory.map((row) => ({ ...row, location: "Demo warehouse", locationKey: "demo-warehouse" }))
+    return useDemo
+      ? MOCK.inventory.map((row) => ({ ...row, location: "Central warehouse", locationKey: "central-warehouse" }))
       : [];
   }
   const productMeta = new Map();
@@ -1458,21 +2407,28 @@ const odooInventoryRows = (bootstrap) => {
   const makeRow = (row, location, locationKey) => {
     const meta = productMeta.get(String(row.item)) || productMeta.get(cleanDisplayName(row.item)) || {};
     const qty = Number(row.actual_qty || 0);
-    const status = inventoryStatusFor(qty);
+    const status = inventoryStatusFor(qty, row);
+    const unitCost = Number(row.unit_cost || row.standard_price || meta.standard_price || 0);
     return {
       item: row.item || "Stock item",
       category: inventoryCategoryFor(row.mode || meta.consumption_mode, row.category || meta.category),
       stock: Math.round(qty * 100) / 100,
       unit: row.uom || "u",
-      reorder: status === "crit" ? 10 : 25,
-      days: status === "crit" ? 0.6 : status === "low" ? 1.8 : 6.4,
-      supplier: "Bayaan",
+      reorder: Number(row.reorder_qty || row.reorder || 0),
+      target: Number(row.target_qty || row.target || meta.target_qty || 0),
+      critical: Number(row.critical_qty || row.critical || meta.critical_qty || 0),
+      stockPercent: Number(row.stock_percent || row.stockPercent || 0),
+      targetSource: row.target_source || row.targetSource || "",
+      defaultPurchaseQty: Number(row.default_purchase_qty || row.defaultPurchaseQty || row.purchase_qty || row.purchaseQty || 0),
+      days: inventoryDaysFor(row, status, useDemo),
+      supplier: row.supplier || meta.supplier || "Bayaan",
+      unitCost,
       status,
       location,
       locationKey,
     };
   };
-  const warehouseRows = (snapshot.warehouse_stock || []).slice(0, 500).map((row) => makeRow(row, "Company total", "company-total"));
+  const warehouseRows = (snapshot.warehouse_stock || []).slice(0, 500).map((row) => makeRow(row, "Central warehouse", "central-warehouse"));
   const kioskRows = (snapshot.kiosk_stock_rows || []).slice(0, 500).map((row) => makeRow(row, row.kiosk || "Kiosk location", row.kiosk || "kiosk"));
   return [...warehouseRows, ...kioskRows];
 };
@@ -1481,7 +2437,9 @@ const odooPosOrderRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
   const rows = snapshot?.today?.orders || [];
   if (!rows.length) return canUseDemoFallback(bootstrap) ? MOCK.posOrders : [];
-  return rows.slice(0, 50).map((order, index) => {
+  return [...rows].sort((left, right) => (
+    String(right.date_order || "").localeCompare(String(left.date_order || ""))
+  )).map((order, index) => {
     const firstLine = order.lines?.[0];
     const firstPayment = order.payments?.[0];
     const state = String(order.state || "paid");
@@ -1491,6 +2449,7 @@ const odooPosOrderRows = (bootstrap) => {
     return {
       id: order.name || `POS-${index + 1}`,
       time: String(order.date_order || "").slice(11, 19) || "--:--",
+      date: String(order.date_order || "").slice(0, 10),
       kioskId: order.kiosk || order.pos_config || `K-${index + 1}`,
       kiosk: order.kiosk || order.pos_config || "POS kiosk",
       cashier: order.cashier || "Cashier",
@@ -1504,6 +2463,288 @@ const odooPosOrderRows = (bootstrap) => {
     };
   });
 };
+
+const POS_ORDER_FILTERS = ["All", "Needs action", "Recipe held", "Unpaid", "Returns"];
+const POS_ORDER_PAGE_SIZE = 10;
+
+const posOrderTimeValue = (time) => {
+  const parts = String(time || "").split(":").map((part) => Number(part || 0));
+  return (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+};
+
+const posPaymentStatus = (order) => {
+  const status = String(order.status || "").toLowerCase();
+  const payment = String(order.payment || "").toLowerCase();
+  if (status.includes("refund")) return "Refunded";
+  if (payment.includes("unpaid") || payment.includes("pending") || Number(order.amount || 0) <= 0) return "Pending";
+  return "Paid";
+};
+
+const posFulfillmentStatus = (order) => {
+  const status = String(order.status || "").toLowerCase();
+  if (status.includes("refund") || status.includes("void")) return "Returned";
+  if (order.recipe === "held" || order.sync !== "live") return "Unfulfilled";
+  return "Fulfilled";
+};
+
+const posOrderMatchesFilter = (row, filter) => {
+  if (filter === "Needs action") return row.paymentStatus !== "Paid" || row.fulfillmentStatus !== "Fulfilled";
+  if (filter === "Recipe held") return row.recipe === "held";
+  if (filter === "Unpaid") return row.paymentStatus === "Pending";
+  if (filter === "Returns") return row.paymentStatus === "Refunded" || row.fulfillmentStatus === "Returned";
+  return true;
+};
+
+function PosStatusBadge({ children, tone = "default" }) {
+  const className = tone === "pos"
+    ? "badge badge-pos ecommerce-order-badge"
+    : tone === "crit"
+      ? "badge badge-crit ecommerce-order-badge"
+      : tone === "warn"
+        ? "badge badge-warn ecommerce-order-badge"
+        : "badge ecommerce-order-badge";
+  return (
+    <span className={className}>
+      <span className="ecommerce-order-badge-dot" />
+      {children}
+    </span>
+  );
+}
+
+function RecentPosOrdersTable({
+  orders,
+  kioskOptions,
+  paymentOptions,
+  kioskFilter,
+  setKioskFilter,
+  paymentFilter,
+  setPaymentFilter,
+  ar,
+  sourceDriven = false,
+}) {
+  const lang = ar ? "ar" : "en";
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [sortDirection, setSortDirection] = useState("desc");
+  const [pageIndex, setPageIndex] = useState(0);
+  const [selected, setSelected] = useState({});
+  const tableRows = useMemo(() => orders.map((order) => ({
+    ...order,
+    paymentStatus: posPaymentStatus(order),
+    fulfillmentStatus: posFulfillmentStatus(order),
+    items: `${arTerm(lang, order.product || "POS item")}${Number(order.qty || 0) > 1 ? ` x${order.qty}` : ""}`,
+    customer: `${arTerm(lang, order.kiosk || "Kiosk")} / ${arTerm(lang, order.cashier || "Cashier")}`,
+    totalLabel: fmtMoney(Number(order.amount || 0)),
+    dateLabel: sourceDriven && order.date
+      ? `${order.time || "--:--"} - ${order.date}`
+      : ar ? `${order.time || "--:--"} - 9 مايو 2026` : `${order.time || "--:--"} - May 9, 2026`,
+    sortValue: posOrderTimeValue(order.time),
+  })), [orders, sourceDriven]);
+  const filteredRows = useMemo(
+    () => tableRows.filter((row) => posOrderMatchesFilter(row, statusFilter)),
+    [tableRows, statusFilter],
+  );
+  const sortedRows = useMemo(() => [...filteredRows].sort((left, right) => (
+    sortDirection === "asc" ? left.sortValue - right.sortValue : right.sortValue - left.sortValue
+  )), [filteredRows, sortDirection]);
+  const pageCount = Math.max(1, Math.ceil(sortedRows.length / POS_ORDER_PAGE_SIZE));
+  const currentPage = Math.min(pageIndex, pageCount - 1);
+  const visibleRows = sortedRows.slice(currentPage * POS_ORDER_PAGE_SIZE, (currentPage + 1) * POS_ORDER_PAGE_SIZE);
+  const selectedCount = sortedRows.filter((row) => selected[row.id]).length;
+  const allPageSelected = visibleRows.length > 0 && visibleRows.every((row) => selected[row.id]);
+  const somePageSelected = visibleRows.some((row) => selected[row.id]);
+  const orderCountDescription = selectedCount > 0
+    ? (ar ? `${selectedCount} محدد` : `${selectedCount} ${selectedCount === 1 ? "order" : "orders"} selected`)
+    : (ar ? `${filteredRows.length.toLocaleString("en")} طلبات` : `${filteredRows.length.toLocaleString("en")} ${statusFilter === "All" ? "orders" : statusFilter.toLowerCase() + " orders"}`);
+  const pageNumbers = useMemo(() => {
+    if (pageCount <= 3) return Array.from({ length: pageCount }, (_, index) => index + 1);
+    const page = currentPage + 1;
+    if (page <= 2) return [1, 2, 3];
+    if (page >= pageCount - 1) return [pageCount - 2, pageCount - 1, pageCount];
+    return [page - 1, page, page + 1];
+  }, [currentPage, pageCount]);
+
+  useEffect(() => {
+    setPageIndex(0);
+  }, [statusFilter, kioskFilter, paymentFilter, sortDirection, orders.length]);
+
+  const toggleAllPageRows = (checked) => {
+    setSelected((current) => {
+      const next = { ...current };
+      visibleRows.forEach((row) => {
+        if (checked) next[row.id] = true;
+        else delete next[row.id];
+      });
+      return next;
+    });
+  };
+
+  const toggleRow = (rowId, checked) => {
+    setSelected((current) => {
+      const next = { ...current };
+      if (checked) next[rowId] = true;
+      else delete next[rowId];
+      return next;
+    });
+  };
+
+  return (
+    <div className="card ecommerce-orders-card">
+      <div className="ecommerce-orders-header">
+        <div>
+          <div className="ecommerce-orders-title">
+            {sourceDriven ? (ar ? "طلبات POS من المصدر" : "Source POS orders") : (ar ? "طلبات POS تجريبية" : "Demo POS orders")}
+          </div>
+          <div className="ecommerce-orders-description">{orderCountDescription}</div>
+        </div>
+        <div className="ecommerce-orders-actions">
+          <button aria-label={ar ? "فتح الطلبات" : "Open orders"} className="ecommerce-icon-button" type="button">
+            <Icon name="chevRight" size={14} />
+          </button>
+          <button aria-label={ar ? "تنزيل الطلبات" : "Download orders"} className="ecommerce-icon-button" type="button">
+            <Icon name="download" size={14} />
+          </button>
+          <button aria-label={ar ? "إجراءات طلب إضافية" : "More order actions"} className="ecommerce-icon-button" type="button">
+            <Icon name="dots" size={14} />
+          </button>
+        </div>
+      </div>
+
+      <div className="ecommerce-orders-controls">
+        <div className="ecommerce-toggle-group" role="tablist" aria-label={ar ? "حالة الطلب" : "Order status"}>
+          {POS_ORDER_FILTERS.map((filter) => (
+            <button
+              aria-selected={statusFilter === filter}
+              className={statusFilter === filter ? "on" : ""}
+              key={filter}
+              onClick={() => setStatusFilter(filter)}
+              role="tab"
+              type="button"
+            >
+              {arTerm(lang, filter)}
+            </button>
+          ))}
+        </div>
+        <div className="ecommerce-orders-filter-row">
+          <select className="input ecommerce-orders-select" value={kioskFilter} onChange={(event) => setKioskFilter(event.target.value)}>
+            {kioskOptions.map((kiosk) => <option key={kiosk} value={kiosk}>{kiosk === "all" ? (ar ? "كل الأكشاك" : "All kiosks") : arTerm(lang, kiosk)}</option>)}
+          </select>
+          <select className="input ecommerce-orders-select" value={paymentFilter} onChange={(event) => setPaymentFilter(event.target.value)}>
+            {paymentOptions.map((payment) => <option key={payment} value={payment}>{payment === "all" ? (ar ? "كل طرق الدفع" : "All payments") : arTerm(lang, payment)}</option>)}
+          </select>
+          <button
+            aria-label={ar ? "ترتيب الطلبات حسب الوقت" : "Sort orders by time"}
+            className="ecommerce-icon-button"
+            onClick={() => setSortDirection((direction) => direction === "asc" ? "desc" : "asc")}
+            type="button"
+          >
+            <Icon name={sortDirection === "asc" ? "chevUp" : "chevDown"} size={14} />
+          </button>
+        </div>
+      </div>
+
+      <div className="ecommerce-orders-table-wrap">
+        <table className="ecommerce-orders-table">
+          <thead>
+            <tr>
+              <th scope="col" className="ecommerce-orders-select-col">
+                <input
+                  aria-label={ar ? "تحديد كل الطلبات" : "Select all orders"}
+                  checked={allPageSelected}
+                  ref={(node) => {
+                    if (node) node.indeterminate = !allPageSelected && somePageSelected;
+                  }}
+                  type="checkbox"
+                  onChange={(event) => toggleAllPageRows(event.target.checked)}
+                />
+              </th>
+              <th scope="col">{ar ? "الطلب" : "Order"}</th>
+              <th scope="col">{ar ? "الكشك / الكاشير" : "Kiosk / cashier"}</th>
+              <th scope="col">{ar ? "الحالة" : "Status"}</th>
+              <th scope="col">{ar ? "الإجمالي" : "Total"}</th>
+              <th scope="col">{ar ? "الوقت" : "Date"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "إجراءات" : "Actions"}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleRows.length ? visibleRows.map((row) => {
+              const paymentTone = row.paymentStatus === "Paid" ? "pos" : row.paymentStatus === "Refunded" ? "crit" : "warn";
+              const fulfillmentTone = row.fulfillmentStatus === "Fulfilled" ? "pos" : "crit";
+              return (
+                <tr key={row.id} data-state={selected[row.id] ? "selected" : undefined}>
+                  <td className="ecommerce-orders-select-col">
+                    <input
+                      aria-label={ar ? `تحديد الطلب ${row.id}` : `Select order ${row.id}`}
+                      checked={Boolean(selected[row.id])}
+                      type="checkbox"
+                      onChange={(event) => toggleRow(row.id, event.target.checked)}
+                    />
+                  </td>
+                  <td>
+                    <div className="ecommerce-order-primary">{row.id}</div>
+                    <div className="ecommerce-order-muted">{row.items}</div>
+                    <div className="ecommerce-order-muted">{arTerm(lang, row.payment)}</div>
+                  </td>
+                  <td>
+                    <div>{arTerm(lang, row.kiosk)}</div>
+                    <div className="ecommerce-order-muted">{arTerm(lang, row.cashier)} - {row.kioskId}</div>
+                  </td>
+                  <td>
+                    <div className="ecommerce-order-statuses">
+                      <PosStatusBadge tone={paymentTone}>{arTerm(lang, row.paymentStatus)}</PosStatusBadge>
+                      <PosStatusBadge tone={fulfillmentTone}>{arTerm(lang, row.fulfillmentStatus)}</PosStatusBadge>
+                    </div>
+                  </td>
+                  <td className="t-num">{row.totalLabel}</td>
+                  <td className="ecommerce-order-muted">{row.dateLabel}</td>
+                  <td>
+                    <details className="ecommerce-order-actions-menu">
+                      <summary aria-label={ar ? "فتح إجراءات الطلب" : "Open order actions"}>
+                        <Icon name="dots" size={14} />
+                      </summary>
+                      <div className="ecommerce-order-menu">
+                        <button type="button">{ar ? "عرض الطلب" : "View order"}</button>
+                        <button type="button">{ar ? "نسخ رقم الطلب" : "Copy order ID"}</button>
+                        <button type="button">{ar ? "مراجعة الوصفة" : "Review recipe"}</button>
+                      </div>
+                    </details>
+                  </td>
+                </tr>
+              );
+            }) : (
+              <tr>
+                <td className="ecommerce-orders-empty" colSpan={7}>{ar ? "لا توجد طلبات." : "No orders found."}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="ecommerce-orders-footer">
+        <p>{ar ? `عرض ${visibleRows.length} من ${filteredRows.length.toLocaleString("en")} طلبات` : `Viewing ${visibleRows.length} out of ${filteredRows.length.toLocaleString("en")} orders`}</p>
+        <div className="ecommerce-pagination">
+          <button disabled={currentPage === 0} onClick={() => setPageIndex((page) => Math.max(0, page - 1))} type="button">
+            {ar ? "السابق" : "Previous"}
+          </button>
+          {pageNumbers[0] > 1 && <span className="ecommerce-pagination-ellipsis">...</span>}
+          {pageNumbers.map((pageNumber) => (
+            <button
+              className={currentPage === pageNumber - 1 ? "on" : ""}
+              key={pageNumber}
+              onClick={() => setPageIndex(pageNumber - 1)}
+              type="button"
+            >
+              {pageNumber}
+            </button>
+          ))}
+          {pageNumbers[pageNumbers.length - 1] < pageCount && <span className="ecommerce-pagination-ellipsis">...</span>}
+          <button disabled={currentPage >= pageCount - 1} onClick={() => setPageIndex((page) => Math.min(pageCount - 1, page + 1))} type="button">
+            {ar ? "التالي" : "Next"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const closeInvestigationStatus = (close) => {
   if (close.status === "approved") return "Approved";
@@ -1520,39 +2761,39 @@ const odooClosingRows = (bootstrap) => {
     : canUseDemoFallback(bootstrap)
       ? MOCK.closings
       : [];
-  return rows.map((row) => ({
-    ...row,
-    stock: (row.stock || []).map((line) => ({ ...line, item: cleanDisplayName(line.item) })),
-    investigationStatus: row.investigationStatus || closeInvestigationStatus(row),
-    notes: row.notes || (row.status === "approved" ? "No exceptions." : "Awaiting manager note."),
-    recipePostingIssues: Number(row.recipePostingIssues || 0),
-    recipePostingIssueOrders: row.recipePostingIssueOrders || [],
-  }));
+  return rows.map((row) => {
+    const expectedCash = Number(row.expectedCash ?? row.expected_cash ?? 0);
+    const countedCash = row.countedCash ?? row.actualCash ?? row.actual_cash;
+    const cashVariance = row.cashVariance ?? row.cash_variance
+      ?? (countedCash == null ? null : Number(countedCash || 0) - expectedCash);
+    return {
+      ...row,
+      city: row.city || row.area || "",
+      sales: Number(row.sales ?? row.revenue ?? row.totalSales ?? row.amount_total ?? 0),
+      expectedCash,
+      countedCash: countedCash == null ? null : Number(countedCash || 0),
+      cashVariance,
+      digitalPayments: Number(row.digitalPayments ?? row.digital_payments ?? 0),
+      stock: (row.stock || []).map((line) => ({
+        ...line,
+        item: cleanDisplayName(line.item),
+        unit: line.unit || line.uom || "",
+        expected: Number(line.expected ?? line.expected_qty ?? 0),
+        actual: Number(line.actual ?? line.actual_qty ?? 0),
+        variance: Number(line.variance ?? 0),
+        value: Number(line.value ?? line.varianceValue ?? line.variance_value ?? 0),
+      })),
+      investigationStatus: row.investigationStatus || closeInvestigationStatus(row),
+      notes: row.notes || (row.status === "approved" ? "No exceptions." : "Awaiting manager note."),
+      recipePostingIssues: Number(row.recipePostingIssues || 0),
+      recipePostingIssueOrders: row.recipePostingIssueOrders || [],
+    };
+  });
 };
 
 const odooKioskStockReconciliationRows = (bootstrap, kiosk) => {
   const snapshot = unwrapOdoo(bootstrap);
   const base = snapshot || (canUseDemoFallback(bootstrap) ? MOCK : {});
-
-  const detailMap = base.kioskStockDetails || base.kiosk_stock_details || null;
-  if (detailMap && typeof detailMap === "object") {
-    const matchKey = Object.keys(detailMap).find((key) => matchesKiosk(key, kiosk));
-    const rows = matchKey ? detailMap[matchKey] : null;
-    if (Array.isArray(rows) && rows.length) {
-      return rows.slice(0, 12).map((row) => ({
-        item: row.item || "Stock item",
-        unit: row.unit || row.uom || "u",
-        opening: Number(row.opening || 0),
-        received: Number(row.received || 0),
-        consumed: Number(row.consumed || 0),
-        waste: Number(row.waste || 0),
-        expected: Number(row.expected || row.expected_qty || 0),
-        actual: Number(row.actual || row.actual_qty || 0),
-        variance: Number(row.variance || 0),
-        status: row.status || "ok",
-      }));
-    }
-  }
 
   const consumptionRows = (base.today?.consumption || []).filter((row) => matchesKiosk(row.kiosk, kiosk));
   const wasteRows = (base.today?.waste || []).filter((row) => matchesKiosk(row.kiosk, kiosk));
@@ -1568,19 +2809,29 @@ const odooKioskStockReconciliationRows = (bootstrap, kiosk) => {
     if (Math.abs(Number(variance || 0)) > 0 || Number(actual || 0) <= 5) return "watch";
     return "ok";
   };
+  const detailMap = base.kioskStockDetails || base.kiosk_stock_details || null;
+  let detailRows = null;
+  if (detailMap && typeof detailMap === "object") {
+    const matchKey = Object.keys(detailMap).find((key) => matchesKiosk(key, kiosk));
+    detailRows = matchKey ? detailMap[matchKey] : null;
+  }
 
   if (closing?.stock?.length) {
     return closing.stock.map((line) => {
-      const consumed = consumedFor(line.item);
-      const waste = wastedFor(line.item);
-      const expected = Number(line.expected || 0);
+      const detail = Array.isArray(detailRows)
+        ? detailRows.find((row) => matchesItem(row.item || row.name || row.product, line.item))
+        : null;
+      const consumed = detail ? Number(detail.consumed || 0) : consumedFor(line.item);
+      const waste = detail ? Number(detail.waste || 0) : wastedFor(line.item);
+      const received = detail ? Number(detail.received || 0) : 0;
+      const expected = Number(line.expected || detail?.expected || 0);
       const actual = Number(line.actual || 0);
       const variance = Number(line.variance || actual - expected || 0);
       return {
-        item: cleanDisplayName(line.item),
-        unit: line.unit || "u",
-        opening: Math.max(0, expected + consumed + waste),
-        received: 0,
+        item: detail?.name || cleanDisplayName(line.item),
+        unit: line.unit || detail?.unit || detail?.uom || "u",
+        opening: detail ? Number(detail.opening || 0) : Math.max(0, expected - received + consumed + waste),
+        received,
         consumed,
         waste,
         expected,
@@ -1589,6 +2840,21 @@ const odooKioskStockReconciliationRows = (bootstrap, kiosk) => {
         status: statusFor(variance, actual),
       };
     });
+  }
+
+  if (Array.isArray(detailRows) && detailRows.length) {
+    return detailRows.slice(0, 12).map((row) => ({
+        item: row.item || "Stock item",
+        unit: row.unit || row.uom || "u",
+        opening: Number(row.opening || 0),
+        received: Number(row.received || 0),
+        consumed: Number(row.consumed || 0),
+        waste: Number(row.waste || 0),
+        expected: Number(row.expected || row.expected_qty || 0),
+        actual: Number(row.actual || row.actual_qty || 0),
+        variance: Number(row.variance || 0),
+        status: row.status || "ok",
+    }));
   }
 
   const stockRows = (base.kiosk_stock_rows || [])
@@ -1728,6 +2994,25 @@ const odooKioskStockMovementRows = (bootstrap, kiosk) => {
     .slice(0, 80);
 };
 
+const odooPosSessionRows = (bootstrap, kiosk = null) => {
+  const snapshot = unwrapOdoo(bootstrap);
+  if (!snapshot) return [];
+  const rows = snapshot.today?.sessions || snapshot.sessions || snapshot.posSessions || snapshot.pos_sessions || [];
+  return rows
+    .filter((session) => !kiosk || matchesKiosk(session.kiosk || session.kioskName || session.kiosk_id || session.pos_config, kiosk))
+    .map((session, index) => ({
+      id: session.id || session.name || `session-${index + 1}`,
+      name: session.name || session.session || `Session ${index + 1}`,
+      kiosk: session.kiosk || session.kioskName || session.kiosk_id || session.pos_config || "-",
+      open: session.open || session.openedAt || session.start_at || session.startAt || session.start || "",
+      close: session.close || session.closedAt || session.stop_at || session.stopAt || session.stop || "",
+      cashier: session.cashier || session.user || session.openedBy || "-",
+      orders: Number(session.orders || session.orderCount || session.order_count || 0),
+      revenue: Number(session.revenue || session.amount_total || session.sales || 0),
+      status: String(session.status || session.state || "open"),
+    }));
+};
+
 const PAYMENT_GATEWAY_PROVIDERS = [
   { id: "cash", label: "Cash", category: "cash", kind: "cash_drawer", settlement: "drawer_count", aliases: ["cash"] },
   { id: "bank_card", label: "Bank card terminal", category: "card", kind: "card_terminal", settlement: "bank_batch", aliases: ["card", "visa", "mastercard", "master card", "terminal", "pos terminal"] },
@@ -1772,6 +3057,35 @@ const classifyPaymentProvider = (methodName, providerValue) => {
   if (normalized === "cash") return PAYMENT_GATEWAY_BY_ID.cash;
   const matched = PAYMENT_GATEWAY_ALIAS_ROWS.find(([alias]) => alias && normalized.includes(alias));
   return matched?.[1] || PAYMENT_GATEWAY_BY_ID.other_digital;
+};
+
+const paymentIconForProvider = (provider) => provider.category === "cash" ? "cash" : "card";
+
+const sourcePosPaymentOptions = (bootstrap, kioskId, ar = false) => {
+  const snapshot = unwrapOdoo(bootstrap);
+  const configs = snapshot?.pos_configs || [];
+  const kiosk = (snapshot?.kiosks || []).find((row) => matchesKiosk(row.kiosk_code || row.id || row.name, { id: kioskId, kiosk_code: kioskId }));
+  const configId = kiosk?.pos_config_id || kiosk?.posConfigId;
+  const configName = kiosk?.pos_config || kiosk?.posConfig;
+  const config = configs.find((row) => (
+    (configId && String(row.id) === String(configId))
+    || (configName && row.name === configName)
+  )) || (configs.length === 1 ? configs[0] : null);
+  return (config?.payment_methods || [])
+    .map((method) => {
+      const provider = classifyPaymentProvider(method.name, method.provider);
+      const label = method.name || provider.label;
+      const providerLabel = method.provider?.label || provider.label;
+      return {
+        id: label,
+        icon: paymentIconForProvider(provider),
+        label,
+        sub: ar ? `${providerLabel} · طريقة POS مهيأة` : `${providerLabel} · configured POS method`,
+        category: provider.category,
+        provider: provider.id,
+      };
+    })
+    .filter((option) => option.id);
 };
 
 const addPaymentToSplit = (split, methodName, amountValue, providerValue) => {
@@ -1845,11 +3159,13 @@ const paymentCategoryLabel = (category) => ({
   digital_other: "Other",
 }[category] || "Digital");
 
-const paymentGatewayRows = (payments) => {
-  const byProvider = new Map(PAYMENT_GATEWAY_PROVIDERS.map((provider) => [
-    provider.id,
-    { ...provider, provider: provider.id, amount: 0 },
-  ]));
+const paymentGatewayRows = (payments, includeCatalog = true) => {
+  const byProvider = new Map(includeCatalog
+    ? PAYMENT_GATEWAY_PROVIDERS.map((provider) => [
+      provider.id,
+      { ...provider, provider: provider.id, amount: 0 },
+    ])
+    : []);
   (payments?.by_provider || []).forEach((row) => {
     const providerId = row.provider || row.id;
     if (!providerId) return;
@@ -1869,7 +3185,7 @@ const paymentGatewayRows = (payments) => {
       amount: Number(row.amount || 0),
     });
   });
-  return [
+  const preferredOrder = [
     "zain_cash",
     "fib",
     "qi_card",
@@ -1880,7 +3196,11 @@ const paymentGatewayRows = (payments) => {
     "generic_qr",
     "manual_bank_transfer",
     "other_digital",
-  ].map((id) => byProvider.get(id)).filter(Boolean);
+  ];
+  return [
+    ...preferredOrder.map((id) => byProvider.get(id)).filter(Boolean),
+    ...Array.from(byProvider.values()).filter((row) => !preferredOrder.includes(row.provider || row.id)),
+  ];
 };
 
 const odooPaymentSplit = (bootstrap) => {
@@ -1937,7 +3257,12 @@ const odooTransferSuggestionRows = (bootstrap) => {
     qtyValue: Number(row.qty || 0),
     uom: row.uom || "",
     cover: row.cover || "<1 day",
-    reason: row.reason || "below safety stock",
+    reason: row.reason || "below configured reorder target",
+    actualQty: Number(row.actual_qty || 0),
+    targetQty: Number(row.target_qty || 0),
+    reorderQty: Number(row.reorder_qty || 0),
+    criticalQty: Number(row.critical_qty || 0),
+    stockPercent: Number(row.stock_percent || 0),
   }));
 };
 
@@ -2046,18 +3371,32 @@ const odooPurchaseOrderRows = (bootstrap) => {
       { po: "PO-2026-0509-009", supplier: "Najaf Fresh", invoice: "INV-NF-772", warehouse: "Baghdad Area Warehouse", items: "Oranges, lemons, mint", value: 1_840_000, status: "received" },
     ] : [];
   }
-  return rows.slice(0, 12).map((order) => ({
-    po: order.name || `PO-${order.id}`,
-    supplier: order.supplier || "Supplier",
-    invoice: order.invoice || order.vendor_bill || order.vendorBill || "-",
-    warehouse: order.warehouse || order.receiving_warehouse || "",
-    items: order.lines?.length
-      ? order.lines.slice(0, 3).map((line) => line.product).join(", ")
-      : "No lines",
-    value: Number(order.amount_total || 0),
-    status: order.receipt_state === "done" ? "received" : "created",
-    receiptState: order.receipt_state || "none",
-  }));
+  return rows.slice(0, 12).map((order) => {
+    const receiptState = String(order.receipt_state || order.receiptState || "").toLowerCase();
+    const status = receiptState === "done"
+      ? "received"
+      : receiptState === "partial"
+        ? "partial"
+        : order.state || "created";
+    return {
+      po: order.name || `PO-${order.id}`,
+      supplier: order.supplier || "Supplier",
+      invoice: order.invoice || order.vendor_bill || order.vendorBill || "-",
+      warehouse: order.warehouse || order.receiving_warehouse || "",
+      items: order.lines?.length
+        ? order.lines.slice(0, 3).map((line) => {
+          const orderedRaw = line.orderedQty ?? line.ordered_qty ?? line.qty ?? 0;
+          const receivedRaw = line.receivedQty ?? line.received_qty ?? 0;
+          const ordered = Number(orderedRaw).toLocaleString("en", { maximumFractionDigits: 2 });
+          const received = Number(receivedRaw).toLocaleString("en", { maximumFractionDigits: 2 });
+          return `${line.product} ${received}/${ordered}${line.uom ? ` ${line.uom}` : ""} received`;
+        }).join(", ")
+        : "No lines",
+      value: Number(order.amount_total || 0),
+      status,
+      receiptState: receiptState || "none",
+    };
+  });
 };
 
 const odooSupplierRows = (bootstrap) => {
@@ -2116,15 +3455,29 @@ const estimatePurchaseRate = (item) => {
   return 7_500;
 };
 
+const purchaseRateForInventory = (item, allowEstimate = true) => {
+  const explicit = Number(item?.unitCost || item?.standard_price || item?.rate || 0);
+  if (explicit > 0) return explicit;
+  return allowEstimate ? estimatePurchaseRate(item) : 0;
+};
+
 const reorderQtyFor = (item) => (
-  Math.max(Number(item?.reorder || 0) * 2 - Number(item?.stock || 0), Number(item?.reorder || 0), 1)
+  Math.max(Number(item?.reorder || 0) * 2 - Number(item?.stock || 0), Number(item?.reorder || 0), 0)
 );
 
-const purchaseLineFromInventory = (item) => ({
+const purchaseDefaultQtyFor = (item, allowEstimate = true) => {
+  const reorderQty = reorderQtyFor(item);
+  if (reorderQty > 0) return Math.round(reorderQty * 100) / 100;
+  const sourceDefault = Number(item?.defaultPurchaseQty || item?.default_purchase_qty || item?.purchaseQty || item?.purchase_qty || 0);
+  if (sourceDefault > 0) return Math.round(sourceDefault * 100) / 100;
+  return allowEstimate ? 1 : "";
+};
+
+const purchaseLineFromInventory = (item, allowEstimate = true) => ({
   item: item?.item || "",
-  qty: Math.round(reorderQtyFor(item) * 100) / 100,
+  qty: purchaseDefaultQtyFor(item, allowEstimate),
   unit: item?.unit || "",
-  rate: estimatePurchaseRate(item),
+  rate: purchaseRateForInventory(item, allowEstimate),
 });
 
 const purchaseLineTotal = (line) => Number(line.qty || 0) * Number(line.rate || 0);
@@ -2133,11 +3486,30 @@ const purchaseLineSummary = (lines) => (lines || [])
   .filter((line) => line.item)
   .map((line) => `${line.item} ${Number(line.qty || 0).toLocaleString("en", { maximumFractionDigits: 2 })}${line.unit ? ` ${line.unit}` : ""}`)
   .join(", ");
+const purchaseReceiptLineSummary = (lines, receiptState = "none") => {
+  const completed = ["done", "received"].includes(String(receiptState || "").toLowerCase());
+  return (lines || [])
+    .filter((line) => line.item)
+    .map((line) => {
+      const ordered = Number(line.qty || 0);
+      const received = completed ? ordered : 0;
+      return `${line.item} ${received.toLocaleString("en", { maximumFractionDigits: 2 })}/${ordered.toLocaleString("en", { maximumFractionDigits: 2 })}${line.unit ? ` ${line.unit}` : ""} received`;
+    })
+    .join(", ");
+};
+const newTransferLine = (item = "", qty = "", unit = "") => ({ item, qty, unit });
+const cleanTransferLines = (lines) => (lines || [])
+  .filter((line) => line.item && Number(line.qty || 0) > 0)
+  .map((line) => ({
+    item: line.item,
+    qty: Number(line.qty || 0),
+    unit: line.unit || "",
+  }));
 
 const purchaseStatusClass = (status) => {
   const normalized = String(status || "").toLowerCase();
   if (["done", "received"].includes(normalized)) return "badge-pos";
-  if (["created", "draft", "receiving", "purchase", "approved"].includes(normalized)) return "badge-warn";
+  if (["created", "draft", "receiving", "purchase", "approved", "partial"].includes(normalized)) return "badge-warn";
   if (["cancel", "cancelled", "rejected"].includes(normalized)) return "badge-crit";
   return "";
 };
@@ -2145,7 +3517,7 @@ const purchaseStatusClass = (status) => {
 const nextPurchaseAction = (status) => {
   const normalized = String(status || "created").toLowerCase();
   if (["created", "draft", "approved", "purchase"].includes(normalized)) return { label: "Receive", action: "receive", next: "received" };
-  if (normalized === "receiving") return { label: "Complete", action: "receive", next: "received" };
+  if (normalized === "receiving" || normalized === "partial") return { label: "Complete", action: "receive", next: "received" };
   return null;
 };
 
@@ -2154,11 +3526,12 @@ const nextTransferAction = (status) => {
   if (normalized === "draft") return { label: "Approve", action: "approve", next: "approved" };
   if (normalized === "approved" || normalized === "confirmed" || normalized === "waiting") return { label: "Pick", action: "pick", next: "picked" };
   if (normalized === "picked") return { label: "Dispatch", action: "dispatch", next: "dispatched" };
+  if (normalized === "dispatched" || normalized === "partial") return { label: "Receive", action: "receive", next: "received" };
   return null;
 };
 
 const isDispatchedTransfer = (status) => String(status || "").toLowerCase() === "dispatched";
-const isReceivedTransfer = (status) => ["received", "done"].includes(String(status || "").toLowerCase());
+const isReceivedTransfer = (status) => ["received", "done", "completed"].includes(String(status || "").toLowerCase());
 
 const transferStatusClass = (status) => {
   const normalized = String(status || "").toLowerCase();
@@ -2214,7 +3587,18 @@ const HR_ROLE_LABELS = {
   accountant: "Accountant",
   other: "Other",
 };
+const HR_ROLE_LABELS_AR = {
+  any: "أي دور",
+  cashier: "كاشير",
+  barista: "باريستا",
+  supervisor: "مشرف",
+  warehouse: "مستودع",
+  manager: "مدير",
+  accountant: "محاسب",
+  other: "أخرى",
+};
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const WEEKDAY_LABELS_AR = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"];
 
 const normalizeHrRole = (role) => {
   const normalized = String(role || "").trim().toLowerCase();
@@ -2223,7 +3607,11 @@ const normalizeHrRole = (role) => {
   return HR_ROLE_LABELS[normalized] ? normalized : "other";
 };
 
-const hrRoleLabel = (role) => HR_ROLE_LABELS[normalizeHrRole(role)] || "Other";
+const hrRoleLabel = (role, lang = "en") => (
+  lang === "ar"
+    ? HR_ROLE_LABELS_AR[normalizeHrRole(role)] || HR_ROLE_LABELS_AR.other
+    : HR_ROLE_LABELS[normalizeHrRole(role)] || "Other"
+);
 
 const odooHrSnapshot = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
@@ -2262,13 +3650,154 @@ const timeToHour = (value) => {
 
 const todayIsoDate = () => new Date().toISOString().slice(0, 10);
 
+const rosterDateFormatter = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short" });
+const rosterDateFormatterAr = new Intl.DateTimeFormat("ar-IQ", { day: "2-digit", month: "short" });
+
+const dateFromIso = (value) => {
+  const parsed = new Date(`${value || todayIsoDate()}T12:00:00`);
+  return Number.isNaN(parsed.getTime()) ? new Date(`${todayIsoDate()}T12:00:00`) : parsed;
+};
+
+const isoFromDate = (date) => date.toISOString().slice(0, 10);
+
+const addDaysIso = (value, days) => {
+  const date = dateFromIso(value);
+  date.setDate(date.getDate() + days);
+  return isoFromDate(date);
+};
+
+const startOfWeekIso = (value = todayIsoDate()) => {
+  const date = dateFromIso(value);
+  const dayOffset = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - dayOffset);
+  return isoFromDate(date);
+};
+
+const weekDaysFromStart = (weekStart) => WEEKDAY_LABELS.map((label, index) => {
+  const date = addDaysIso(weekStart, index);
+  return { label, date, shortDate: rosterDateFormatter.format(dateFromIso(date)) };
+});
+
+const weekDaysFromStartLang = (weekStart, lang) => (lang === "ar" ? WEEKDAY_LABELS_AR : WEEKDAY_LABELS).map((label, index) => {
+  const date = addDaysIso(weekStart, index);
+  const formatter = lang === "ar" ? rosterDateFormatterAr : rosterDateFormatter;
+  return { label, date, shortDate: formatter.format(dateFromIso(date)) };
+});
+
+const weekRangeLabel = (weekStart) => {
+  const start = rosterDateFormatter.format(dateFromIso(weekStart));
+  const end = rosterDateFormatter.format(dateFromIso(addDaysIso(weekStart, 6)));
+  return `${start} - ${end}`;
+};
+
+const weekRangeLabelLang = (weekStart, lang) => {
+  const formatter = lang === "ar" ? rosterDateFormatterAr : rosterDateFormatter;
+  const start = formatter.format(dateFromIso(weekStart));
+  const end = formatter.format(dateFromIso(addDaysIso(weekStart, 6)));
+  return `${start} - ${end}`;
+};
+
+const kioskNameForRoster = (kioskId, kioskOptions = []) => {
+  const liveOption = kioskOptions.find((kiosk) => String(kiosk.id) === String(kioskId));
+  if (liveOption?.label) return liveOption.label;
+  const demoKiosk = MOCK.kiosks.find((kiosk) => String(kiosk.id) === String(kioskId));
+  return demoKiosk?.name || kioskId || "Unassigned kiosk";
+};
+
+const makeDemoWeekShifts = (weekStart) => ([
+  ["Maya Ahmed", "K-01", 0, "cashier", 8, 16, "confirmed", "Morning cash drawer owner"],
+  ["Yusuf Saleh", "K-02", 0, "barista", 10, 18, "planned", "Juice and coffee station"],
+  ["Nour Ibrahim", "K-03", 1, "cashier", 8, 15, "planned", "Mall morning cover"],
+  ["Omar Khaled", "K-01", 1, "supervisor", 14, 22, "confirmed", "Evening floor check"],
+  ["Maya Ahmed", "K-01", 2, "cashier", 8, 16, "planned", "Repeat morning shift"],
+  ["Sara Younis", "K-04", 2, "barista", 12, 18, "planned", "Short return shift"],
+  ["Karim Fahmy", "K-07", 3, "cashier", 9, 17, "planned", "Variance watch"],
+  ["Yusuf Saleh", "K-02", 3, "barista", 14, 22, "confirmed", "Evening rush"],
+  ["Nour Ibrahim", "K-03", 4, "cashier", 10, 18, "planned", "Weekend prep"],
+  ["Omar Khaled", "K-02", 5, "supervisor", 9, 17, "confirmed", "Weekend supervisor"],
+  ["Maya Ahmed", "K-01", 5, "cashier", 12, 20, "planned", "Saturday peak"],
+  ["Rashid Al-Tikriti", "Central", 6, "warehouse", 7, 13, "planned", "Sunday replenishment"],
+]).map(([employee, kiosk, dayOffset, role, startHour, endHour, state, note], index) => ({
+  id: `demo-week-${weekStart}-${index + 1}`,
+  employee,
+  staff: employee,
+  employeeId: employee,
+  kiosk,
+  kioskName: kioskNameForRoster(kiosk),
+  date: addDaysIso(weekStart, dayOffset),
+  role,
+  roleLabel: hrRoleLabel(role),
+  startHour,
+  endHour,
+  time: `${hourToTime(startHour)}-${hourToTime(endHour)}`,
+  plannedHours: endHour - startHour,
+  state,
+  note,
+}));
+
+const makeDemoKioskWeekShifts = (kiosk, weekStart, staffRows = MOCK.staff) => {
+  const base = makeDemoWeekShifts(weekStart).filter((shift) => matchesKiosk(shift.kiosk, kiosk));
+  if (base.length) return base.map((shift) => ({ ...shift, kioskName: kiosk.name || shift.kioskName }));
+  const kioskId = kiosk?.id || kiosk?.kiosk_code || "K-01";
+  const kioskName = kiosk?.name || kioskId;
+  const assigned = staffRows.filter((person) => matchesKiosk(person.kiosk, kiosk));
+  const fallbackStaff = assigned.length
+    ? assigned
+    : [
+        { name: "Maya Ahmed", role: "Cashier" },
+        { name: "Yusuf Saleh", role: "Barista" },
+        { name: "Omar Khaled", role: "Supervisor" },
+      ];
+  const roleFor = (person, fallback) => normalizeHrRole(person.role || fallback);
+  return weekDaysFromStart(weekStart).flatMap((day, dayIndex) => {
+    const morning = fallbackStaff[dayIndex % fallbackStaff.length];
+    const evening = fallbackStaff[(dayIndex + 1) % fallbackStaff.length];
+    return [
+      {
+        id: `demo-kiosk-${kioskId}-${day.date}-morning`,
+        employee: morning.name,
+        staff: morning.name,
+        employeeId: morning.name,
+        kiosk: kioskId,
+        kioskName,
+        date: day.date,
+        role: roleFor(morning, "Cashier"),
+        roleLabel: hrRoleLabel(morning.role || "Cashier"),
+        startHour: 8,
+        endHour: 16,
+        time: "08:00-16:00",
+        plannedHours: 8,
+        state: dayIndex % 3 === 0 ? "confirmed" : "planned",
+        note: "Morning kiosk coverage",
+      },
+      {
+        id: `demo-kiosk-${kioskId}-${day.date}-evening`,
+        employee: evening.name,
+        staff: evening.name,
+        employeeId: evening.name,
+        kiosk: kioskId,
+        kioskName,
+        date: day.date,
+        role: roleFor(evening, "Barista"),
+        roleLabel: hrRoleLabel(evening.role || "Barista"),
+        startHour: 15,
+        endHour: 23,
+        time: "15:00-23:00",
+        plannedHours: 8,
+        state: "planned",
+        note: "Evening sales and close support",
+      },
+    ];
+  });
+};
+
 const odooWasteRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
   const rows = snapshot?.today?.waste || [];
   if (!rows.length) return canUseDemoFallback(bootstrap) ? MOCK.waste : [];
   return rows.slice(0, 50).map((row, index) => ({
     id: `${row.kiosk || "waste"}-${index}`,
-    kiosk: row.kiosk || "POS kiosk",
+    kiosk: row.kioskName || row.kiosk_name || row.kiosk || "POS kiosk",
     item: row.product || row.item || "Waste item",
     qty: Number(row.qty || 0),
     cost: Number(row.estimated_cost || 0),
@@ -2276,6 +3805,41 @@ const odooWasteRows = (bootstrap) => {
     time: row.create_date ? String(row.create_date).slice(11, 16) : "--:--",
     flagged: Number(row.estimated_cost || 0) > 50_000 || row.reason === "unknown_loss",
   }));
+};
+
+const wasteReasonRowsFor = (wasteRows) => {
+  const byReason = new Map();
+  wasteRows.forEach((row) => {
+    const reason = cleanDisplayName(row.reason || "Recorded waste");
+    const current = byReason.get(reason) || {
+      reason,
+      value: 0,
+      category: row.reason ? "Verified waste" : "Recorded waste",
+    };
+    current.value += Number(row.cost || 0);
+    byReason.set(reason, current);
+  });
+  return Array.from(byReason.values()).sort((a, b) => Number(b.value || 0) - Number(a.value || 0));
+};
+
+const topWastePattern = (wasteRows, wasteReasonRows, sourceDriven) => {
+  if (!sourceDriven) {
+    return {
+      title: "Demo waste pattern",
+      body: "Demo rows are isolated from live mode. Connect the source engine to show only recorded Bayaan waste entries and variance-linked reasons.",
+    };
+  }
+  if (!wasteRows.length) {
+    return {
+      title: "No verified waste rows loaded",
+      body: "This live view stays empty until the source engine returns waste entries, shift-close variance lines, or source-backed loss records.",
+    };
+  }
+  const top = wasteReasonRows[0];
+  return {
+    title: `${top?.reason || "Recorded waste"} is the largest verified waste reason`,
+    body: `${wasteRows.length} source-backed waste entries are loaded. Total tracked value for this reason is ${fmtMoney(Number(top?.value || 0))}.`,
+  };
 };
 
 const paymentMethodSignal = (payments) => {
@@ -2303,6 +3867,41 @@ const paymentMethodRows = (payments) => ([
   ["Manual digital", Number(payments?.manual_digital || 0)],
   ["Other digital", Number(payments?.digital_other || 0)],
 ]);
+
+const FISCAL_MONTH_LABELS = ["Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May"];
+
+const demoFiscalSalesRows = () => {
+  const demoSales = [
+    1_020_000_000,
+    1_110_000_000,
+    1_060_000_000,
+    1_240_000_000,
+    1_310_000_000,
+    1_420_000_000,
+    1_560_000_000,
+    1_510_000_000,
+    1_690_000_000,
+    1_740_000_000,
+    1_880_000_000,
+    1_960_000_000,
+  ];
+  return FISCAL_MONTH_LABELS.map((month, index) => ({ month, sales: demoSales[index] }));
+};
+
+const fiscalSalesRowsFromSummary = (summary, allowDemoFallback = false) => {
+  const liveRows = summary?.annualSalesFlow || summary?.salesFlowMonths || summary?.monthlySales;
+  if (Array.isArray(liveRows) && liveRows.length) {
+    return liveRows.slice(-12).map((row, index) => ({
+      month: row.month || row.label || FISCAL_MONTH_LABELS[index % FISCAL_MONTH_LABELS.length],
+      sales: Number(row.sales || row.revenue || row.total || 0),
+    }));
+  }
+  return allowDemoFallback ? demoFiscalSalesRows() : [];
+};
+
+const fiscalSalesTargetFromSummary = (summary, allowDemoFallback = false) => Number(
+  summary?.annualSalesTarget || summary?.salesTargetYear || (allowDemoFallback ? 18_750_000_000 : 0),
+);
 
 const insightSourceMeta = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
@@ -2336,21 +3935,39 @@ const insightSourceMeta = (bootstrap) => {
     };
   }
   const rows = snapshot?.meta?.rows_returned;
+  const hrCiteParts = [];
+  if (Number(counts.hrEmployeeRows || 0) > 0) hrCiteParts.push(`${counts.hrEmployeeRows} HR employees`);
+  if (Number(counts.hrAttendanceRows || 0) > 0) hrCiteParts.push(`${counts.hrAttendanceRows} attendance rows`);
+  if (Number(counts.payrollAdjustmentRows || 0) > 0) hrCiteParts.push(`${counts.payrollAdjustmentRows} payroll adjustments`);
+  if (Number(counts.payrollRunRows || 0) > 0) hrCiteParts.push(`${counts.payrollRunRows} payroll runs`);
+  if (Number(counts.operatingExpenseRows || 0) > 0) hrCiteParts.push(`${counts.operatingExpenseRows} operating expenses`);
+  const cite = [
+    `${counts.orders || 0} orders`,
+    `${counts.consumptionRows || 0} ledger rows`,
+    `${counts.closingRows || 0} closes`,
+    ...hrCiteParts,
+  ].join(", ");
+  const chips = [
+    ["orders", counts.orders || 0],
+    ["payments", counts.payments || 0],
+    ["ledger", counts.consumptionRows || 0],
+    ["waste", counts.wasteRows || 0],
+    ["closes", counts.closingRows || 0],
+  ];
+  if (Number(counts.hrEmployeeRows || 0) > 0) chips.push(["HR", counts.hrEmployeeRows || 0]);
+  if (Number(counts.hrAttendanceRows || 0) > 0) chips.push(["attendance", counts.hrAttendanceRows || 0]);
+  if (Number(counts.payrollAdjustmentRows || 0) > 0) chips.push(["adjustments", counts.payrollAdjustmentRows || 0]);
+  if (Number(counts.payrollRunRows || 0) > 0) chips.push(["payroll runs", counts.payrollRunRows || 0]);
+  if (Number(counts.operatingExpenseRows || 0) > 0) chips.push(["expenses", counts.operatingExpenseRows || 0]);
   return {
     live: true,
-    cite: `${counts.orders || 0} orders, ${counts.consumptionRows || 0} ledger rows, ${counts.closingRows || 0} closes`,
+    cite,
     header: "Verified aggregate sources",
     budget: "Daily summaries tier - compact aggregate snapshot",
     window: rows
       ? `Drill-down window: ${rows.orders || 0} orders, ${rows.consumption || 0} ledger, ${rows.waste || 0} waste rows returned`
       : "Drill-down window capped by server limits",
-    chips: [
-      ["orders", counts.orders || 0],
-      ["payments", counts.payments || 0],
-      ["ledger", counts.consumptionRows || 0],
-      ["waste", counts.wasteRows || 0],
-      ["closes", counts.closingRows || 0],
-    ],
+    chips,
   };
 };
 
@@ -2363,58 +3980,92 @@ const payrollExpenseForPeriod = (period = "Daily") => {
   return Math.round(monthlyPayroll / 30);
 };
 
+const sourceNetAfterPayroll = (metrics) => {
+  if (metrics?.netProfitAfterPayroll != null) return Number(metrics.netProfitAfterPayroll || 0);
+  if (!isFiniteNumber(metrics?.netProfit) || !isFiniteNumber(metrics?.payroll)) return null;
+  const operatingExpenses = isFiniteNumber(metrics?.operatingExpenses) ? Number(metrics.operatingExpenses) : 0;
+  return Number(metrics.netProfit) - Number(metrics.payroll) - operatingExpenses;
+};
+
 const odooReportMetrics = (bootstrap, period = "Daily") => {
   const snapshot = unwrapOdoo(bootstrap);
   const summary = odooSummary(bootstrap);
   const liveOnly = isLiveOnlyPayload(bootstrap);
+  const sourceDriven = isSourceDrivenPayload(bootstrap);
   const periodKey = String(period || "Daily").toLowerCase();
   const periodSummary = summary?.reportPeriods?.[periodKey];
   if (periodSummary) {
     const payments = periodSummary.payments || { cash: 0, digital: 0 };
-    return {
-      revenue: Number(periodSummary.revenue || 0),
-      cogs: Number(periodSummary.cogs || 0),
-      waste: Number(periodSummary.wasteCost || 0),
-      payroll: Number(periodSummary.payrollExpense || (liveOnly ? 0 : payrollExpenseForPeriod(period))),
-      netProfit: Math.max(0, Number(periodSummary.netProfit || 0)),
-      cash: Number(periodSummary.cashExpected || payments.cash || 0),
+    const payroll = periodSummary.payrollExpense != null
+      ? Number(periodSummary.payrollExpense)
+      : (liveOnly ? null : payrollExpenseForPeriod(period));
+    const operatingExpenses = Number(periodSummary.operatingExpenses || 0);
+    const netProfit = Number(periodSummary.netProfit || 0);
+      return {
+        revenue: Number(periodSummary.revenue || 0),
+        cogs: Number(periodSummary.cogs || 0),
+        waste: Number(periodSummary.wasteCost || 0),
+        cashVariance: Number(periodSummary.cashVariance || 0),
+        stockVarianceValue: Number(periodSummary.stockVarianceValue || 0),
+        varianceImpact: Number(periodSummary.varianceImpact || 0),
+        payroll,
+        operatingExpenses,
+        netProfit,
+        netProfitAfterPayroll: periodSummary.netProfitAfterPayroll != null
+          ? Number(periodSummary.netProfitAfterPayroll || 0)
+          : (payroll == null ? null : netProfit - Number(payroll) - operatingExpenses),
+        cash: Number(periodSummary.cashExpected || payments.cash || 0),
       digital: Number(periodSummary.digitalPayments || payments.digital || 0),
       paymentSignal: paymentMethodSignal(payments),
       paymentRows: paymentMethodRows(payments),
-      gatewayRows: paymentGatewayRows(payments),
+      gatewayRows: paymentGatewayRows(payments, !sourceDriven),
       sourceCounts: periodSummary.sourceCounts || {},
     };
   }
   if (summary?.totals) {
     const payments = summary.payments || { cash: 0, digital: 0 };
-    return {
-      revenue: Number(summary.totals.salesToday || 0),
-      cogs: Number(summary.totals.cogs || 0),
-      waste: Number(summary.totals.wasteCost || 0),
-      payroll: Number(summary.totals.payrollExpense || (liveOnly ? 0 : payrollExpenseForPeriod(period))),
-      netProfit: Math.max(0, Number(summary.totals.profitEstimate || 0)),
-      cash: Number(payments.cash || 0),
+    const payroll = summary.totals.payrollExpense != null
+      ? Number(summary.totals.payrollExpense)
+      : (liveOnly ? null : payrollExpenseForPeriod(period));
+    const operatingExpenses = Number(summary.totals.operatingExpenses || snapshot?.hr?.summary?.operatingExpenses || 0);
+    const netProfit = Number(summary.totals.profitEstimate || 0);
+      return {
+        revenue: Number(summary.totals.salesToday || 0),
+        cogs: Number(summary.totals.cogs || 0),
+        waste: Number(summary.totals.wasteCost || 0),
+        cashVariance: Number(summary.totals.cashVariance || 0),
+        stockVarianceValue: Number(summary.totals.stockVarianceValue || 0),
+        varianceImpact: Number(summary.totals.varianceImpact || 0),
+        payroll,
+        operatingExpenses,
+        netProfit,
+        netProfitAfterPayroll: summary.totals.netProfitAfterPayroll != null
+          ? Number(summary.totals.netProfitAfterPayroll || 0)
+          : (payroll == null ? null : netProfit - Number(payroll) - operatingExpenses),
+        cash: Number(payments.cash || 0),
       digital: Number(payments.digital || 0),
       paymentSignal: paymentMethodSignal(payments),
       paymentRows: paymentMethodRows(payments),
-      gatewayRows: paymentGatewayRows(payments),
+      gatewayRows: paymentGatewayRows(payments, !sourceDriven),
       sourceCounts: summary.sourceCounts || {},
     };
   }
   const orders = snapshot?.today?.orders || [];
-  if (!orders.length && liveOnly) {
+  if (!orders.length && sourceDriven) {
     const emptyPayments = finalizePaymentSplit(createPaymentSplit());
     return {
       revenue: 0,
       cogs: 0,
       waste: 0,
-      payroll: 0,
+      payroll: liveOnly ? null : 0,
+      operatingExpenses: 0,
       netProfit: 0,
+      netProfitAfterPayroll: liveOnly ? null : 0,
       cash: 0,
       digital: 0,
       paymentSignal: "no verified payments",
       paymentRows: paymentMethodRows(emptyPayments),
-      gatewayRows: paymentGatewayRows(emptyPayments),
+      gatewayRows: paymentGatewayRows(emptyPayments, false),
       sourceCounts: { orders: 0, payments: 0, consumptionRows: 0, wasteRows: 0, closingRows: 0 },
     };
   }
@@ -2425,12 +4076,14 @@ const odooReportMetrics = (bootstrap, period = "Daily") => {
       cogs: 489_000,
       waste: 10_240,
       payroll: payrollExpenseForPeriod(period),
+      operatingExpenses: 0,
       netProfit: 326_000,
+      netProfitAfterPayroll: 326_000 - payrollExpenseForPeriod(period),
       cash: demoPayments.cash,
       digital: demoPayments.digital,
       paymentSignal: paymentMethodSignal(demoPayments),
       paymentRows: paymentMethodRows(demoPayments),
-      gatewayRows: paymentGatewayRows(demoPayments),
+      gatewayRows: paymentGatewayRows(demoPayments, true),
       sourceCounts: { orders: 3142, payments: 3142, consumptionRows: 11420, wasteRows: 178, closingRows: 5 },
     };
   }
@@ -2439,17 +4092,21 @@ const odooReportMetrics = (bootstrap, period = "Daily") => {
   const cogs = (snapshot.today?.consumption || []).reduce((sum, row) => sum + Number(row.cost || 0), 0);
   const waste = (snapshot.today?.waste || []).reduce((sum, row) => sum + Number(row.estimated_cost || 0), 0);
   const payments = odooPaymentSplit(bootstrap) || { cash: 0, digital: 0 };
+  const payroll = liveOnly ? null : payrollExpenseForPeriod(period);
+  const netProfit = revenue - cogs - waste;
   return {
     revenue,
     cogs,
     waste,
-    payroll: payrollExpenseForPeriod(period),
-    netProfit: Math.max(0, revenue - cogs - waste),
+    payroll,
+    operatingExpenses: 0,
+    netProfit,
+    netProfitAfterPayroll: payroll == null ? null : netProfit - payroll,
     cash: payments.cash,
     digital: payments.digital,
     paymentSignal: paymentMethodSignal(payments),
     paymentRows: paymentMethodRows(payments),
-    gatewayRows: paymentGatewayRows(payments),
+    gatewayRows: paymentGatewayRows(payments, !sourceDriven),
     sourceCounts: {
       orders: orders.length,
       payments: (snapshot.today?.payments || []).length,
@@ -2477,9 +4134,20 @@ const safeFileSegment = (value) => (
 
 const exportManagementReportPack = (period, metrics, sourceMeta) => {
   const sourceCounts = metrics.sourceCounts || {};
-  const margin = metrics.revenue ? `${((metrics.netProfit / metrics.revenue) * 100).toFixed(1)}%` : "0.0%";
-  const grossProfit = metrics.revenue - metrics.cogs;
+  const numberOrBlank = (value) => (isFiniteNumber(value) ? Math.round(Number(value)) : "");
+  const operatingExpenses = isFiniteNumber(metrics.operatingExpenses) ? Number(metrics.operatingExpenses) : 0;
+  const netAfterPayroll = sourceNetAfterPayroll(metrics);
+  const varianceImpact = Number(metrics.varianceImpact || 0);
+  const margin = isFiniteNumber(metrics.revenue) && Number(metrics.revenue) && isFiniteNumber(netAfterPayroll)
+    ? `${((Number(netAfterPayroll) / Number(metrics.revenue)) * 100).toFixed(1)}%`
+    : "";
+  const grossProfit = isFiniteNumber(metrics.revenue) && isFiniteNumber(metrics.cogs)
+    ? Number(metrics.revenue) - Number(metrics.cogs)
+    : null;
   const generatedAt = new Date().toISOString();
+  const netProfitTrace = operatingExpenses
+    ? "deterministic report aggregate + HR payroll schedule + operating expenses"
+    : "deterministic report aggregate + HR payroll schedule";
   const rows = [
     ["Section", "Metric", "Value", "Traceable source"],
     ["Traceability", "Generated at (UTC)", generatedAt, "client timestamp"],
@@ -2487,27 +4155,31 @@ const exportManagementReportPack = (period, metrics, sourceMeta) => {
     ...(sourceMeta?.cite ? [["Traceability", "Source cite", sourceMeta.cite, "summary.sourceCounts"]] : []),
     ...(sourceMeta?.window ? [["Traceability", "Drill-down window", sourceMeta.window, "bootstrap.meta.rows_returned"]] : []),
     ["Summary", "Period", period, "summary.reportPeriods"],
-    ["Summary", "Revenue", Math.round(metrics.revenue), "pos.order"],
-    ["Summary", "COGS", Math.round(metrics.cogs), "bayaan.consumption.ledger"],
-    ["Summary", "Gross profit", Math.round(grossProfit), "pos.order + bayaan.consumption.ledger"],
-    ["Summary", "Waste and loss", Math.round(metrics.waste), "bayaan.waste.entry + bayaan.shift.close"],
-    ["Summary", "Payroll", Math.round(metrics.payroll || 0), "HR payroll schedule"],
-    ["Summary", "Net profit after payroll", Math.max(0, Math.round(Number(metrics.netProfit || 0) - Number(metrics.payroll || 0))), "deterministic report aggregate + HR payroll schedule"],
+    ["Summary", "Revenue", numberOrBlank(metrics.revenue), "pos.order"],
+    ["Summary", "COGS", numberOrBlank(metrics.cogs), "bayaan.consumption.ledger"],
+    ["Summary", "Gross profit", numberOrBlank(grossProfit), "pos.order + bayaan.consumption.ledger"],
+    ["Summary", "Waste and loss", numberOrBlank(metrics.waste), "bayaan.waste.entry + bayaan.shift.close"],
+    ["Summary", "Cash variance", numberOrBlank(metrics.cashVariance), "bayaan.shift.close"],
+    ["Summary", "Stock variance value", numberOrBlank(metrics.stockVarianceValue), "bayaan.shift.close.line"],
+    ["Summary", "Variance impact", numberOrBlank(varianceImpact), "bayaan.shift.close + stock valuation"],
+    ["Summary", "Payroll", numberOrBlank(metrics.payroll), "HR payroll schedule"],
+    ["Summary", "Operating expenses", numberOrBlank(operatingExpenses), "HR operating expense rows"],
+    ["Summary", "Net profit after payroll", numberOrBlank(netAfterPayroll), netProfitTrace],
     ["Summary", "Net margin", margin, "deterministic report aggregate"],
-    ["Summary", "Cash expected", Math.round(metrics.cash || 0), "pos.payment cash"],
-    ["Summary", "Digital payments", Math.round(metrics.digital || 0), "pos.payment non-cash"],
-    ["Payment method", "Cash", Math.round(metrics.cash || 0), "pos.payment"],
-    ["Payment method", "Digital total", Math.round(metrics.digital || 0), "pos.payment"],
+    ["Summary", "Cash expected", numberOrBlank(metrics.cash), "pos.payment cash"],
+    ["Summary", "Digital payments", numberOrBlank(metrics.digital), "pos.payment non-cash"],
+    ["Payment method", "Cash", numberOrBlank(metrics.cash), "pos.payment"],
+    ["Payment method", "Digital total", numberOrBlank(metrics.digital), "pos.payment"],
     ...((metrics.paymentRows || []).map(([label, amount]) => [
       "Payment method",
       label,
-      Math.round(amount || 0),
+      numberOrBlank(amount),
       "pos.payment",
     ])),
     ...((metrics.gatewayRows || []).map((row) => [
       "Payment gateway",
       row.label,
-      Math.round(row.amount || 0),
+      numberOrBlank(row.amount),
       "pos.payment.method.bayaan_gateway_provider",
     ])),
     ["Traceability", "Orders", sourceCounts.orders || 0, "pos.order"],
@@ -2515,6 +4187,18 @@ const exportManagementReportPack = (period, metrics, sourceMeta) => {
     ["Traceability", "Consumption rows", sourceCounts.consumptionRows || 0, "bayaan.consumption.ledger"],
     ["Traceability", "Waste rows", sourceCounts.wasteRows || 0, "bayaan.waste.entry"],
     ["Traceability", "Closing rows", sourceCounts.closingRows || 0, "bayaan.shift.close"],
+    ["Traceability", "Transfer rows", sourceCounts.transferRows || 0, "stock.picking"],
+    ["Traceability", "Purchase orders", sourceCounts.purchaseOrders || 0, "purchase.order"],
+    ["Traceability", "Supplier rows", sourceCounts.supplierRows || 0, "res.partner"],
+    ["Traceability", "Recurring purchase plans", sourceCounts.recurringPurchaseRows || 0, "bayaan.recurring.purchase"],
+    ["Traceability", "Product rows", sourceCounts.productRows || 0, "product.product"],
+    ["Traceability", "Warehouse stock rows", sourceCounts.warehouseStockRows || 0, "stock.quant"],
+    ["Traceability", "HR employee rows", sourceCounts.hrEmployeeRows || 0, "bayaan.hr.employee"],
+    ["Traceability", "HR shift rows", sourceCounts.hrShiftRows || 0, "bayaan.hr.shift"],
+    ["Traceability", "Attendance rows", sourceCounts.hrAttendanceRows || 0, "hr.attendance"],
+    ["Traceability", "Payroll adjustments", sourceCounts.payrollAdjustmentRows || 0, "bayaan.payroll.adjustment"],
+    ["Traceability", "Payroll runs", sourceCounts.payrollRunRows || 0, "bayaan.payroll.run"],
+    ["Traceability", "Operating expenses", sourceCounts.operatingExpenseRows || 0, "bayaan.operating.expense"],
   ];
   const filename = `bayaan-${safeFileSegment(period)}-management-report-${new Date().toISOString().slice(0, 10)}.csv`;
   if (typeof document === "undefined" || typeof Blob === "undefined" || typeof URL === "undefined") return filename;
@@ -2558,12 +4242,14 @@ const { useLayoutEffect: useLayoutEffectOv, useRef: useRefOv } = React;
    ============================================================ */
 
 // ---------- Currency helper — overview uses whatever data holds ----------
-const fmtIQD = (n) => "IQD " + Math.round(n).toLocaleString("en");
+const fmtIQD = (n) => (isFiniteNumber(n) ? `IQD ${Math.round(Number(n)).toLocaleString("en")}` : "—");
 const fmtCompact = (n) => {
-  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
-  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
-  return Math.round(n).toString();
+  const value = coerceNumber(n);
+  if (value == null) return "—";
+  if (value >= 1e9) return (value / 1e9).toFixed(2) + "B";
+  if (value >= 1e6) return (value / 1e6).toFixed(2) + "M";
+  if (value >= 1e3) return (value / 1e3).toFixed(1) + "K";
+  return Math.round(value).toString();
 };
 
 // ---------- Smooth ticker number — interpolates value changes ----------
@@ -2702,6 +4388,15 @@ function RankList({ items, renderRow, rowHeight = 44, gap = 4, emptyHint }) {
 // ============================================================
 // Sliding live activity feed (new items push old ones down)
 // ============================================================
+const liveAgoLabel = (ar, value) => {
+  if (!ar) return value;
+  const text = String(value || "");
+  if (text === "now") return "الآن";
+  const seconds = text.match(/^(\d+)s ago$/i);
+  if (seconds) return `قبل ${seconds[1]}ث`;
+  return arTerm("ar", text);
+};
+
 function LiveFeed({ events, maxRows = 9, ar }) {
   const containerRef = useRef(null);
   const prevTopsRef = useRef({});
@@ -2777,10 +4472,10 @@ function LiveFeed({ events, maxRows = 9, ar }) {
             }}>{e.kid}</span>
             <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
               <div style={{ fontSize: 12.5, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {e.item}
+                {arTerm(ar ? "ar" : "en", e.item)}
               </div>
               <div className="t-small subtle" style={{ fontSize: 10.5 }}>
-                {e.kiosk} - {e.ago}
+                {arTerm(ar ? "ar" : "en", e.kiosk)} - {liveAgoLabel(ar, e.ago)}
               </div>
             </div>
             <span className="t-num" style={{ fontSize: 12.5, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--ink-1)" }}>
@@ -2796,34 +4491,494 @@ function LiveFeed({ events, maxRows = 9, ar }) {
 // ============================================================
 // Hourly pulse - current hour bar pulses; data ticks live
 // ============================================================
+const HOURLY_PULSE_START = 8;
+const HOURLY_PULSE_BASE_REVENUE = [224_000, 318_000, 472_000, 611_000, 740_000, 812_000, 704_000, 628_000, 543_000];
+const HOURLY_PULSE_BASE_EXPECTED = [210_000, 286_000, 424_000, 578_000, 702_000, 768_000, 688_000, 612_000, 570_000];
+const HOURLY_PULSE_REVENUE = HOURLY_PULSE_BASE_REVENUE.map((value, index) => value + ((index % 5) - 2) * 12_000);
+const HOURLY_PULSE_EXPECTED = HOURLY_PULSE_BASE_EXPECTED.map((value, index) => value + ((index % 3) - 1) * 8_000);
+const DEFAULT_HOURLY_PULSE_DAY = Array.from({ length: 24 }, (_, index) => {
+  const sourceIndex = index - HOURLY_PULSE_START;
+  return HOURLY_PULSE_REVENUE[sourceIndex] ?? 0;
+});
+
 function HourlyPulse({ data, currentHour }) {
-  const yMax = Math.max(...data, 1);
+  const chartData = Array.isArray(data) && data.length && typeof data[0] === "object"
+    ? data.map((row, index) => ({
+        hour: row.label ?? String(index).padStart(2, "0"),
+        value: Number(row.value ?? row.revenue ?? row.sales ?? 0),
+        expected: Number(row.expected ?? row.target ?? row.value ?? 0),
+        state: row.state || "past",
+      }))
+    : HOURLY_PULSE_REVENUE.map((defaultValue, sourceIndex) => {
+        const hourIndex = HOURLY_PULSE_START + sourceIndex;
+        const value = data[hourIndex] ?? data[sourceIndex] ?? defaultValue;
+        const defaultExpected = HOURLY_PULSE_EXPECTED[sourceIndex];
+        const expected = defaultValue ? defaultExpected * (value / defaultValue) : defaultExpected;
+
+        return {
+          hour: String(hourIndex).padStart(2, "0"),
+          value,
+          expected,
+          state: hourIndex === currentHour ? "current" : hourIndex < currentHour ? "past" : "future",
+        };
+      });
+  const yMax = Math.max(...chartData.map((row) => row.value), 1);
+
   return (
-    <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 110 }}>
-      {data.map((v, i) => {
-        const h = (v / yMax) * 100;
-        const isCurr = i === currentHour;
-        const isPast = i < currentHour;
+    <div className="hourly-pulse-chart" aria-label="Hourly pulse">
+      {chartData.map((row, index) => {
+        const actual = Math.max(0, Math.min(100, (row.value / yMax) * 100));
+        const expected = Math.max(0, Math.min(100, (row.expected / yMax) * 100));
+
         return (
-          <div key={i} style={{
-            flex: 1,
-            height: `${Math.max(3, h)}%`,
-            background: isCurr ? "var(--ink)" : isPast ? "var(--ink-2)" : "var(--line-strong)",
-            opacity: isCurr ? 1 : isPast ? 0.7 : 1,
-            borderRadius: 1,
-            position: "relative",
-            transition: "height 600ms ease",
-          }}>
-            {isCurr && (
-              <span style={{
-                position: "absolute", inset: 0, borderRadius: 1,
-                background: "var(--ink)", opacity: 0.35,
-                animation: "ovBarPulse 1.8s ease-in-out infinite",
-              }}/>
-            )}
+          <div key={`${index}-${row.hour}`} className="hourly-pulse-hour" data-state={row.state}>
+            <div className="hourly-pulse-barbox">
+              <div className="hourly-pulse-actual" style={{ height: `${actual}%` }} />
+              <div className="hourly-pulse-expected" style={{ height: `${expected}%` }} />
+            </div>
+            <span className="hourly-pulse-label">{String(row.hour).slice(0, 2)}</span>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ============================================================
+// Shared account-allocation style donut used by Finance and Today Command
+// ============================================================
+function AllocationDonutContent({ rows, total, centerLabel, centerValue, ariaLabel, formatValue, compact = false, innerRadius = 65, outerRadius = 90 }) {
+  const fallbackAmounts = [52.2, 20.6, 15.7, 11.5, 8.4, 5.7, 3.2];
+  const chartData = total > 0 ? rows : rows.map((item, index) => ({
+    ...item,
+    amount: fallbackAmounts[index % fallbackAmounts.length],
+  }));
+  const chartTotal = total > 0 ? total : chartData.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+
+  return (
+    <div className={`account-allocation-content allocation-donut-content${compact ? " allocation-donut-content-compact" : ""}`}>
+      <div className="account-allocation-chart" role="img" aria-label={ariaLabel || centerLabel}>
+        <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 200, height: 200 }}>
+          <PieChart>
+            <Tooltip
+              cursor={false}
+              content={({ active, payload }) => {
+                if (!active || !payload?.length) return null;
+                const row = payload[0].payload;
+                const pct = chartTotal ? (Number(row.amount || 0) / chartTotal) * 100 : 0;
+                return (
+                  <div className="payment-mix-tooltip account-allocation-tooltip">
+                    <div className="payment-mix-tooltip-title">{row.name}</div>
+                    <div className="payment-mix-tooltip-value">
+                      <span>{formatValue(row.amount)}</span>
+                      <span>{pct.toFixed(1)}%</span>
+                    </div>
+                  </div>
+                );
+              }}
+            />
+            <Pie
+              cornerRadius={6}
+              data={chartData}
+              dataKey="amount"
+              innerRadius={innerRadius}
+              nameKey="name"
+              outerRadius={outerRadius}
+              paddingAngle={2}
+              strokeWidth={5}
+            >
+              {chartData.map((item) => (
+                <Cell key={item.key} fill={item.fill} />
+              ))}
+              <Label
+                content={({ viewBox }) => {
+                  if (!(viewBox && "cx" in viewBox && "cy" in viewBox)) return null;
+                  return (
+                    <text dominantBaseline="middle" textAnchor="middle" x={viewBox.cx} y={viewBox.cy}>
+                      <tspan className="account-allocation-center-label" x={viewBox.cx} y={(viewBox.cy || 0) - 8}>
+                        {centerLabel}
+                      </tspan>
+                      <tspan className="account-allocation-center-value" x={viewBox.cx} y={(viewBox.cy || 0) + 14}>
+                        {centerValue}
+                      </tspan>
+                    </text>
+                  );
+                }}
+              />
+            </Pie>
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="account-allocation-list">
+        {rows.map((row) => {
+          const pct = total ? (Number(row.amount || 0) / total) * 100 : 0;
+          return (
+            <div className="account-allocation-row" key={row.key}>
+              <div className="account-allocation-row-main">
+                <div className="account-allocation-name">
+                  <span aria-hidden="true" className="account-allocation-dot" style={{ backgroundColor: row.fill }} />
+                  <p>{row.name}</p>
+                </div>
+                <p className="account-allocation-amount">{formatValue(row.amount)}</p>
+              </div>
+              <div className="account-allocation-percent">{pct.toFixed(1)}%</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PaymentMixDonut({ rows, total, centerLabel, centerValue, compact = false, formatValue = fmtCompact }) {
+  const allocationRows = rows.map((row) => ({
+    key: row.id,
+    name: row.label,
+    amount: row.value,
+    fill: row.color,
+  }));
+  return (
+    <AllocationDonutContent
+      ariaLabel={centerLabel}
+      centerLabel={centerLabel}
+      centerValue={centerValue}
+      compact={compact}
+      formatValue={formatValue}
+      innerRadius={compact ? 42 : 65}
+      outerRadius={compact ? 60 : 90}
+      rows={allocationRows}
+      total={total}
+    />
+  );
+}
+
+const ACCOUNT_ALLOCATION_CURRENCIES = {
+  IQD: { label: "IQD Balance", rate: 1 },
+  USD: { label: "USD Balance", rate: 1 / 1310 },
+  EUR: { label: "Euro Balance", rate: 1 / 1420 },
+  GBP: { label: "GBP Balance", rate: 1 / 1660 },
+};
+
+const formatAllocationCurrency = (amount, currency) => {
+  if (currency === "IQD") return fmtMoneyShort(amount, "IQD");
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 0,
+  }).format(amount * (ACCOUNT_ALLOCATION_CURRENCIES[currency]?.rate || 1));
+};
+
+function AccountAllocationCard({ metrics, netAfterPayroll, ar }) {
+  const [currency, setCurrency] = useState("IQD");
+  const rows = useMemo(() => buildAccountAllocationRows(metrics, netAfterPayroll, ar), [metrics, netAfterPayroll, ar]);
+  const totalBalance = rows.reduce((sum, item) => sum + item.amount, 0);
+  const allocationRows = rows.map((item) => ({
+    key: item.key,
+    name: item.account,
+    amount: item.amount,
+    fill: item.fill,
+  }));
+
+  return (
+    <div className="card account-allocation-card">
+      <div className="account-allocation-header">
+        <div className="account-allocation-title">{ui(ar, "accountAllocation")}</div>
+        <select
+          aria-label="Balance currency"
+          className="account-allocation-select"
+          onChange={(event) => setCurrency(event.target.value)}
+          value={currency}
+        >
+          {Object.entries(ACCOUNT_ALLOCATION_CURRENCIES).map(([value, item]) => (
+            <option key={value} value={value}>{arTerm(ar ? "ar" : "en", item.label)}</option>
+          ))}
+        </select>
+      </div>
+
+      <AllocationDonutContent
+        ariaLabel={ui(ar, "accountAllocation")}
+        centerLabel={ar ? "الإجمالي" : "Total"}
+        centerValue={formatAllocationCurrency(totalBalance, currency)}
+        formatValue={(amount) => formatAllocationCurrency(amount, currency)}
+        rows={allocationRows}
+        total={totalBalance}
+      />
+    </div>
+  );
+}
+
+// ============================================================
+// Total sales flow - patterned monthly bars adapted from the new dashboard
+// ============================================================
+function TotalSalesFlowChart({ rows, total, target, ar }) {
+  const fiscalStartYear = 2025;
+  const chartRows = rows.map((row, index) => {
+    const monthIndex = (5 + index) % 12;
+    const year = index < 7 ? fiscalStartYear : fiscalStartYear + 1;
+    const sales = Number(row.sales || 0);
+    return {
+      ...row,
+      date: new Date(Date.UTC(year, monthIndex, 1)).toISOString(),
+      qualified: sales,
+      sales,
+    };
+  });
+  const axisMonthFormatter = new Intl.DateTimeFormat(ar ? "ar-IQ" : "en-US", { month: "short" });
+  const tooltipMonthFormatter = new Intl.DateTimeFormat(ar ? "ar-IQ" : "en-US", { month: "short", year: "2-digit" });
+  const progress = target ? Math.min(100, Math.round((total / target) * 100)) : 0;
+
+  return (
+    <div className="sales-flow-card">
+      <div className="sales-flow-chart-wrap">
+        <div className="sales-flow-chart" role="img" aria-label={ar ? "إجمالي المبيعات خلال السنة" : "Total sales across the fiscal year"}>
+          <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 760, height: 290 }}>
+            <ComposedChart data={chartRows} margin={{ left: 0, right: 0, top: 0, bottom: 0 }} barSize={38}>
+              <defs>
+                <pattern
+                  id="crm-qualified-pattern"
+                  width="4"
+                  height="4"
+                  patternUnits="userSpaceOnUse"
+                  patternTransform="rotate(45)"
+                >
+                  <rect width="6" height="6" fill="var(--color-qualified)" fillOpacity="0.15" />
+                  <line
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="6"
+                    stroke="var(--color-qualified)"
+                    strokeWidth="1.25"
+                    strokeOpacity="0.40"
+                  />
+                </pattern>
+              </defs>
+              <CartesianGrid vertical={false} strokeDasharray="0" />
+              <XAxis
+                dataKey="date"
+                tickLine={false}
+                tickMargin={10}
+                axisLine={false}
+                tickFormatter={(value) => axisMonthFormatter.format(new Date(String(value)))}
+              />
+              <YAxis hide />
+              <Tooltip
+                cursor={false}
+                content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null;
+                  const row = payload[0].payload;
+                  return (
+                    <div className="analytics-chart-tooltip sales-flow-tooltip">
+                      <div className="analytics-chart-tooltip-title">{tooltipMonthFormatter.format(new Date(String(label)))}</div>
+                      <div className="analytics-chart-tooltip-row">
+                        <span>{ar ? "المبيعات" : "Sales"}</span>
+                        <strong>{fmtCompact(Number(row.sales || 0))}</strong>
+                      </div>
+                      <div className="analytics-chart-tooltip-row" hidden>
+                        <span>{ar ? "الربح" : "Profit"}</span>
+                      </div>
+                    </div>
+                  );
+                }}
+              />
+              <Bar
+                dataKey="profit"
+                fill="var(--chart-1)"
+                isAnimationActive
+                animationDuration={760}
+                barSize={12}
+                name={ar ? "الربح" : "Profit"}
+                opacity={0.9}
+                radius={[6, 6, 0, 0]}
+              />
+              <Area
+                activeDot={{ r: 4, fill: "var(--surface)", stroke: "var(--chart-2)", strokeWidth: 2 }}
+                dataKey="sales"
+                dot={false}
+                fill="none"
+                filter="url(#bayaan-sales-line-glow)"
+                isAnimationActive
+                animationDuration={900}
+                name={ar ? "المبيعات" : "Sales"}
+                stroke="var(--chart-2)"
+                strokeWidth={2.2}
+                type="linear"
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="sales-flow-side">
+        <div>
+          <div className="sales-flow-total">
+            {fmtMoney(total).replace("IQD ", "")}
+            <span>{ar ? " د.ع" : " IQD"}</span>
+          </div>
+          <div className="t-small muted" style={{ lineHeight: 1.45 }}>
+            {ar ? "إجمالي مبيعات السنة المالية من يونيو إلى مايو." : "Total sales across the Jun-May fiscal year."}
+          </div>
+        </div>
+
+        <div className="sales-flow-progress-card">
+          <div className="sales-flow-progress-label">{ar ? "التقدم مقابل الهدف" : "Annual target captured"}</div>
+          <div className="sales-flow-progress-value">
+            {fmtMoney(target).replace("IQD ", "")}
+            <span>{progress}%</span>
+          </div>
+          <div className="sales-flow-progress-track">
+            <div className="sales-flow-progress-fill" style={{ width: `${progress}%` }}/>
+          </div>
+          <div className="sales-flow-progress-meta">
+            <span>{ar ? "فعلي" : "actual"}</span>
+            <span>{ar ? "هدف" : "target"}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+}
+
+function StudioPatternBarChart({
+  rows,
+  ar,
+  ariaLabel,
+  xDataKey = "date",
+  valueDataKey = "qualified",
+  valueLabel,
+  tickFormatter,
+  tooltipTitle,
+  tooltipValue,
+  barSize = 38,
+  initialDimension = { width: 760, height: 288 },
+  className = "",
+}) {
+  const patternId = "bayaan-studio-pattern-bar";
+  return (
+    <div className={`sales-flow-chart-wrap${className ? ` ${className}` : ""}`}>
+      <div className="sales-flow-chart" role="img" aria-label={ariaLabel}>
+        <ResponsiveContainer width="100%" height="100%" initialDimension={initialDimension}>
+          <BarChart data={rows} margin={{ left: 0, right: 0, top: 0, bottom: 0 }} barSize={barSize}>
+            <defs>
+              <pattern
+                id={patternId}
+                width="4"
+                height="4"
+                patternUnits="userSpaceOnUse"
+                patternTransform="rotate(45)"
+              >
+                <rect width="6" height="6" fill="var(--color-qualified)" fillOpacity="0.15" />
+                <line
+                  x1="0"
+                  y1="0"
+                  x2="0"
+                  y2="6"
+                  stroke="var(--color-qualified)"
+                  strokeWidth="1.25"
+                  strokeOpacity="0.40"
+                />
+              </pattern>
+            </defs>
+            <CartesianGrid vertical={false} strokeDasharray="0" />
+            <XAxis
+              dataKey={xDataKey}
+              tickLine={false}
+              tickMargin={10}
+              axisLine={false}
+              interval={0}
+              tickFormatter={tickFormatter}
+            />
+            <YAxis hide />
+            <Tooltip
+              cursor={false}
+              content={({ active, payload, label }) => {
+                if (!active || !payload?.length) return null;
+                const row = payload[0].payload;
+                return (
+                  <div className="analytics-chart-tooltip sales-flow-tooltip">
+                    <div className="analytics-chart-tooltip-title">{tooltipTitle?.(row, label) || String(label || "")}</div>
+                    <div className="analytics-chart-tooltip-row">
+                      <span>{valueLabel || (ar ? "المبيعات" : "Sales")}</span>
+                      <strong>{tooltipValue?.(row, label) || fmtCompact(Number(row?.[valueDataKey] || 0))}</strong>
+                    </div>
+                  </div>
+                );
+              }}
+            />
+            <Bar
+              dataKey={valueDataKey}
+              fill={`url(#${patternId})`}
+              isAnimationActive
+              animationDuration={760}
+              radius={[8, 8, 0, 0]}
+              stroke="var(--color-qualified)"
+              strokeOpacity={0.5}
+              strokeWidth={0.5}
+            />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function QualifiedSalesFlowChart({ rows, total, target, ar }) {
+  const fiscalStartYear = 2025;
+  const chartRows = rows.map((row, index) => {
+    const monthIndex = (5 + index) % 12;
+    const year = index < 7 ? fiscalStartYear : fiscalStartYear + 1;
+    const sales = Number(row.sales || 0);
+    return {
+      date: new Date(Date.UTC(year, monthIndex, 1)).toISOString(),
+      qualified: sales,
+      sales,
+    };
+  });
+  const totalSales = chartRows.reduce((sum, item) => sum + item.sales, 0);
+  const progress = target ? Math.min(100, Math.round((totalSales / target) * 100)) : 0;
+  const axisMonthFormatter = new Intl.DateTimeFormat(ar ? "ar-IQ" : "en-US", { month: "short" });
+  const tooltipMonthFormatter = new Intl.DateTimeFormat(ar ? "ar-IQ" : "en-US", { month: "short", year: "2-digit" });
+
+  return (
+    <div className="sales-flow-card sales-flow-card-qualified">
+      <StudioPatternBarChart
+        ar={ar}
+        ariaLabel={ar ? "إجمالي المبيعات خلال السنة" : "Total sales across the fiscal year"}
+        rows={chartRows}
+        tickFormatter={(value) => axisMonthFormatter.format(new Date(String(value)))}
+        tooltipTitle={(_row, label) => tooltipMonthFormatter.format(new Date(String(label)))}
+        tooltipValue={(row) => fmtCompact(Number(row.sales || 0))}
+        valueLabel={ar ? "المبيعات" : "Sales"}
+      />
+
+      <div className="sales-flow-side">
+        <div>
+          <div className="sales-flow-total">
+            {fmtMoney(total || totalSales).replace("IQD ", "")}
+            <span>{ar ? " د.ع" : " IQD"}</span>
+          </div>
+          <div className="t-small muted" style={{ lineHeight: 1.45 }}>
+            {ar ? "إجمالي مبيعات السنة المالية من يونيو إلى مايو." : "Total sales across the Jun-May fiscal year."}
+          </div>
+        </div>
+
+        <div className="sales-flow-progress-card">
+          <div className="sales-flow-progress-label">{ar ? "التقدم مقابل الهدف" : "Annual target captured"}</div>
+          <div className="sales-flow-progress-value">
+            {fmtMoney(target).replace("IQD ", "")}
+            <span>{progress}%</span>
+          </div>
+          <div className="sales-flow-progress-track">
+            <div className="sales-flow-progress-fill" style={{ width: `${progress}%` }}/>
+          </div>
+          <div className="sales-flow-progress-meta">
+            <span>{ar ? "فعلي" : "actual"}</span>
+            <span>{ar ? "هدف" : "target"}</span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2848,27 +5003,34 @@ function RankIndicator({ rank }) {
 function OverviewScreen({ lang, bootstrap }) {
   const ar = lang === "ar";
   const liveOnly = isLiveOnlyPayload(bootstrap);
+  const allowDemoFallback = canUseDemoFallback(bootstrap);
   const sourceKiosks = useMemo(() => odooKioskRows(bootstrap), [bootstrap]);
   const closeRows = useMemo(() => odooClosingRows(bootstrap), [bootstrap]);
   const paymentSplit = useMemo(() => odooPaymentSplit(bootstrap), [bootstrap]);
   const summary = useMemo(() => odooSummary(bootstrap), [bootstrap]);
+  const simulationActive = isSimulationPayload(bootstrap) || isSimulationRuntime();
+  const simulationPulseRows = useMemo(() => odooMinutePulse(bootstrap), [bootstrap]);
+  const sourceDriven = isSourceDrivenPayload(bootstrap);
+  const leadFlowRows = useMemo(() => fiscalSalesRowsFromSummary(summary, allowDemoFallback), [summary, allowDemoFallback]);
+  const leadFlowTotal = useMemo(() => leadFlowRows.reduce((sum, row) => sum + Number(row.sales || 0), 0), [leadFlowRows]);
+  const leadFlowTarget = fiscalSalesTargetFromSummary(summary, allowDemoFallback);
   const liveProductRows = useMemo(() => {
-    if (!liveOnly) return [];
+    if (!sourceDriven) return [];
     const snapshot = unwrapOdoo(bootstrap);
     const byProduct = new Map();
     (snapshot?.today?.orders || []).forEach((order) => {
       (order.lines || []).forEach((line) => {
         const name = cleanDisplayName(line.product || line.name || "POS item");
         const current = byProduct.get(name) || { id: `live-product-${byProduct.size}`, name, cat: "Engine", rev: 0, qty: 0 };
-        current.rev += Number(line.price_subtotal_incl || line.price_subtotal || line.amount || 0);
+        current.rev += Number(line.price_subtotal_incl || line.price_subtotal || line.subtotal || line.amount || (Number(line.price_unit || 0) * Number(line.qty || 0)) || 0);
         current.qty += Number(line.qty || 0);
         byProduct.set(name, current);
       });
     });
     return Array.from(byProduct.values()).sort((a, b) => b.rev - a.rev).slice(0, 8);
-  }, [bootstrap, liveOnly]);
+  }, [bootstrap, sourceDriven]);
   const liveWasteRows = useMemo(() => {
-    if (!liveOnly) return [];
+    if (!sourceDriven) return [];
     return odooWasteRows(bootstrap).map((row, index) => ({
       id: `live-waste-${index}`,
       name: cleanDisplayName(row.item || "Waste item"),
@@ -2876,13 +5038,16 @@ function OverviewScreen({ lang, bootstrap }) {
       cost: Number(row.cost || 0),
       qty: Number(row.qty || 0),
     }));
-  }, [bootstrap, liveOnly]);
+  }, [bootstrap, sourceDriven]);
   const liveFeedRows = useMemo(() => {
-    if (!liveOnly) return [];
+    if (!sourceDriven) return [];
     const snapshot = unwrapOdoo(bootstrap);
     const kioskNames = new Map(sourceKiosks.map((kiosk) => [kiosk.id, kiosk.name]));
     const now = Date.now();
-    return (snapshot?.today?.orders || []).slice(0, 14).map((order, index) => {
+    return [...(snapshot?.today?.orders || [])]
+      .sort((left, right) => String(right.date_order || "").localeCompare(String(left.date_order || "")))
+      .slice(0, 14)
+      .map((order, index) => {
       const firstLine = order.lines?.[0];
       const item = firstLine
         ? cleanDisplayName(firstLine.product || firstLine.name)
@@ -2896,9 +5061,8 @@ function OverviewScreen({ lang, bootstrap }) {
         ago: order.date_order ? String(order.date_order).slice(11, 16) : "synced",
         ts: now - index * 1000,
       };
-    });
-  }, [bootstrap, liveOnly, sourceKiosks]);
-
+      });
+  }, [bootstrap, sourceDriven, sourceKiosks]);
   // ---- Live state: per-kiosk metrics (revenue + stock %) ----
   const initial = useMemo(() => {
     const baseSeed = (s) => {
@@ -2911,24 +5075,25 @@ function OverviewScreen({ lang, bootstrap }) {
       const seed = baseSeed(k.id);
       // MOCK.kiosks already stores per-kiosk daily revenue in raw IQD; just add a small
       // jitter so adjacent kiosks have natural swap headroom for the rank animation.
-      const rev = k.revenue + (seed % 500000);
+      const rev = sourceDriven ? Number(k.revenue || 0) : k.revenue + (seed % 500000);
       // initial stock %, lower for warn/crit
-      const stockBase = k.status === "crit" ? 22 + (seed % 18)
+      const stockBase = sourceDriven ? Number(k.stockHealth || 0)
+                      : k.status === "crit" ? 22 + (seed % 18)
                       : k.status === "warn" ? 44 + (seed % 18)
                       : 62 + (seed % 32);
       const stockItem = ["Milk, cups, oranges","Pistachio paste","Oat milk","Mint, lemons","Coffee beans","Vanilla syrup","Chocolate","Cinnamon","Sugar","Croissants"][seed % 10];
       return { ...k, liveRev: rev, liveStock: stockBase, stockItem, liveOrders: k.orders };
     });
-  }, [sourceKiosks]);
+  }, [sourceDriven, sourceKiosks]);
 
   const [kiosks, setKiosks] = useState(initial);
   useEffect(() => {
     setKiosks(initial);
-    setFeed(liveOnly ? liveFeedRows : seedFeed(initial));
-  }, [initial, liveOnly, liveFeedRows]);
+    setFeed(sourceDriven ? liveFeedRows : seedFeed(initial));
+  }, [initial, sourceDriven, liveFeedRows]);
 
   // Live products (revenue tickers)
-  const initialProducts = useMemo(() => liveOnly ? liveProductRows : ([
+  const initialProducts = useMemo(() => sourceDriven ? liveProductRows : ([
     { id: "p1", name: "Iced Latte",       cat: "Iced Coffee", rev: 3_690_000, qty: 415 },
     { id: "p2", name: "Iced Americano",   cat: "Iced Coffee", rev: 2_620_000, qty: 392 },
     { id: "p3", name: "Orange Juice",     cat: "Juice",       rev: 2_330_000, qty: 301 },
@@ -2937,44 +5102,34 @@ function OverviewScreen({ lang, bootstrap }) {
     { id: "p6", name: "Cold Brew",        cat: "Iced Coffee", rev: 1_630_000, qty: 172 },
     { id: "p7", name: "Cappuccino",       cat: "Hot Coffee",  rev: 1_580_000, qty: 215 },
     { id: "p8", name: "Mocha",            cat: "Hot Coffee",  rev: 1_410_000, qty: 178 },
-  ]), [liveOnly, liveProductRows]);
+  ]), [sourceDriven, liveProductRows]);
   const [products, setProducts] = useState(initialProducts);
   useEffect(() => {
     setProducts(initialProducts);
   }, [initialProducts]);
 
   // Live waste leaderboard (cost lost per item — ticks like products)
-  const initialWaste = useMemo(() => liveOnly ? liveWasteRows : ([
+  const initialWaste = useMemo(() => sourceDriven ? liveWasteRows : ([
     { id: "w1", name: "Croissant - chocolate", cat: "Bakery",      cost: 412_000, qty: 28 },
     { id: "w2", name: "Pistachio cake slice",  cat: "Cake",        cost: 384_000, qty: 18 },
     { id: "w3", name: "Iced latte",            cat: "Iced Coffee", cost: 294_000, qty: 22 },
     { id: "w4", name: "Mango juice",           cat: "Juice",       cost: 168_000, qty: 14 },
     { id: "w5", name: "Croissant - plain",     cat: "Bakery",      cost: 142_000, qty: 19 },
     { id: "w6", name: "Espresso shot",         cat: "Coffee",      cost: 84_000,  qty: 12 },
-  ]), [liveOnly, liveWasteRows]);
+  ]), [sourceDriven, liveWasteRows]);
   const [waste, setWaste] = useState(initialWaste);
   useEffect(() => {
     setWaste(initialWaste);
   }, [initialWaste]);
 
   // Live activity feed (rolling event stream)
-  const [feed, setFeed] = useState(() => liveOnly ? liveFeedRows : seedFeed(initial));
+  const [feed, setFeed] = useState(() => sourceDriven ? liveFeedRows : seedFeed(initial));
   const eventCounterRef = useRef(1000);
 
   // Hourly bars — current hour ticks up
-  const [hourly, setHourly] = useState(() => liveOnly
-    ? Array(24).fill(0)
-    : [4,3,2,2,3,8,18,32,48,52,46,58,62,55,40,32,38,46,52,58,48,32,18,8]);
-  const currentHour = 14;
-  useEffect(() => {
-    setHourly(liveOnly
-      ? Array(24).fill(0)
-      : [4,3,2,2,3,8,18,32,48,52,46,58,62,55,40,32,38,46,52,58,48,32,18,8]);
-  }, [liveOnly]);
-
   // ---- Tick: nudge metrics, occasionally trigger rank swaps ----
   useEffect(() => {
-    if (liveOnly || !initial.length) return undefined;
+    if (sourceDriven || !initial.length) return undefined;
     let alive = true;
 
     // Frequent tick: small revenue/orders nudges + new feed entry
@@ -3026,12 +5181,6 @@ function OverviewScreen({ lang, bootstrap }) {
         qty: w.qty + (Math.random() < 0.18 ? 1 : 0),
       })));
 
-      // bump current hour bar
-      setHourly((prev) => {
-        const n = [...prev];
-        n[currentHour] = n[currentHour] + Math.random() * 0.4;
-        return n;
-      });
     }, 1800);
 
     // Slower tick: targeted bumps to force a rank swap somewhere
@@ -3095,7 +5244,7 @@ function OverviewScreen({ lang, bootstrap }) {
     }, 8100);
 
     return () => { alive = false; clearInterval(tickFast); clearInterval(tickSwap); clearInterval(tickStockSwap); clearInterval(tickProdSwap); clearInterval(tickWasteSwap); };
-  }, [initial, liveOnly]);
+  }, [initial, sourceDriven]);
 
   // ---- Derived sorted lists ----
   const topPerformers = useMemo(
@@ -3118,27 +5267,97 @@ function OverviewScreen({ lang, bootstrap }) {
   // ---- KPI aggregates (live) ----
   const liveTotalRev = useMemo(() => kiosks.reduce((s, k) => s + k.liveRev, 0), [kiosks]);
   const liveTotalOrders = useMemo(() => kiosks.reduce((s, k) => s + k.liveOrders, 0), [kiosks]);
-  const totalRev = summary?.totals ? Number(summary.totals.salesToday || 0) : liveTotalRev;
-  const totalOrders = summary?.totals ? Number(summary.totals.ordersToday || 0) : liveTotalOrders;
-  const grossProfit = summary?.totals ? Number(summary.totals.profitEstimate || 0) : totalRev * 0.289;
-  const cashExpected = summary?.totals ? Number(summary.totals.cashExpected || 0) : paymentSplit ? paymentSplit.cash : totalRev * 0.64;
-  const digitalPayments = summary?.totals ? Number(summary.totals.digitalPayments || 0) : paymentSplit ? paymentSplit.digital : totalRev * 0.36;
-  const closedKiosks = summary?.totals ? Number(summary.totals.closedKiosks || 0) : closeRows.filter((close) => close.status !== "open").length;
-  const openKiosks = summary?.totals ? Number(summary.totals.openKiosks || 0) : Math.max(0, kiosks.length - closedKiosks);
-  const lowStockAlerts = summary?.alerts ? Number(summary.alerts.lowStockItems || 0) : kiosks.filter((k) => k.liveStock < 50).length;
-  const unresolvedVariances = summary?.alerts ? Number(summary.alerts.unresolvedVariances || 0) : closeRows.filter((close) => close.status === "pending" || close.status === "issue").length;
-  const wastePct = summary?.totals?.salesToday ? Number(((Number(summary.totals.wasteCost || 0) / Number(summary.totals.salesToday || 1)) * 100).toFixed(1)) : 3.1;
-  const displayWastePct = liveOnly && !summary?.totals?.salesToday ? 0 : wastePct;
-  const variancePct = liveOnly ? 0 : -1.3;
+  const summaryTotals = summary?.totals || null;
+  const totalRev = summaryTotals?.salesToday != null ? Number(summaryTotals.salesToday || 0) : liveTotalRev;
+  const totalOrders = summaryTotals?.ordersToday != null ? Number(summaryTotals.ordersToday || 0) : liveTotalOrders;
+  const grossProfitKnown = summaryTotals?.profitEstimate != null || !liveOnly;
+  const grossProfit = summaryTotals?.profitEstimate != null
+    ? Number(summaryTotals.profitEstimate || 0)
+    : liveOnly
+      ? null
+      : totalRev * 0.289;
+  const profitMarginLabel = totalRev
+    ? ar ? `${((grossProfit / totalRev) * 100).toFixed(1)}% هامش` : `${((grossProfit / totalRev) * 100).toFixed(1)}% margin`
+    : ar ? "0.0% هامش" : "0.0% margin";
+  const profitMarginDisplay = grossProfitKnown && totalRev && isFiniteNumber(grossProfit)
+    ? profitMarginLabel
+    : liveOnly
+      ? (ar ? "Ø¨Ø§Ù†ØªØ¸Ø§Ø± Ù…Ù„Ø®Øµ Ø§Ù„Ù…Ø­Ø±Ùƒ" : "awaiting engine totals")
+      : profitMarginLabel;
+  const cashExpectedKnown = summaryTotals?.cashExpected != null || Boolean(paymentSplit) || !liveOnly;
+  const cashExpected = summaryTotals?.cashExpected != null
+    ? Number(summaryTotals.cashExpected || 0)
+    : paymentSplit
+      ? Number(paymentSplit.cash || 0)
+      : liveOnly
+        ? null
+        : totalRev * 0.64;
+  const digitalPaymentsKnown = summaryTotals?.digitalPayments != null || Boolean(paymentSplit) || !liveOnly;
+  const digitalPayments = summaryTotals?.digitalPayments != null
+    ? Number(summaryTotals.digitalPayments || 0)
+    : paymentSplit
+      ? Number(paymentSplit.digital || 0)
+      : liveOnly
+        ? null
+        : totalRev * 0.36;
+  const closedKiosks = summaryTotals?.closedKiosks != null ? Number(summaryTotals.closedKiosks || 0) : closeRows.filter((close) => close.status !== "open").length;
+  const openKiosks = summaryTotals?.openKiosks != null ? Number(summaryTotals.openKiosks || 0) : Math.max(0, kiosks.length - closedKiosks);
+  const lowStockAlerts = summary?.alerts ? Number(summary.alerts.lowStockItems || 0) : liveOnly ? null : kiosks.filter((k) => k.liveStock < 50).length;
+  const unresolvedVariances = summary?.alerts ? Number(summary.alerts.unresolvedVariances || 0) : liveOnly ? null : closeRows.filter((close) => close.status === "pending" || close.status === "issue").length;
+  const liveWasteCost = liveWasteRows.reduce((sum, row) => sum + Number(row.cost || 0), 0);
+  const wastePct = summaryTotals?.salesToday
+    ? Number(((Number(summaryTotals.wasteCost || 0) / Number(summaryTotals.salesToday || 1)) * 100).toFixed(1))
+    : liveOnly && totalRev > 0 && liveWasteCost > 0
+      ? Number(((liveWasteCost / totalRev) * 100).toFixed(1))
+      : liveOnly
+        ? null
+        : 3.1;
+  const variancePct = summaryTotals?.variancePct != null ? Number(summaryTotals.variancePct || 0) : liveOnly ? null : -1.3;
 
   // Period filter: "day" | "week" | "month". Pure display multiplier — keeps the
   // underlying live state ticking so rank-swap animations still fire.
   const [period, setPeriod] = useState("day");
   const periodMul = period === "month" ? 30 : period === "week" ? 7 : 1;
-  const periodSubtitle = period === "month" ? "this month" : period === "week" ? "this week" : "today";
-  const planDelta = liveOnly ? "engine only" : period === "month" ? "+11.2% vs plan" : period === "week" ? "+9.6% vs plan" : "+8.4% vs plan";
-  const alertRows = liveOnly ? [] : MOCK.alerts;
-  const actionRows = liveOnly ? [] : [
+  const periodSubtitle = period === "month"
+    ? (ar ? "هذا الشهر" : "this month")
+    : period === "week"
+      ? (ar ? "هذا الأسبوع" : "this week")
+      : ui(ar, "today");
+  const planDelta = sourceDriven
+    ? (ar ? "المحرك فقط" : "engine only")
+    : period === "month"
+      ? (ar ? "+11.2% مقابل الخطة" : "+11.2% vs plan")
+      : period === "week"
+        ? (ar ? "+9.6% مقابل الخطة" : "+9.6% vs plan")
+        : (ar ? "+8.4% مقابل الخطة" : "+8.4% vs plan");
+  const paymentMixRows = useMemo(() => {
+    const splitTotal = Number(paymentSplit?.total || 0);
+    const hasGatewaySplit = splitTotal > 0;
+    if (sourceDriven && !hasGatewaySplit) return [];
+    const cash = hasGatewaySplit ? Number(paymentSplit.cash || 0) : Number(cashExpected || 0);
+    const digital = hasGatewaySplit ? Number(paymentSplit.digital || 0) : Number(digitalPayments || 0);
+    const rows = hasGatewaySplit ? [
+      { id: "cash", label: ar ? "نقد" : "Cash", value: Number(paymentSplit.cash || 0), color: "var(--chart-5)" },
+      { id: "card", label: ar ? "بطاقات" : "Cards", value: Number(paymentSplit.card || 0), color: "var(--chart-2)" },
+      { id: "qr", label: ar ? "QR" : "QR", value: Number(paymentSplit.qr || 0), color: "var(--chart-3)" },
+      { id: "wallet", label: ar ? "محافظ" : "Wallets", value: Number(paymentSplit.mobile_wallet || 0), color: "var(--chart-4)" },
+      { id: "bank", label: ar ? "تطبيقات بنك" : "Bank apps", value: Number(paymentSplit.bank_app || 0), color: "var(--accent)" },
+      { id: "manual", label: ar ? "يدوي" : "Manual", value: Number(paymentSplit.manual_digital || 0), color: "var(--warn)" },
+      { id: "other", label: ar ? "أخرى" : "Other", value: Number(paymentSplit.digital_other || 0), color: "var(--ink-3)" },
+    ] : [
+      { id: "cash", label: ar ? "نقد" : "Cash", value: cash, color: "var(--chart-5)" },
+      { id: "card", label: ar ? "بطاقات" : "Cards", value: digital * 0.46, color: "var(--chart-2)" },
+      { id: "qr", label: ar ? "QR" : "QR", value: digital * 0.2, color: "var(--chart-3)" },
+      { id: "wallet", label: ar ? "محافظ" : "Wallets", value: digital * 0.24, color: "var(--chart-4)" },
+      { id: "manual", label: ar ? "يدوي" : "Manual", value: digital * 0.1, color: "var(--warn)" },
+    ];
+    return rows
+      .map((row) => ({ ...row, value: Math.max(0, row.value * periodMul) }))
+      .filter((row) => row.value > 0);
+  }, [paymentSplit, cashExpected, digitalPayments, periodMul, sourceDriven, ar]);
+  const paymentMixTotal = useMemo(() => paymentMixRows.reduce((sum, row) => sum + row.value, 0), [paymentMixRows]);
+  const alertRows = sourceDriven ? [] : MOCK.alerts;
+  const actionRows = sourceDriven ? [] : [
     { label: "Auto-PO drafted - Baghdad Dairy", sub: "Milk x 4 kiosks - IQD 1.2M", ok: true },
     { label: "Pre-prep schedule shifted", sub: "Zayouna Plaza - 7:30 to 7:45", ok: true },
     { label: "Pistachio recipe flagged", sub: "12g to 9g - awaiting approval", ok: false },
@@ -3301,7 +5520,7 @@ function OverviewScreen({ lang, bootstrap }) {
       }}>
         <div className="row" style={{ gap: 8 }}>
           <PulseDot color="#48D597"/>
-          <span style={{ fontWeight: 600 }}>STREAM ACTIVE</span>
+          <span style={{ fontWeight: 600 }}>{ar ? "التدفق نشط" : "STREAM ACTIVE"}</span>
         </div>
         <span style={{ color: "var(--terminal-faint)" }}>|</span>
         <span style={{ color: "var(--terminal-muted)" }}>
@@ -3310,22 +5529,22 @@ function OverviewScreen({ lang, bootstrap }) {
         </span>
         <span style={{ color: "var(--terminal-faint)" }}>|</span>
         <span style={{ color: "var(--terminal-muted)" }}>
-          <span style={{ color: "var(--terminal-ink)", fontWeight: 600 }}>{kiosks.length}/{kiosks.length}</span> KIOSKS ONLINE
+          <span style={{ color: "var(--terminal-ink)", fontWeight: 600 }}>{kiosks.length}/{kiosks.length}</span> {ar ? "الأكشاك متصلة" : "KIOSKS ONLINE"}
         </span>
         <span style={{ color: "var(--terminal-faint)" }}>|</span>
         <span style={{ color: "var(--terminal-muted)" }}>
-          <span style={{ color: "var(--terminal-ink)" }}>42</span>ms LATENCY
+          <span style={{ color: "var(--terminal-ink)" }}>42</span>{ar ? " مللي ثانية زمن الاستجابة" : "ms LATENCY"}
         </span>
         <span style={{ flex: 1 }}/>
         <span className="ov-cursor" style={{ color: "var(--terminal-muted)" }}>
-          watching {kiosks.length} sites - {feed.length} events buffered
+          {ar ? `يراقب ${kiosks.length} مواقع - ${feed.length} أحداث في الانتظار` : `watching ${kiosks.length} sites - ${feed.length} events buffered`}
         </span>
         <span style={{ color: "var(--terminal-faint)", marginInlineStart: 14 }}>|</span>
         <div className="ov-period" role="tablist" aria-label="Time range">
           {[
-            { id: "day",   label: "D", title: "Daily"   },
-            { id: "week",  label: "W", title: "Weekly"  },
-            { id: "month", label: "M", title: "Monthly" },
+            { id: "day",   label: ar ? "ي" : "D", title: ar ? "يومي" : "Daily"   },
+            { id: "week",  label: ar ? "أ" : "W", title: ar ? "أسبوعي" : "Weekly"  },
+            { id: "month", label: ar ? "ش" : "M", title: ar ? "شهري" : "Monthly" },
           ].map((p) => (
             <button key={p.id} type="button"
               role="tab" aria-selected={period === p.id} title={p.title}
@@ -3343,8 +5562,8 @@ function OverviewScreen({ lang, bootstrap }) {
       <div style={{
         display: "grid",
         // Narrow rank-list column (~30% slimmer than before) + very narrow live activity.
-        // The right column absorbs the freed width so the hourly chart can breathe.
-        gridTemplateColumns: "minmax(190px, 0.6fr) minmax(190px, 0.45fr) minmax(380px, 1.95fr)",
+        // The right column absorbs the freed width so the sales flow chart can breathe.
+        gridTemplateColumns: "minmax(190px, 0.6fr) minmax(190px, 0.45fr) 687.1875px",
         gap: 12, alignItems: "stretch",
         flex: 1, minHeight: 0,
       }}>
@@ -3371,7 +5590,7 @@ function OverviewScreen({ lang, bootstrap }) {
                     <div className="ov-row">
                       <RankIndicator rank={idx}/>
                       <span className="ov-name">
-                        <span style={{ fontSize: 12.5, fontWeight: 500 }}>{k.name}</span>
+                        <span style={{ fontSize: 12.5, fontWeight: 500 }}>{arTerm(lang, k.name)}</span>
                         <span className="swap-badge t-num" style={{ fontSize: 10, fontWeight: 600, color: "var(--pos)", fontFamily: "var(--font-mono)" }}>+</span>
                       </span>
                       <div className="ov-bar-track">
@@ -3409,7 +5628,7 @@ function OverviewScreen({ lang, bootstrap }) {
                     <div className="ov-row">
                       <RankIndicator rank={idx}/>
                       <span className="ov-name">
-                        <span style={{ fontSize: 12.5, fontWeight: 500 }}>{k.name}</span>
+                        <span style={{ fontSize: 12.5, fontWeight: 500 }}>{arTerm(lang, k.name)}</span>
                         <span className="swap-badge t-num" style={{ fontSize: 10, fontWeight: 600, color: tone, fontFamily: "var(--font-mono)" }}>!</span>
                       </span>
                       <div className="ov-bar-track">
@@ -3432,7 +5651,7 @@ function OverviewScreen({ lang, bootstrap }) {
                 {ar ? "أعلى المنتجات" : "Top products"}
               </div>
               <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>
-                by revenue - {periodSubtitle}
+                {ar ? "حسب الإيرادات" : "by revenue"} - {periodSubtitle}
               </span>
             </div>
             <div style={{ padding: 10 }}>
@@ -3446,7 +5665,7 @@ function OverviewScreen({ lang, bootstrap }) {
                     <div className="ov-row">
                       <RankIndicator rank={idx}/>
                       <span className="ov-name">
-                        <span style={{ fontSize: 12.5, fontWeight: 500 }}>{p.name}</span>
+                        <span style={{ fontSize: 12.5, fontWeight: 500 }}>{arTerm(lang, p.name)}</span>
                         <span className="swap-badge t-num" style={{ fontSize: 10, fontWeight: 600, color: "var(--pos)", fontFamily: "var(--font-mono)" }}>+</span>
                       </span>
                       <div className="ov-bar-track">
@@ -3469,7 +5688,7 @@ function OverviewScreen({ lang, bootstrap }) {
                 {ar ? "أعلى الهدر" : "Top waste"}
               </div>
               <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>
-                by cost - {periodSubtitle}
+                {ar ? "حسب التكلفة" : "by cost"} - {periodSubtitle}
               </span>
             </div>
             <div style={{ padding: 10 }}>
@@ -3483,7 +5702,7 @@ function OverviewScreen({ lang, bootstrap }) {
                     <div className="ov-row">
                       <RankIndicator rank={idx}/>
                       <span className="ov-name">
-                        <span style={{ fontSize: 12.5, fontWeight: 500 }}>{w.name}</span>
+                        <span style={{ fontSize: 12.5, fontWeight: 500 }}>{arTerm(lang, w.name)}</span>
                         <span className="swap-badge t-num" style={{ fontSize: 10, fontWeight: 600, color: "var(--warn)", fontFamily: "var(--font-mono)" }}>!</span>
                       </span>
                       <div className="ov-bar-track">
@@ -3517,7 +5736,7 @@ function OverviewScreen({ lang, bootstrap }) {
               <div className="ov-kpi-row">
                 <div>
                   <div className="ov-kpi-label">{ar ? "الإيرادات" : "Total sales today"}</div>
-                  <div className="ov-kpi-delta" style={{ color: liveOnly ? "var(--ink-3)" : "var(--pos)" }}>{planDelta}</div>
+                  <div className="ov-kpi-delta" style={{ color: sourceDriven ? "var(--ink-3)" : "var(--pos)" }}>{planDelta}</div>
                 </div>
                 <div className="ov-kpi-value">
                   <TickerNum value={totalRev * periodMul} format={(v) => fmtIQD(v)}/>
@@ -3526,41 +5745,47 @@ function OverviewScreen({ lang, bootstrap }) {
               <div className="ov-kpi-row">
                 <div>
                   <div className="ov-kpi-label">{ar ? "الربح الإجمالي" : "Profit estimate"}</div>
-                  <div className="ov-kpi-delta" style={{ color: "var(--pos)" }}>+ 28.9% margin</div>
+                  <div className="ov-kpi-delta" style={{ color: grossProfitKnown ? "var(--pos)" : "var(--ink-3)" }}>{profitMarginDisplay}</div>
                 </div>
                 <div className="ov-kpi-value">
-                  <TickerNum value={grossProfit * periodMul} format={(v) => fmtIQD(v)}/>
+                  {grossProfitKnown && isFiniteNumber(grossProfit)
+                    ? <TickerNum value={Number(grossProfit) * periodMul} format={(v) => fmtIQD(v)}/>
+                    : "—"}
                 </div>
               </div>
               <div className="ov-kpi-row">
                 <div>
                   <div className="ov-kpi-label">{ar ? "النقد المتوقع" : "Cash expected"}</div>
-                  <div className="ov-kpi-delta" style={{ color: "var(--ink-3)" }}>cash drawer total</div>
+                  <div className="ov-kpi-delta" style={{ color: "var(--ink-3)" }}>{ar ? "إجمالي درج النقد" : "cash drawer total"}</div>
                 </div>
                 <div className="ov-kpi-value">
-                  <TickerNum value={cashExpected * periodMul} format={(v) => fmtIQD(v)}/>
+                  {cashExpectedKnown && isFiniteNumber(cashExpected)
+                    ? <TickerNum value={Number(cashExpected) * periodMul} format={(v) => fmtIQD(v)}/>
+                    : "—"}
                 </div>
               </div>
               <div className="ov-kpi-row">
                 <div>
                   <div className="ov-kpi-label">{ar ? "المدفوعات الرقمية" : "Digital payments"}</div>
-                  <div className="ov-kpi-delta" style={{ color: "var(--ink-3)" }}>card, QR, wallet, manual</div>
+                  <div className="ov-kpi-delta" style={{ color: "var(--ink-3)" }}>{ar ? "بطاقة، QR، محفظة، يدوي" : "card, QR, wallet, manual"}</div>
                 </div>
                 <div className="ov-kpi-value">
-                  <TickerNum value={digitalPayments * periodMul} format={(v) => fmtIQD(v)}/>
+                  {digitalPaymentsKnown && isFiniteNumber(digitalPayments)
+                    ? <TickerNum value={Number(digitalPayments) * periodMul} format={(v) => fmtIQD(v)}/>
+                    : "—"}
                 </div>
               </div>
               <div className="ov-kpi-row">
                 <div>
                   <div className="ov-kpi-label">{ar ? "الأكشاك" : "Kiosk status"}</div>
-                  <div className="ov-kpi-delta" style={{ color: "var(--warn)" }}>{lowStockAlerts} low-stock alerts</div>
+                  <div className="ov-kpi-delta" style={{ color: lowStockAlerts == null ? "var(--ink-3)" : "var(--warn)" }}>{lowStockAlerts == null ? (ar ? "تنبيهات المخزون غير متاحة" : "Stock alerts not available yet") : (ar ? `${lowStockAlerts} تنبيهات مخزون منخفض` : `${lowStockAlerts} low-stock alerts`)}</div>
                 </div>
-                <div className="ov-kpi-value">{openKiosks} open / {closedKiosks} closed</div>
+                <div className="ov-kpi-value">{ar ? `${openKiosks} مفتوح / ${closedKiosks} مغلق` : `${openKiosks} open / ${closedKiosks} closed`}</div>
               </div>
               <div className="ov-kpi-row">
                 <div>
                   <div className="ov-kpi-label">{ar ? "الطلبات" : "Orders"}</div>
-                  <div className="ov-kpi-delta" style={{ color: "var(--ink-3)" }}>avg {fmtIQD(totalRev/Math.max(1,totalOrders)).replace("IQD ", "")}</div>
+                  <div className="ov-kpi-delta" style={{ color: "var(--ink-3)" }}>{ar ? "متوسط" : "avg"} {fmtIQD(totalRev/Math.max(1,totalOrders)).replace("IQD ", "")}</div>
                 </div>
                 <div className="ov-kpi-value">
                   <TickerNum value={totalOrders * periodMul} format={(v) => fmtNum(Math.round(v))}/>
@@ -3569,16 +5794,16 @@ function OverviewScreen({ lang, bootstrap }) {
               <div className="ov-kpi-row">
                 <div>
                   <div className="ov-kpi-label">{ar ? "الهدر" : "Waste"}</div>
-                  <div className="ov-kpi-delta" style={{ color: "var(--pos)" }}>+ target 4%</div>
+                  <div className="ov-kpi-delta" style={{ color: wastePct == null ? "var(--ink-3)" : "var(--pos)" }}>{wastePct == null ? (ar ? "بانتظار بيانات الهدر" : "Awaiting engine waste totals") : (ar ? "+ الهدف ٤٪" : "+ target 4%")}</div>
                 </div>
-                <div className="ov-kpi-value">{displayWastePct.toFixed(1)}%</div>
+                <div className="ov-kpi-value">{wastePct == null ? "—" : `${wastePct.toFixed(1)}%`}</div>
               </div>
               <div className="ov-kpi-row">
                 <div>
                   <div className="ov-kpi-label">{ar ? "الفرق" : "Variance"}</div>
-                  <div className="ov-kpi-delta" style={{ color: "var(--crit)" }}>{unresolvedVariances} unresolved closes</div>
+                  <div className="ov-kpi-delta" style={{ color: unresolvedVariances == null ? "var(--ink-3)" : "var(--crit)" }}>{unresolvedVariances == null ? (ar ? "بانتظار تقفيلات موثقة" : "Awaiting verified closes") : (ar ? `${unresolvedVariances} إغلاقات غير محلولة` : `${unresolvedVariances} unresolved closes`)}</div>
                 </div>
-                <div className="ov-kpi-value" style={{ color: "var(--crit)" }}>{variancePct.toFixed(1)}%</div>
+                <div className="ov-kpi-value" style={{ color: variancePct == null ? "var(--ink-3)" : "var(--crit)" }}>{variancePct == null ? "—" : `${variancePct.toFixed(1)}%`}</div>
               </div>
             </div>
           </div>
@@ -3591,7 +5816,7 @@ function OverviewScreen({ lang, bootstrap }) {
                 {ar ? "النشاط المباشر" : "Live activity"}
               </div>
               <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>
-                streaming across kiosks
+                {ar ? "يتدفق عبر الأكشاك" : "streaming across kiosks"}
               </span>
             </div>
             <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
@@ -3602,26 +5827,46 @@ function OverviewScreen({ lang, bootstrap }) {
 
         {/* ---- RIGHT column ---- */}
         <div className="col" style={{ gap: 12 }}>
+          <div className="ov-top-analytics">
+          <div className="ov-section qualified-lead-flow-panel">
+            <div className="ov-section-head">
+              <div className="ov-section-title">
+                <span className="hourly-pulse-tone-dot" />
+                {simulationActive ? ui(ar, "simulationPulse") : (ar ? "تدفق المبيعات" : "Sales flow")}
+              </div>
+              <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>
+                {simulationActive ? (ar ? "طلب الدقيقة" : "minute demand") : (ar ? "يونيو-مايو" : "Jun-May")}
+              </span>
+            </div>
+            {simulationActive && simulationPulseRows ? (
+              <HourlyPulse data={simulationPulseRows} currentHour={14} />
+            ) : (
+              <QualifiedSalesFlowChart
+                rows={leadFlowRows}
+                total={leadFlowTotal}
+                target={leadFlowTarget}
+                ar={ar}
+              />
+            )}
+          </div>
+
           <div className="ov-section">
             <div className="ov-section-head">
               <div className="ov-section-title">
-                <PulseDot color="var(--ink-2)"/>
-                {ar ? "نبض الساعة" : "Hourly pulse"}
+                <PulseDot color="var(--chart-3)"/>
+                {ar ? "مزيج الدفع" : "Payment mix"}
               </div>
               <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>
-                <TickerNum value={totalRev * periodMul} format={(v) => fmtCompact(v)}/> {periodSubtitle}
+                {ar ? `${paymentMixRows.length} مسارات` : `${paymentMixRows.length} rails`}
               </span>
             </div>
-            <div style={{ padding: "14px 14px 12px" }}>
-              <HourlyPulse data={hourly} currentHour={currentHour}/>
-              <div className="row" style={{ marginTop: 8, fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--ink-3)", letterSpacing: "0.04em" }}>
-                <span>00</span><span style={{ flex: 1 }}/>
-                <span>06</span><span style={{ flex: 1 }}/>
-                <span>12</span><span style={{ flex: 1 }}/>
-                <span>18</span><span style={{ flex: 1 }}/>
-                <span>23</span>
-              </div>
-            </div>
+            <PaymentMixDonut
+              rows={paymentMixRows}
+              total={paymentMixTotal}
+              centerLabel={ar ? "الإجمالي" : "Total"}
+              centerValue={fmtCompact(paymentMixTotal)}
+            />
+          </div>
           </div>
 
           <div className="ov-section">
@@ -3641,14 +5886,14 @@ function OverviewScreen({ lang, bootstrap }) {
                 }}>
                   <span className={`dot ${a.level}`} style={{ marginTop: 6, flexShrink: 0 }}></span>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 500, fontSize: 12.5, lineHeight: 1.35 }}>{a.title}</div>
-                    <div className="t-small subtle" style={{ fontSize: 11, marginTop: 3, lineHeight: 1.45 }}>{a.body}</div>
-                    <div className="t-small faint" style={{ fontSize: 10.5, marginTop: 5, fontFamily: "var(--font-mono)" }}>{a.time}</div>
+                    <div style={{ fontWeight: 500, fontSize: 12.5, lineHeight: 1.35 }}>{arTerm(lang, a.title)}</div>
+                    <div className="t-small subtle" style={{ fontSize: 11, marginTop: 3, lineHeight: 1.45 }}>{arTerm(lang, a.body)}</div>
+                    <div className="t-small faint" style={{ fontSize: 10.5, marginTop: 5, fontFamily: "var(--font-mono)" }}>{arTerm(lang, a.time)}</div>
                   </div>
                 </div>
               )) : (
                 <div className="t-small muted" style={{ padding: "14px", lineHeight: 1.5 }}>
-                  No verified alerts from the engine yet.
+                  {arTerm(lang, "No verified alerts from the engine yet.")}
                 </div>
               )}
             </div>
@@ -3660,7 +5905,7 @@ function OverviewScreen({ lang, bootstrap }) {
                 <PulseDot color="var(--accent)"/>
                 {ar ? "إجراءات تلقائية" : "Auto-actions"}
               </div>
-              <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>queue - {actionRows.length}</span>
+              <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>{ar ? "الطابور" : "queue"} - {actionRows.length}</span>
             </div>
             <div style={{ padding: "10px 14px" }}>
               {actionRows.length ? actionRows.map((a, i) => (
@@ -3672,13 +5917,13 @@ function OverviewScreen({ lang, bootstrap }) {
                     display: "grid", placeItems: "center", fontSize: 10, fontWeight: 700,
                   }}>{a.ok ? "OK" : "?"}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12, fontWeight: 500, lineHeight: 1.3 }}>{a.label}</div>
-                    <div className="t-small subtle" style={{ fontSize: 10.5 }}>{a.sub}</div>
+                    <div style={{ fontSize: 12, fontWeight: 500, lineHeight: 1.3 }}>{arTerm(lang, a.label)}</div>
+                    <div className="t-small subtle" style={{ fontSize: 10.5 }}>{arTerm(lang, a.sub)}</div>
                   </div>
                 </div>
               )) : (
                 <div className="t-small muted" style={{ padding: "4px 0", lineHeight: 1.5 }}>
-                  No automated actions without verified engine inputs.
+                  {arTerm(lang, "No automated actions without verified engine inputs.")}
                 </div>
               )}
             </div>
@@ -3690,12 +5935,12 @@ function OverviewScreen({ lang, bootstrap }) {
                 <PulseDot color="var(--ai)"/>
                 {ar ? "ملخص الذكاء" : "AI summary"}
               </div>
-              <span className="badge badge-ai" style={{ height: 18, fontSize: 10 }}>traceable</span>
+              <span className="badge badge-ai" style={{ height: 18, fontSize: 10 }}>{ar ? "قابل للتتبع" : "traceable"}</span>
             </div>
             <div style={{ padding: "12px 14px" }}>
               <div className="ai-block">
                 <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.45 }}>
-                  {liveOnly
+                  {sourceDriven
                     ? "No AI summary until verified engine rows are synced."
                     : ar ? MOCK.ai.varianceLead.headlineAr : MOCK.ai.varianceLead.headlineEn}
                 </div>
@@ -3950,14 +6195,283 @@ const SCENES = {
       },
     ]
   },
+
+  stock: {
+    label: "What should we transfer today?",
+    labelAr: "شنو نحول اليوم؟",
+    reply: "I drafted a read-only stock allocation plan. Dairy and bakery runway are the tightest. The canvas shows runway by category, the variance drivers, and two proposed transfers (proposal-only).",
+    replyAr: "حضّرت خطة توزيع مخزون (قراءة فقط). أقرب نفاد هو الألبان والمخبوزات. اللوحة تعرض الأيام المتبقية حسب الفئة وأسباب الضغط وتحويلين مقترحين (اقتراح فقط).",
+    cards: [
+      {
+        id: "stock-runway", type: "runway", span: "4/3",
+        kind: "Operations - Runway",
+        title: "Runway by category (days)",
+        rows: [
+          { label: "Dairy", days: 1.1, target: 5, ok: false },
+          { label: "Bakery", days: 1.9, target: 4, ok: false },
+          { label: "Produce", days: 3.2, target: 5, ok: false },
+          { label: "Coffee", days: 8.6, target: 7, ok: true },
+        ],
+        body: "Tight runway drives transfer priority",
+      },
+      {
+        id: "stock-stack", type: "stack", span: "8/4",
+        kind: "Drivers",
+        title: "Why stock pressure is rising",
+        segments: [
+          { label: "Higher-than-plan sales", v: 4.2, color: "var(--pos)" },
+          { label: "Late supplier receipt", v: 3.1, color: "var(--warn)" },
+          { label: "Recipe over-consumption", v: 1.7, color: "var(--crit)" },
+        ],
+        total: 9,
+        body: "Focus on receipts + recipe variance loop",
+      },
+      {
+        id: "stock-actions", type: "actions", span: "4/4",
+        kind: "Proposal only",
+        title: "Two proposed transfers",
+        actions: [
+          { label: "Transfer 40L milk: Central → K-04 Zayouna", sub: "Covers ~2.0 days", primary: true },
+          { label: "Transfer 18 trays bakery: Central → K-02 Mansour", sub: "Protects morning peak", primary: false },
+        ],
+      },
+      {
+        id: "stock-hourly", type: "hourly", span: "12/3",
+        kind: "Timing",
+        title: "Ideal dispatch window (to avoid peak)",
+        data: [0, 0, 0, 0, 0, 0, 0, 8, 22, 48, 64, 58, 44, 32, 24, 18, 12, 8, 4, 2, 0, 0, 0, 0],
+        currentHour: 9,
+      },
+    ],
+  },
+
+  close: {
+    label: "Which closes need attention?",
+    labelAr: "أي إغلاق يحتاج مراجعة؟",
+    reply: "The canvas highlights closes needing review: cash variance, counted-vs-expected stock variance, and any missing/failed recipe posting blockers. All actions remain manager-operated in v1.",
+    replyAr: "اللوحة تعرض الإغلاقات التي تحتاج مراجعة: فرق النقد، فرق المخزون (محسوب مقابل متوقع)، وأي عوائق مثل وصفة ناقصة أو فشل ترحيل الاستهلاك. كل الإجراءات تبقى بيد المدير في النسخة الأولى.",
+    cards: [
+      {
+        id: "close-rank", type: "rank", span: "4/3",
+        kind: "Review queue",
+        title: "Largest variances today",
+        rows: [
+          { label: "K-07 Majidi Mall", v: 1.6, target: 0 },
+          { label: "K-04 Zayouna Plaza", v: 0.9, target: 0 },
+          { label: "K-02 Mansour District", v: 0.4, target: 0 },
+          { label: "Tolerance", v: 0, target: 0, muted: true },
+        ],
+        body: "Prioritize kiosks above tolerance",
+      },
+      {
+        id: "close-stack", type: "stack", span: "8/4",
+        kind: "Variance breakdown",
+        title: "What explains the variance",
+        segments: [
+          { label: "Counted stock mismatch", v: 52, color: "var(--crit)" },
+          { label: "Cash drawer variance", v: 31, color: "var(--warn)" },
+          { label: "Missing recipe posting", v: 17, color: "var(--ink-2)" },
+        ],
+        total: 100,
+        body: "Block approvals if recipe posting failed/missing",
+      },
+      {
+        id: "close-wastegrid", type: "wastegrid", span: "12/4",
+        kind: "Last 14 days - variance % by kiosk",
+        title: "Variance heatmap",
+        kiosks: ["K-01 Karrada","K-02 Mansour","K-03 Baghdad Mall","K-04 Zayouna","K-05 Al Mansour Mall","K-06 Family Mall G2","K-07 Majidi Mall","K-08 Empire Mall","K-09 Basra Times","K-10 Basra Mall"],
+        rows: 14,
+      },
+      {
+        id: "close-actions", type: "actions", span: "12/3",
+        kind: "Manager-only",
+        title: "Recommended review steps",
+        actions: [
+          { label: "Open close detail for K-07 and verify counted lines", sub: "Audit expected vs counted inputs", primary: true },
+          { label: "Confirm missing recipe postings before approval", sub: "No silent failure allowed", primary: false },
+          { label: "Add note + reject if evidence is incomplete", sub: "Keep audit trail", primary: false },
+        ],
+      },
+    ],
+  },
 };
 
 const SUGGESTED = [
-  { id: "k04",      text: "Why is Zayouna Plaza 12% behind?" },
-  { id: "weekend",  text: "What should I push this weekend?" },
-  { id: "waste",    text: "Show me waste anomalies" },
-  { id: "default",  text: "Today's brief" },
+  { id: "k04",      text: "Why is Zayouna Plaza 12% behind?", textAr: "لماذا ساحة زيونة متأخرة 12%؟" },
+  { id: "weekend",  text: "What should I push this weekend?", textAr: "ما الذي أركز عليه هذا الأسبوع؟" },
+  { id: "waste",    text: "Show me waste anomalies", textAr: "اعرض شذوذ الهدر" },
+  { id: "default",  text: "Today's brief", textAr: "ملخص اليوم" },
 ];
+
+const suggestedText = (suggestion, lang) => (lang === "ar" ? suggestion.textAr : suggestion.text);
+
+const AI_CANVAS_AR = {
+  "Live LLM": "النموذج مباشر",
+  "Local preview": "معاينة محلية",
+  "AI runtime": "تشغيل الذكاء",
+  "Source evidence": "دليل المصدر",
+  "Claim proof": "دليل الادعاء",
+  "numeric refs": "مراجع رقمية",
+  "samples": "عينات",
+  "canvas": "لوحة",
+  "artifact": "أثر",
+  "artifacts": "آثار",
+  "visual": "تصور",
+  "visuals": "تصورات",
+  "claims": "ادعاءات",
+  "sources": "مصادر",
+  "source-backed": "مدعوم بالمصدر",
+  "Open artifact": "فتح الأثر",
+  "Selected artifact": "الأثر المحدد",
+  "read-only": "قراءة فقط",
+  "proposal-only": "اقتراح فقط",
+  "human-action": "إجراء بشري",
+  "provider": "المزوّد",
+  "model": "النموذج",
+  "tier": "الباقة",
+  "tokens left": "الرموز المتبقية",
+  "source refs": "مراجع المصدر",
+  "source refs pending": "مراجع المصدر قيد الانتظار",
+  "pending": "قيد الانتظار",
+  "rows": "صفوف",
+  "pack": "حزمة",
+  "component": "مكوّن",
+  "plan": "الخطة",
+  "intent": "القصد",
+  "time": "الفترة",
+  "packs": "الحزم",
+  "components": "المكوّنات",
+  "sources": "المصادر",
+  "local-plan": "خطة محلية",
+  "local": "محلي",
+  "server-side": "من الخادم",
+  "llm_called": "تم استدعاء النموذج",
+  "missing_credentials": "المفاتيح غير مضبوطة",
+  "provider_error": "خطأ المزوّد",
+  "tokens": "رموز",
+  "left": "متبقية",
+  "unlimited": "غير محدود",
+  "token guarded": "محمي بميزانية الرموز",
+  "overview": "نظرة عامة",
+  "sales": "المبيعات",
+  "kiosks": "الأكشاك",
+  "finance": "المالية",
+  "reports": "التقارير",
+  "inventory": "المخزون",
+  "warehouses": "المستودعات",
+  "items": "الأصناف",
+  "products": "المنتجات",
+  "suppliers": "الموردون",
+  "closing": "الإغلاق",
+  "waste": "الهدر",
+  "staff": "الأفراد",
+  "ai-explanation": "شرح ذكاء",
+  "area-chart": "رسم مساحة",
+  "bar-chart": "أعمدة",
+  "donut": "مؤشر دائري",
+  "expanded-table": "جدول موسّع",
+  "heatmap": "خريطة حرارة",
+  "kpi-grid": "مؤشرات",
+  "meter": "مقياس",
+  "progress-list": "قائمة تقدم",
+  "proposal-card": "اقتراح",
+  "rank-list": "ترتيب",
+  "stacked-breakdown": "تفصيل",
+  "status-card": "حالة",
+  "table": "جدول",
+  "timeline": "خط زمني",
+  "Today command metrics": "مؤشرات اليوم",
+  "Top performers": "الأعلى أداءً",
+  "Signals needing attention": "إشارات تحتاج انتباهاً",
+  "Traceable summary": "ملخص قابل للتتبع",
+  "Kiosk diagnosis": "تشخيص الكشك",
+  "Variance breakdown": "تفصيل الفروقات",
+  "Hourly pattern": "النمط بالساعة",
+  "Stock proof": "دليل المخزون",
+  "Waste heatmap": "خريطة الهدر",
+  "Reason control": "تحليل الأسباب",
+  "Flagged entries": "قيود معلّمة",
+  "Recommended next steps": "الخطوات المقترحة",
+  "Inventory health": "صحة المخزون",
+  "Kiosk stock needs": "احتياجات مخزون الكشك",
+  "Transfer queue": "طابور التحويلات",
+  "Proposal only": "اقتراح فقط",
+  "Closes needing review": "إغلاقات تحتاج مراجعة",
+  "Variance inputs": "مدخلات الفروقات",
+  "Recipe posting blockers": "عوائق ترحيل الوصفة",
+  "Cashier overlap": "تداخل الكاشير",
+  "Recipe margin proof": "دليل هامش الوصفة",
+  "Supplier cost driver": "محرك تكلفة المورد",
+  "Trend comparison": "مقارنة الاتجاه",
+  "P&L impact": "أثر الربح والخسارة",
+  "Payment split": "توزيع المدفوعات",
+  "Payment methods": "طرق الدفع",
+  "Gateway settlement": "تسوية البوابات",
+  "Order-level proof": "دليل مستوى الطلب",
+  "Cashier performance": "أداء الكاشير",
+  "Close variance overlap": "تداخل فرق الإغلاق",
+  "Peer comparison": "مقارنة بالأقران",
+  "Stock source cards": "بطاقات مصدر المخزون",
+  "Topology table": "جدول الهيكل",
+  "Stock item catalog": "كتالوج أصناف المخزون",
+  "Menu product catalog": "كتالوج منتجات القائمة",
+  "Inventory ledger": "دفتر حركة المخزون",
+  "Sales": "المبيعات",
+  "Orders": "الطلبات",
+  "Waste": "الهدر",
+  "Variance": "الفرق",
+  "Low stock": "مخزون منخفض",
+  "Variances": "الفروقات",
+  "Recipes": "الوصفات",
+  "Healthy": "سليم",
+  "Low": "منخفض",
+  "Critical": "حرج",
+  "Rows": "الصفوف",
+  "Kiosk": "الكشك",
+  "Cash": "النقد",
+  "Review": "المراجعة",
+  "Item": "الصنف",
+  "Expected": "المتوقع",
+  "Counted": "المعدود",
+  "Var": "الفرق",
+  "Issues": "المشاكل",
+  "Status": "الحالة",
+  "Cost": "التكلفة",
+  "Reason": "السبب",
+  "Order": "طلب",
+  "Recommended review": "مراجعة مقترحة",
+  "Proposal only - manager action required": "اقتراح فقط - يحتاج إجراء المدير",
+  "Transfer proposal": "اقتراح تحويل",
+  "Proposal only": "اقتراح فقط",
+  "Registered dashboard component rendered from the AI plan.": "مكوّن لوحة مسجّل تم عرضه من خطة الذكاء.",
+  "Traceable summary awaits the live report pack.": "الملخص القابل للتتبع ينتظر حزمة التقرير المباشرة.",
+  "Source-backed claim": "ادعاء مدعوم بالمصدر",
+  "no matching rows in compact report pack": "لا توجد صفوف مطابقة في حزمة التقرير المختصرة",
+  "items": "أصناف",
+  "orders": "طلبات",
+  "alerts": "تنبيهات",
+  "issues": "مشاكل",
+  "open": "مفتوحة",
+  "quants": "كميات",
+  "qty": "كمية",
+};
+
+function aiCanvasText(lang, value) {
+  const text = String(value || "");
+  if (lang !== "ar") return text;
+  return AI_CANVAS_AR[text] || arTerm(lang, text);
+}
+
+function aiPlanTitle(component, registry, lang) {
+  const raw = component.title || registry?.label || component.componentId;
+  if (lang !== "ar") return raw;
+  return AI_CANVAS_AR[component.componentId] || AI_CANVAS_AR[raw] || arTerm(lang, raw);
+}
+
+function aiStatusText(lang, value) {
+  const text = String(value || "local-plan");
+  return lang === "ar" ? (AI_CANVAS_AR[text] || text.replace(/_/g, " ")) : text;
+}
 
 // ============================================================
 // Streaming-text hook — types out a string char by char
@@ -3989,7 +6503,10 @@ function useStream(target, speed = 14) {
 // ============================================================
 // Card visualization components
 // ============================================================
+const hasArabicText = (value) => /[\u0600-\u06FF]/.test(String(value || ""));
+
 function CardShell({ children, kind, title, confidence, body, accent }) {
+  const arCard = hasArabicText(kind) || hasArabicText(title) || hasArabicText(body);
   return (
     <div className="ins-card" style={{ position: "relative" }}>
       {accent && <div style={{
@@ -4001,7 +6518,7 @@ function CardShell({ children, kind, title, confidence, body, accent }) {
         <span style={{ flex: 1 }}/>
         {confidence != null && (
           <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>
-            {confidence}% conf
+            {confidence}% {arCard ? "ثقة" : "conf"}
           </span>
         )}
       </div>
@@ -4012,8 +6529,33 @@ function CardShell({ children, kind, title, confidence, body, accent }) {
   );
 }
 
+function localizeInsightCard(card, lang) {
+  if (lang !== "ar") return card;
+  const localizeRow = (row) => ({
+    ...row,
+    label: arTerm(lang, row.label),
+    reason: arTerm(lang, row.reason),
+  });
+  return {
+    ...card,
+    kind: arTerm(lang, card.kind),
+    title: arTerm(lang, card.title),
+    body: arTerm(lang, card.body),
+    unit: arTerm(lang, card.unit),
+    note: arTerm(lang, card.note),
+    deltaLabel: arTerm(lang, card.deltaLabel),
+    annotation: card.annotation ? { ...card.annotation, label: arTerm(lang, card.annotation.label) } : card.annotation,
+    bars: Array.isArray(card.bars) ? card.bars.map((bar) => ({ ...bar, label: arTerm(lang, bar.label) })) : card.bars,
+    rows: Array.isArray(card.rows) ? card.rows.map(localizeRow) : card.rows,
+    segments: Array.isArray(card.segments) ? card.segments.map((segment) => ({ ...segment, label: arTerm(lang, segment.label) })) : card.segments,
+    actions: Array.isArray(card.actions) ? card.actions.map((action) => ({ ...action, label: arTerm(lang, action.label), sub: arTerm(lang, action.sub) })) : card.actions,
+    kiosks: Array.isArray(card.kiosks) ? card.kiosks.map((kiosk) => arTerm(lang, kiosk)) : card.kiosks,
+  };
+}
+
 function HeadlineCard({ card }) {
   const positive = card.delta >= 0 && (card.deltaUnit === "%" || card.deltaUnit === "pts" ? card.delta > 0 : true);
+  const arCard = hasArabicText(card.title) || hasArabicText(card.kind);
   // For waste/anomaly cards a "+%" delta is bad. Use the explicit kind tone:
   const isAnomaly = /Anomaly/i.test(card.kind || "");
   const tone = isAnomaly ? "var(--crit)" : (card.delta < 0 ? "var(--crit)" : "var(--pos)");
@@ -4024,7 +6566,7 @@ function HeadlineCard({ card }) {
           fontFamily: "var(--font-mono)", fontSize: 22, fontWeight: 500, color: tone,
           letterSpacing: "-0.01em",
         }}>
-          {card.delta > 0 ? "+" : ""}{card.delta}{card.deltaUnit}
+          {card.delta > 0 ? "+" : ""}{card.delta}{arTerm(arCard ? "ar" : "en", card.deltaUnit)}
         </span>
         <span className="t-small subtle">{card.deltaLabel}</span>
       </div>
@@ -4081,7 +6623,7 @@ function BarsCard({ card }) {
   const max = Math.max(...card.bars.flatMap(b => [b.v, b.prev]));
   return (
     <CardShell kind={card.kind} title={card.title} body={card.body} confidence={card.confidence}>
-      <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 96, marginTop: 4, padding: "0 4px" }}>
+      <div className="chart-surface" style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 112, marginTop: 4, padding: "14px 12px 10px" }}>
         {card.bars.map((b, i) => {
           const h = (b.v / max) * 100;
           const ph = (b.prev / max) * 100;
@@ -4109,6 +6651,7 @@ function BarsCard({ card }) {
 }
 
 function ForecastCard({ card }) {
+  const arCard = hasArabicText(card.title) || hasArabicText(card.kind);
   const W = 280, H = 80;
   return (
     <CardShell kind={card.kind} title={card.title} confidence={card.confidence}>
@@ -4131,11 +6674,11 @@ function ForecastCard({ card }) {
         <path d={`M ${W*0.55} ${H/2} Q ${W*0.78} ${H/2 - 18}, ${W} 8 L ${W} ${H - 8} Q ${W*0.78} ${H/2 + 18}, ${W*0.55} ${H/2} Z`} fill="url(#ins-fan)"/>
         <line x1={W*0.55} y1={H/2} x2={W} y2={H/2 - 16} stroke="var(--ink)" strokeWidth="1.4" strokeDasharray="3 2"/>
         <line x1={W*0.55} y1="0" x2={W*0.55} y2={H} stroke="var(--ink-3)" strokeWidth="0.8" strokeDasharray="2 2"/>
-        <text x={W*0.55 + 4} y="11" fontSize="9" fill="var(--ink-2)" fontFamily="var(--font-mono)">now</text>
-        <text x={W - 28} y={H - 2} fontSize="9" fill="var(--ink-3)" fontFamily="var(--font-mono)">Fri</text>
+        <text x={W*0.55 + 4} y="11" fontSize="9" fill="var(--ink-2)" fontFamily="var(--font-mono)">{arCard ? "الآن" : "now"}</text>
+        <text x={W - 28} y={H - 2} fontSize="9" fill="var(--ink-3)" fontFamily="var(--font-mono)">{arCard ? "جمعة" : "Fri"}</text>
       </svg>
       <div className="row" style={{ marginTop: 6, gap: 12, fontSize: 11, color: "var(--ink-2)", fontFamily: "var(--font-mono)" }}>
-        <span>range {card.rangeLow}-{card.rangeHigh}</span>
+        <span>{arCard ? "النطاق" : "range"} {card.rangeLow}-{card.rangeHigh}</span>
         <span style={{ flex: 1 }}/>
         <span className="subtle">{card.note}</span>
       </div>
@@ -4173,6 +6716,7 @@ function RankCard({ card }) {
 }
 
 function RunwayCard({ card }) {
+  const arCard = hasArabicText(card.title) || hasArabicText(card.kind);
   const max = 14;
   return (
     <CardShell kind={card.kind} title={card.title} body={card.body}>
@@ -4195,7 +6739,7 @@ function RunwayCard({ card }) {
                   width: 1.5, background: "var(--ink-2)", opacity: 0.7,
                 }}/>
               </div>
-              <span className="t-num" style={{ fontSize: 11, fontFamily: "var(--font-mono)", textAlign: "end", color: r.ok ? "var(--ink-2)" : "var(--crit)" }}>{r.days}d</span>
+              <span className="t-num" style={{ fontSize: 11, fontFamily: "var(--font-mono)", textAlign: "end", color: r.ok ? "var(--ink-2)" : "var(--crit)" }}>{r.days}{arCard ? "ي" : "d"}</span>
             </div>
           );
         })}
@@ -4258,7 +6802,7 @@ function HourlyCard({ card }) {
   const max = Math.max(...card.data);
   return (
     <CardShell kind={card.kind}>
-      <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 80, padding: "8px 0 6px" }}>
+      <div className="chart-surface" style={{ display: "flex", alignItems: "flex-end", gap: 5, height: 104, padding: "14px 12px 10px" }}>
         {card.data.map((v, i) => {
           const h = (v / max) * 100;
           const inOutage = i >= card.outageStart && i <= card.outageEnd;
@@ -4307,6 +6851,7 @@ function HeatmapCard({ card }) {
 }
 
 function RankBigCard({ card }) {
+  const arCard = hasArabicText(card.title) || hasArabicText(card.kind);
   return (
     <CardShell kind={card.kind} title={card.title}>
       <div className="col" style={{ gap: 10, marginTop: 4 }}>
@@ -4328,11 +6873,11 @@ function RankBigCard({ card }) {
             </div>
             <div className="col" style={{ alignItems: "flex-end", gap: 1 }}>
               <span className="t-num" style={{ fontFamily: "var(--font-mono)", fontSize: 16, fontWeight: 500 }}>{r.score}</span>
-              <span className="t-small faint" style={{ fontSize: 10 }}>score</span>
+              <span className="t-small faint" style={{ fontSize: 10 }}>{arCard ? "درجة" : "score"}</span>
             </div>
             <div className="row" style={{ gap: 14, fontSize: 11 }}>
-              <span><span className="subtle">attach</span> <span className="t-num" style={{ fontFamily: "var(--font-mono)", fontWeight: 500 }}>{r.attach}</span></span>
-              <span><span className="subtle">margin</span> <span className="t-num" style={{ fontFamily: "var(--font-mono)", fontWeight: 500 }}>{r.margin}</span></span>
+              <span><span className="subtle">{arCard ? "إرفاق" : "attach"}</span> <span className="t-num" style={{ fontFamily: "var(--font-mono)", fontWeight: 500 }}>{r.attach}</span></span>
+              <span><span className="subtle">{arCard ? "هامش" : "margin"}</span> <span className="t-num" style={{ fontFamily: "var(--font-mono)", fontWeight: 500 }}>{r.margin}</span></span>
             </div>
           </div>
         ))}
@@ -4342,6 +6887,7 @@ function RankBigCard({ card }) {
 }
 
 function WasteGridCard({ card }) {
+  const arCard = hasArabicText(card.title) || hasArabicText(card.kind);
   const COLS = card.kiosks.length;
   const ROWS = card.rows;
   // generate deterministic pseudo-data
@@ -4362,8 +6908,8 @@ function WasteGridCard({ card }) {
     <CardShell kind={card.kind} title={card.title}>
       <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
         <div className="col" style={{ justifyContent: "space-between", fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--ink-3)", paddingBottom: 18 }}>
-          <span>14d ago</span>
-          <span>today</span>
+          <span>{arCard ? "قبل 14 يوم" : "14d ago"}</span>
+          <span>{arCard ? "اليوم" : "today"}</span>
         </div>
         <div style={{ flex: 1 }}>
           <div style={{
@@ -4416,11 +6962,484 @@ const CARD_RENDERERS = {
   wastegrid: WasteGridCard,
 };
 
+const PLAN_COMPONENT_SPANS = {
+  small: 3,
+  medium: 4,
+  wide: 6,
+  full: 12,
+};
+
+function PlanComponentCard({ component, sourceEvidence, reportPack, claims, lang, compact = false }) {
+  const registry = safeDashboardComponent(component.componentId);
+  const requiredRefs = registry?.sourceRefsRequired || [];
+  const matchingEvidence = requiredRefs.map((model) => ({
+    model,
+    evidence: Array.isArray(sourceEvidence)
+      ? sourceEvidence.find((ref) => ref.model === model)
+      : null,
+  }));
+  const mode = component.mode === "human-action" ? "proposal-only" : component.mode;
+  const matchedSourceCount = matchingEvidence.filter(({ evidence }) => evidence).length;
+
+  return (
+    <div className={`ins-card${compact ? " ins-card-compact" : ""}`} style={{ minHeight: compact ? 128 : 148 }}>
+      <div className="between" style={{ gap: 10, alignItems: "flex-start", marginBottom: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <div className="row" style={{ gap: 6, marginBottom: 6 }}>
+            <span className="badge" style={{ height: 18, fontSize: 10 }}>{aiCanvasText(lang, mode || "read-only")}</span>
+            <span className="badge badge-ai" style={{ height: 18, fontSize: 10 }}>{aiCanvasText(lang, component.dataBinding || registry?.dataPacks?.[0] || "pack")}</span>
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 500, lineHeight: 1.3 }}>
+            {aiPlanTitle(component, registry, lang)}
+          </div>
+        </div>
+        <span className="t-small subtle" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, whiteSpace: "nowrap" }}>
+          {aiCanvasText(lang, registry?.visualKind || "component")}
+        </span>
+      </div>
+
+      <DataBoundPlanBody component={component} registry={registry} reportPack={reportPack} claims={claims} lang={lang}/>
+
+      {compact ? (
+        <div className="t-small subtle" style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
+          {matchingEvidence.length ? `${matchedSourceCount}/${matchingEvidence.length} ${aiCanvasText(lang, "source refs")}` : aiCanvasText(lang, "source refs pending")}
+        </div>
+      ) : (
+        <div style={{ marginTop: 12, display: "grid", gap: 6 }}>
+          {matchingEvidence.length ? matchingEvidence.slice(0, 4).map(({ model, evidence }) => (
+            <div key={model} className="between" style={{ gap: 8, border: "1px solid var(--line-soft)", borderRadius: 4, padding: "5px 7px" }}>
+              <span className="t-small" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{model}</span>
+              <span className="t-small subtle" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, whiteSpace: "nowrap" }}>
+                {evidence ? `${Number(evidence.rowCount || 0).toLocaleString("en")} ${aiCanvasText(lang, "rows")}` : aiCanvasText(lang, "pending")}
+              </span>
+            </div>
+          )) : (
+            <div className="t-small subtle" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
+              {aiCanvasText(lang, "source refs pending")}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const AI_PAYMENT_COLORS = {
+  cash: "var(--chart-5)",
+  online: "var(--chart-2)",
+  card: "var(--chart-2)",
+  qr: "var(--chart-3)",
+  mobile_wallet: "var(--chart-4)",
+  bank_app: "var(--accent)",
+  manual_digital: "var(--warn)",
+  digital_other: "var(--ink-3)",
+};
+
+function aiPaymentSplitFromReportPack(reportPack) {
+  const metricsPayments = reportPack?.metrics?.payments;
+  const normalized = normalizePaymentSplit(metricsPayments);
+  if (Number(normalized.total || 0) > 0 || Number(normalized.cash || 0) > 0 || Number(normalized.digital || 0) > 0) {
+    return normalized;
+  }
+  const split = createPaymentSplit();
+  (reportPack?.rows?.payments || []).forEach((row) => {
+    addPaymentToSplit(split, row.method || row.payment_method || row.name || "Digital", row.amount, row.provider || row.category);
+  });
+  return finalizePaymentSplit(split);
+}
+
+function AiPaymentSplitVisual({ reportPack, lang }) {
+  const payments = aiPaymentSplitFromReportPack(reportPack);
+  const cash = Number(payments.cash || 0);
+  const digital = Number(payments.digital || 0);
+  const total = Number(payments.total || cash + digital);
+  const rows = [
+    { id: "cash", label: aiCanvasText(lang, "Cash"), value: cash, color: AI_PAYMENT_COLORS.cash },
+    { id: "online", label: aiCanvasText(lang, "Online payments"), value: digital, color: AI_PAYMENT_COLORS.online },
+  ];
+
+  return (
+    <div className="ai-payment-visual">
+      <PaymentMixDonut
+        centerLabel={aiCanvasText(lang, "Total")}
+        centerValue={fmtMoneyShort(total)}
+        compact
+        formatValue={fmtMoneyShort}
+        rows={rows}
+        total={total}
+      />
+    </div>
+  );
+}
+
+function AiPaymentMethodBars({ reportPack, lang, mode = "methods" }) {
+  const payments = aiPaymentSplitFromReportPack(reportPack);
+  const sourceRows = mode === "providers"
+    ? paymentGatewayRows(payments, false)
+    : [
+        { label: "Cash", amount: Number(payments.cash || 0), category: "cash" },
+        { label: "Cards", amount: Number(payments.card || 0), category: "card" },
+        { label: "QR", amount: Number(payments.qr || 0), category: "qr" },
+        { label: "Wallets", amount: Number(payments.mobile_wallet || 0), category: "mobile_wallet" },
+        { label: "Bank apps", amount: Number(payments.bank_app || 0), category: "bank_app" },
+        { label: "Manual digital", amount: Number(payments.manual_digital || 0), category: "manual_digital" },
+        { label: "Other digital", amount: Number(payments.digital_other || 0), category: "digital_other" },
+      ];
+  const rows = sourceRows
+    .map((row) => ({
+      id: row.provider || row.id || row.category || row.label,
+      label: row.label || paymentCategoryLabel(row.category),
+      category: row.category || row.provider || "digital_other",
+      amount: Number(row.amount || 0),
+      settlement: row.settlement,
+    }))
+    .filter((row) => row.amount > 0)
+    .slice(0, mode === "providers" ? 6 : 7);
+  if (!rows.length) return <AiEmptyData lang={lang}/>;
+  const max = Math.max(...rows.map((row) => row.amount), 1);
+
+  return (
+    <div className="ai-payment-bars">
+      {rows.map((row, index) => {
+        const category = row.category || "digital_other";
+        const color = AI_PAYMENT_COLORS[category] || "var(--ink-2)";
+        return (
+          <div key={`${row.id}-${index}`} className="ai-payment-bar-row" style={{ "--ai-payment-color": color, "--ai-payment-delay": `${index * 70}ms` }}>
+            <div className="ai-payment-bar-meta">
+              <span className="ai-payment-bar-name">{aiCanvasText(lang, row.label)}</span>
+              <span className="ai-payment-bar-value">{fmtMoneyShort(row.amount)}</span>
+            </div>
+            <div className="ai-payment-bar-track">
+              <div className="ai-payment-bar-fill" style={{ width: `${Math.max(5, Math.min(100, (row.amount / max) * 100))}%` }}/>
+            </div>
+            {mode === "providers" && row.settlement && (
+              <div className="ai-payment-bar-foot">{aiCanvasText(lang, String(row.settlement).replace(/_/g, " "))}</div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DataBoundPlanBody({ component, registry, reportPack, claims, lang }) {
+  const rows = reportPack?.rows || {};
+  const metrics = reportPack?.metrics || {};
+  const totals = metrics.totals || {};
+  const alerts = metrics.alerts || {};
+  const byKiosk = metrics.byKiosk || [];
+
+  if (component.componentId === "overview.kpi_panel") {
+    return <AiMiniKpis rows={[
+      ["Sales", totals.salesToday, "IQD"],
+      ["Orders", totals.ordersToday, "orders"],
+      ["Waste", totals.wasteCost, "IQD"],
+      ["Variance", totals.cashVariance ?? totals.stockVarianceValue, "IQD"],
+    ]} lang={lang}/>;
+  }
+
+  if (component.componentId === "overview.top_performers_rank") {
+    return <AiRankRows rows={byKiosk.slice(0, 4).map((row) => ({
+      label: row.kioskName || row.kioskId || "Kiosk",
+      value: row.sales ?? row.orders ?? 0,
+      suffix: "IQD",
+    }))} lang={lang}/>;
+  }
+
+  if (component.componentId === "overview.alerts") {
+    return <AiMiniKpis rows={[
+      ["Low stock", alerts.lowStockItems, "items"],
+      ["Variances", alerts.unresolvedVariances, "open"],
+      ["Waste", alerts.wasteLossAlerts, "alerts"],
+      ["Recipes", alerts.recipePostingIssues, "issues"],
+    ]} lang={lang}/>;
+  }
+
+  if (component.componentId === "overview.ai_summary" || component.componentId === "canvas.headline") {
+    return <AiClaimInline claims={claims} fallback={registry?.dataContract} lang={lang}/>;
+  }
+
+  if (component.componentId === "canvas.stack") {
+    return <AiStackRows rows={(claims || []).flatMap((claim) => claim.numericValues || []).slice(0, 4).map((numeric) => ({
+      label: numeric.label,
+      value: numeric.value,
+      suffix: numeric.unit,
+    }))} lang={lang}/>;
+  }
+
+  if (component.componentId === "canvas.hourly") {
+    const salesRows = rows.sales || rows.orders || [];
+    return <AiRankRows rows={salesRows.slice(0, 5).map((row) => ({
+      label: row.kiosk || row.pos_config || row.name || "Order",
+      value: row.amount_total ?? row.revenue ?? row.orders ?? 0,
+      suffix: row.amount_total || row.revenue ? "IQD" : "orders",
+    }))} lang={lang}/>;
+  }
+
+  if (component.componentId === "canvas.actions") {
+    const proposals = rows.suggestedTransfers || rows.transfers || [];
+    return <AiProposalRows rows={proposals.slice(0, 3).map((row) => ({
+      title: row.item || row.product || row.name || "Recommended review",
+      detail: row.reason || row.state || row.destination || "Proposal only - manager action required",
+    }))} lang={lang}/>;
+  }
+
+  if (component.componentId === "inventory.studio_health_donut") {
+    const stock = rows.stock || [];
+    const critical = stock.filter((row) => Number(row.actual_qty ?? row.qty ?? 0) <= 0).length;
+    const low = stock.filter((row) => Number(row.actual_qty ?? row.qty ?? 0) > 0 && Number(row.actual_qty ?? row.qty ?? 0) <= 5).length;
+    const healthy = Math.max(stock.length - critical - low, 0);
+    return <AiMiniKpis rows={[["Healthy", healthy, "items"], ["Low", low, "items"], ["Critical", critical, "items"], ["Rows", stock.length, "quants"]]} lang={lang}/>;
+  }
+
+  if (component.componentId === "inventory.studio_stock_needs_panel") {
+    const stockNeeds = (rows.stock || [])
+      .filter((row) => Number(row.actual_qty ?? row.qty ?? 0) <= 5)
+      .slice(0, 5)
+      .map((row) => ({
+        label: `${row.kiosk || row.location || "Kiosk"} - ${row.item || row.product || "Item"}`,
+        value: row.actual_qty ?? row.qty ?? 0,
+        suffix: row.uom || "qty",
+      }));
+    return <AiRankRows rows={stockNeeds} lang={lang}/>;
+  }
+
+  if (component.componentId === "inventory.studio_transfers_panel") {
+    const transfers = rows.suggestedTransfers?.length ? rows.suggestedTransfers : rows.transfers || [];
+    return <AiProposalRows rows={transfers.slice(0, 4).map((row) => ({
+      title: row.name || row.item || "Transfer proposal",
+      detail: [row.source, row.destination, row.state || row.reason].filter(Boolean).join(" -> ") || "Proposal only",
+    }))} lang={lang}/>;
+  }
+
+  if (component.componentId === "closing.today_closes_table") {
+    return <AiTableRows rows={(rows.closings || []).slice(0, 4)} columns={[
+      ["kioskName", "Kiosk"],
+      ["cashVariance", "Cash"],
+      ["managerReviewState", "Review"],
+    ]} lang={lang}/>;
+  }
+
+  if (component.componentId === "closing.variance_inputs_expanded") {
+    const lines = (rows.closings || []).flatMap((close) => (close.stock || []).map((line) => ({
+      item: line.item,
+      expected: line.expected,
+      actual: line.actual,
+      variance: line.variance,
+    })));
+    return <AiTableRows rows={lines.slice(0, 4)} columns={[["item", "Item"], ["expected", "Expected"], ["actual", "Counted"], ["variance", "Var"]]} lang={lang}/>;
+  }
+
+  if (component.componentId === "closing.recipe_posting_review") {
+    return <AiTableRows rows={(rows.closings || []).filter((row) => Number(row.recipePostingIssues || 0) > 0).slice(0, 4)} columns={[
+      ["kioskName", "Kiosk"],
+      ["recipePostingIssues", "Issues"],
+      ["status", "Status"],
+    ]} lang={lang}/>;
+  }
+
+  if (component.componentId === "waste.reason_bar_chart") {
+    const grouped = groupAiRows(rows.waste || [], "reason", "estimated_cost");
+    return <AiStackRows rows={grouped.slice(0, 5).map((row) => ({ label: row.label, value: row.value, suffix: "IQD" }))} lang={lang}/>;
+  }
+
+  if (component.componentId === "waste.entries_flag_table") {
+    return <AiTableRows rows={(rows.waste || []).slice(0, 4)} columns={[
+      ["kiosk", "Kiosk"],
+      ["product", "Item"],
+      ["estimated_cost", "Cost"],
+      ["reason", "Reason"],
+    ]} lang={lang}/>;
+  }
+
+  if (component.componentId === "sales.payment_split") {
+    return <AiPaymentSplitVisual reportPack={reportPack} lang={lang}/>;
+  }
+
+  if (component.componentId === "reports.payment_methods_table") {
+    return <AiPaymentMethodBars reportPack={reportPack} lang={lang}/>;
+  }
+
+  if (component.componentId === "reports.gateway_settlement_table") {
+    return <AiPaymentMethodBars reportPack={reportPack} lang={lang} mode="providers"/>;
+  }
+
+  return (
+    <div className="t-small muted" style={{ lineHeight: 1.5, minHeight: 36 }}>
+      {aiCanvasText(lang, registry?.dataContract || "Registered dashboard component rendered from the AI plan.")}
+    </div>
+  );
+}
+
+function AiMiniKpis({ rows, lang }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6, marginTop: 10 }}>
+      {rows.map(([label, value, unit]) => (
+        <div key={label} style={{ border: "1px solid var(--line-soft)", borderRadius: 4, padding: "7px 8px", minWidth: 0 }}>
+          <div className="t-small subtle" style={{ fontSize: 10 }}>{aiCanvasText(lang, label)}</div>
+          <div className="t-num" style={{ fontSize: 15, marginTop: 2 }}>{formatAiMetric(value)} <span className="t-small subtle">{aiCanvasText(lang, unit)}</span></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AiRankRows({ rows, lang }) {
+  if (!rows.length) return <AiEmptyData lang={lang}/>;
+  const max = Math.max(...rows.map((row) => Math.abs(Number(row.value || 0))), 1);
+  return (
+    <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+      {rows.map((row, index) => (
+        <div key={`${row.label}-${index}`}>
+          <div className="between t-small" style={{ gap: 8 }}>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{aiCanvasText(lang, row.label)}</span>
+            <span className="t-num">{formatAiMetric(row.value)} {aiCanvasText(lang, row.suffix || "")}</span>
+          </div>
+          <div style={{ height: 5, background: "var(--line-soft)", borderRadius: 999, marginTop: 5, overflow: "hidden" }}>
+            <div style={{ width: `${Math.min(100, Math.abs(Number(row.value || 0)) / max * 100)}%`, height: "100%", background: "var(--ink-1)", borderRadius: 999 }}/>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AiStackRows({ rows, lang }) {
+  if (!rows.length) return <AiEmptyData lang={lang}/>;
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+      {rows.map((row, index) => (
+        <span key={`${row.label}-${index}`} className="badge" style={{ height: 22, fontSize: 10.5 }}>
+          {aiCanvasText(lang, row.label)}: <span className="t-num" style={{ marginInlineStart: 4 }}>{formatAiMetric(row.value)}</span> {aiCanvasText(lang, row.suffix || "")}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function AiProposalRows({ rows, lang }) {
+  if (!rows.length) return <AiEmptyData lang={lang}/>;
+  return (
+    <div style={{ display: "grid", gap: 7, marginTop: 10 }}>
+      {rows.map((row, index) => (
+        <div key={`${row.title}-${index}`} style={{ border: "1px solid var(--line-soft)", borderRadius: 4, padding: "7px 8px" }}>
+          <div className="t-small" style={{ fontWeight: 600 }}>{aiCanvasText(lang, row.title)}</div>
+          <div className="t-small muted" style={{ marginTop: 3 }}>{aiCanvasText(lang, row.detail)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AiTableRows({ rows, columns, lang }) {
+  if (!rows.length) return <AiEmptyData lang={lang}/>;
+  return (
+    <div style={{ marginTop: 10, overflow: "hidden", border: "1px solid var(--line-soft)", borderRadius: 4 }}>
+      {rows.map((row, index) => (
+        <div key={index} style={{ display: "grid", gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))`, gap: 6, padding: "7px 8px", borderTop: index ? "1px solid var(--line-soft)" : 0 }}>
+          {columns.map(([key, label]) => (
+            <div key={key} style={{ minWidth: 0 }}>
+              {index === 0 && <div className="t-small subtle" style={{ fontSize: 9.5 }}>{aiCanvasText(lang, label)}</div>}
+              <div className="t-small" style={{ fontFamily: typeof row[key] === "number" ? "var(--font-mono)" : undefined, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{aiCanvasText(lang, formatAiMetric(row[key]))}</div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AiClaimInline({ claims, fallback, lang }) {
+  const claim = Array.isArray(claims) ? claims[0] : null;
+  if (!claim) {
+    return <div className="t-small muted" style={{ lineHeight: 1.5, marginTop: 8 }}>{aiCanvasText(lang, fallback || "Traceable summary awaits the live report pack.")}</div>;
+  }
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div className="t-small" style={{ lineHeight: 1.5 }}>{claim.text}</div>
+      <AiStackRows rows={(claim.numericValues || []).map((numeric) => ({ label: numeric.label, value: numeric.value, suffix: numeric.unit }))} lang={lang}/>
+    </div>
+  );
+}
+
+function AiEmptyData({ lang }) {
+  return <div className="t-small subtle" style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 10.5 }}>{aiCanvasText(lang, "no matching rows in compact report pack")}</div>;
+}
+
+function formatAiMetric(value) {
+  if (value === false || value === undefined || value === null || value === "") return "-";
+  const number = Number(value);
+  if (Number.isFinite(number)) return number.toLocaleString("en");
+  return String(value);
+}
+
+function groupAiRows(rows, key, valueKey) {
+  const totals = new Map();
+  for (const row of rows || []) {
+    const label = row?.[key] || "Unspecified";
+    totals.set(label, (totals.get(label) || 0) + Number(row?.[valueKey] || 0));
+  }
+  return [...totals.entries()]
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value);
+}
+
+function ClaimEvidencePanel({ claims, sourceEvidence, lang }) {
+  if (!Array.isArray(claims) || claims.length === 0) return null;
+  const evidenceByModel = new Map(
+    Array.isArray(sourceEvidence)
+      ? sourceEvidence.map((ref) => [ref.model, ref])
+      : []
+  );
+
+  return (
+    <div className="ins-card" style={{ marginBottom: 14, padding: 12 }}>
+      <div className="between" style={{ gap: 10, marginBottom: 8 }}>
+        <div className="t-small" style={{ fontWeight: 600 }}>{aiCanvasText(lang, "Claim proof")}</div>
+        <span className="badge badge-ai" style={{ height: 20, fontSize: 10 }}>{aiCanvasText(lang, "numeric refs")}</span>
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>
+        {claims.slice(0, 4).map((claim, index) => (
+          <div key={`${claim.text || "claim"}-${index}`} style={{ border: "1px solid var(--line-soft)", borderRadius: 4, padding: "8px 10px" }}>
+            <div className="t-small" style={{ lineHeight: 1.45 }}>{claim.text || aiCanvasText(lang, "Source-backed claim")}</div>
+            <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+              {(claim.numericValues || []).slice(0, 3).map((numeric) => (
+                <span key={`${numeric.label}-${numeric.value}`} className="badge" style={{ height: 20, fontSize: 10.5 }}>
+                  {aiCanvasText(lang, numeric.label)}: <span className="t-num" style={{ marginInlineStart: 4 }}>{Number(numeric.value || 0).toLocaleString("en")}</span>{numeric.unit ? ` ${aiCanvasText(lang, numeric.unit)}` : ""}
+                </span>
+              ))}
+              {(claim.sourceRefs || []).slice(0, 4).map((model) => {
+                const evidence = evidenceByModel.get(model);
+                const samples = Array.isArray(evidence?.sampleRefs) && evidence.sampleRefs.length
+                  ? ` / ${evidence.sampleRefs.slice(0, 2).join(", ")}`
+                  : "";
+                return (
+                  <span key={model} className="badge badge-ai" style={{ height: 20, fontSize: 10.5 }}>
+                    {model}: {Number(evidence?.rowCount || 0).toLocaleString("en")}{samples}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function safeDashboardComponent(componentId) {
+  try {
+    return getDashboardComponent(componentId);
+  } catch (_error) {
+    return null;
+  }
+}
+
 // ============================================================
 // Canvas — renders the active scene's cards in a 12-col grid,
 // fades old cards out before new ones in
 // ============================================================
-function InsightCanvas({ sceneId, sourceMeta, lang }) {
+function InsightCanvas({ sceneId, sourceMeta, lang, plan, sourceEvidence, aiRuntime, aiClaims, reportPack }) {
   const scene = SCENES[sceneId] || SCENES.default;
   const ar = lang === "ar";
   const [renderId, setRenderId] = useStateIns(sceneId);
@@ -4434,6 +7453,7 @@ function InsightCanvas({ sceneId, sourceMeta, lang }) {
 
   const showing = SCENES[renderId] || SCENES.default;
   const fadingOut = sceneId !== renderId;
+  const plannedComponents = Array.isArray(plan?.components) && plan.components.length ? plan.components : null;
 
   if (sourceMeta?.empty) {
     return (
@@ -4459,9 +7479,62 @@ function InsightCanvas({ sceneId, sourceMeta, lang }) {
         <div className="row" style={{ marginBottom: 14, gap: 8 }}>
           <AITag>{ar ? (showing.labelAr || showing.label) : showing.label}</AITag>
           <span className="t-small subtle" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
-            {showing.cards.length} cards - {sourceMeta?.cite || "generated just now"}
+            {showing.cards.length} {ar ? "بطاقات" : "cards"} - {arTerm(lang, sourceMeta?.cite || "generated just now")}
           </span>
         </div>
+        {plan && (
+          <div style={{ marginBottom: 14 }}>
+            <div className="t-small subtle" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, lineHeight: 1.55 }}>
+              {aiCanvasText(lang, "plan")} {aiCanvasText(lang, "intent")}={plan.intent} {aiCanvasText(lang, "time")}={plan.scope?.timeRange}{plan.scope?.kioskId ? ` kiosk=${plan.scope.kioskId}` : ""} {aiCanvasText(lang, "packs")}={plan.requiredDataPacks?.length || 0} {aiCanvasText(lang, "components")}={plan.components?.length || 0} {aiCanvasText(lang, "sources")}={plan.sourceRefsRequired?.length || 0}
+            </div>
+            <div className="t-small subtle" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, lineHeight: 1.55, marginTop: 4 }}>
+              {Array.isArray(plan.components) ? plan.components.map((c) => `${c.componentId}:${aiCanvasText(lang, c.mode)}`).join(" · ") : ""}
+            </div>
+          </div>
+        )}
+        {aiRuntime && (
+          <div className="ins-card" style={{ marginBottom: 14, padding: 12 }}>
+            <div className="between" style={{ gap: 10, marginBottom: 8 }}>
+              <div className="t-small" style={{ fontWeight: 600 }}>{aiCanvasText(lang, "AI runtime")}</div>
+              <span className="badge badge-ai" style={{ height: 20, fontSize: 10 }}>{aiStatusText(lang, aiRuntime.llm?.status || "local-plan")}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 6 }}>
+              <div style={{ border: "1px solid var(--line-soft)", borderRadius: 4, padding: "6px 8px", minWidth: 0 }}>
+                <div className="t-small subtle" style={{ fontSize: 10 }}>{aiCanvasText(lang, "provider")}</div>
+                <div className="t-small" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{aiRuntime.llm?.provider || "server"}</div>
+              </div>
+              <div style={{ border: "1px solid var(--line-soft)", borderRadius: 4, padding: "6px 8px", minWidth: 0 }}>
+                <div className="t-small subtle" style={{ fontSize: 10 }}>{aiCanvasText(lang, "model")}</div>
+                <div className="t-small" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{aiRuntime.llm?.model || "-"}</div>
+              </div>
+              <div style={{ border: "1px solid var(--line-soft)", borderRadius: 4, padding: "6px 8px", minWidth: 0 }}>
+                <div className="t-small subtle" style={{ fontSize: 10 }}>{aiCanvasText(lang, "tier")}</div>
+                <div className="t-small" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5 }}>{aiCanvasText(lang, aiRuntime.featureTier?.tier || "local")}</div>
+              </div>
+              <div style={{ border: "1px solid var(--line-soft)", borderRadius: 4, padding: "6px 8px", minWidth: 0 }}>
+                <div className="t-small subtle" style={{ fontSize: 10 }}>{aiCanvasText(lang, "tokens left")}</div>
+                <div className="t-small" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5 }}>{formatAiBudgetRemaining(aiRuntime.budget)}</div>
+              </div>
+            </div>
+          </div>
+        )}
+        <ClaimEvidencePanel claims={aiClaims} sourceEvidence={sourceEvidence} lang={lang}/>
+        {Array.isArray(sourceEvidence) && sourceEvidence.length > 0 && (
+          <div className="ins-card" style={{ marginBottom: 14, padding: 12 }}>
+            <div className="between" style={{ gap: 10, marginBottom: 8 }}>
+              <div className="t-small" style={{ fontWeight: 600 }}>{aiCanvasText(lang, "Source evidence")}</div>
+              <span className="badge badge-ai" style={{ height: 20, fontSize: 10 }}>{aiCanvasText(lang, "read-only")}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 6 }}>
+              {sourceEvidence.slice(0, 8).map((ref) => (
+                <div key={ref.model} style={{ border: "1px solid var(--line-soft)", borderRadius: 4, padding: "6px 8px", minWidth: 0 }}>
+                  <div className="t-small" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ref.model}</div>
+                  <div className="t-num" style={{ fontFamily: "var(--font-mono)", fontSize: 14, marginTop: 2 }}>{Number(ref.rowCount || 0).toLocaleString("en")}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div key={renderId} style={{
           display: "grid",
@@ -4469,15 +7542,26 @@ function InsightCanvas({ sceneId, sourceMeta, lang }) {
           gap: 12,
           alignItems: "start",
         }}>
-          {showing.cards.map((card, idx) => {
+          {plannedComponents ? plannedComponents.map((component, idx) => {
+            const span = PLAN_COMPONENT_SPANS[component.size] || 6;
+            return (
+              <div key={`${component.componentId}-${idx}`} style={{
+                gridColumn: `span ${span}`,
+                animation: `insCardIn 520ms cubic-bezier(0.22,1,0.36,1) ${idx * 80}ms both`,
+              }}>
+                <PlanComponentCard component={component} sourceEvidence={sourceEvidence} reportPack={reportPack} claims={aiClaims} lang={lang}/>
+              </div>
+            );
+          }) : showing.cards.map((card, idx) => {
             const Renderer = CARD_RENDERERS[card.type] || HeadlineCard;
             const [span, rowSpan] = (card.span || "6/3").split("/").map(Number);
+            const displayCard = localizeInsightCard(card, lang);
             return (
               <div key={card.id} style={{
                 gridColumn: `span ${span}`,
                 animation: `insCardIn 520ms cubic-bezier(0.22,1,0.36,1) ${idx * 80}ms both`,
               }}>
-                <Renderer card={card}/>
+                <Renderer card={displayCard}/>
               </div>
             );
           })}
@@ -4490,7 +7574,8 @@ function InsightCanvas({ sceneId, sourceMeta, lang }) {
 // ============================================================
 // Chat panel
 // ============================================================
-function ChatPanel({ messages, sendQuestion, busy, onSuggested, sourceMeta }) {
+function ChatPanel({ messages, sendQuestion, busy, onSuggested, sourceMeta, liveMode, lang }) {
+  const ar = lang === "ar";
   const [text, setText] = useStateIns("");
   const scrollRef = useRefIns(null);
 
@@ -4499,9 +7584,9 @@ function ChatPanel({ messages, sendQuestion, busy, onSuggested, sourceMeta }) {
   }, [messages.length, busy]);
 
   const submit = (q) => {
-    const v = (q - text).trim();
-    if (!v) return;
-    sendQuestion(v);
+    const value = (typeof q === "string" ? q : text).trim();
+    if (!value) return;
+    sendQuestion(value);
     setText("");
   };
 
@@ -4528,8 +7613,8 @@ function ChatPanel({ messages, sendQuestion, busy, onSuggested, sourceMeta }) {
           }}/>
         </span>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13, fontWeight: 500 }}>Maqha Insights</div>
-          <div className="t-small subtle" style={{ fontSize: 10.5 }}>{sourceMeta?.header || "Verified source rows"} - read-only</div>
+          <div style={{ fontSize: 13, fontWeight: 500 }}>{ar ? `${BRAND.arabic} تحليلات` : `${BRAND.name} Insights`}</div>
+          <div className="t-small subtle" style={{ fontSize: 10.5 }}>{arTerm(lang, sourceMeta?.header || "Verified source rows")} - {ar ? "قراءة فقط" : "read-only"}</div>
         </div>
         <button className="btn btn-quiet" style={{ height: 24, fontSize: 11, padding: "0 6px" }}>
           <Icon name="dots" size={12}/>
@@ -4543,7 +7628,7 @@ function ChatPanel({ messages, sendQuestion, busy, onSuggested, sourceMeta }) {
         display: "flex", flexDirection: "column", gap: 14,
       }}>
         {messages.map((m, i) => (
-          <ChatMessage key={i} message={m}/>
+          <ChatMessage key={i} message={m} lang={lang}/>
         ))}
         {busy && <TypingIndicator/>}
       </div>
@@ -4551,16 +7636,16 @@ function ChatPanel({ messages, sendQuestion, busy, onSuggested, sourceMeta }) {
       <div style={{ padding: "0 14px 8px", display: "flex", flexWrap: "wrap", gap: 5 }}>
         {(sourceMeta?.chips || []).map(([label, value]) => (
           <span key={label} className="badge" style={{ height: 20, fontSize: 10.5 }}>
-            {label} <span className="t-num" style={{ marginInlineStart: 4 }}>{Number(value || 0).toLocaleString("en")}</span>
+            {arTerm(lang, label)} <span className="t-num" style={{ marginInlineStart: 4 }}>{Number(value || 0).toLocaleString("en")}</span>
           </span>
         ))}
       </div>
 
       <div style={{ padding: "0 14px 8px" }}>
-        <span className="badge badge-ai" style={{ height: 22, fontSize: 10.5 }}>{sourceMeta?.budget || "Daily summaries tier"}</span>
+        <span className="badge badge-ai" style={{ height: 22, fontSize: 10.5 }}>{arTerm(lang, sourceMeta?.budget || "Daily summaries tier")}</span>
         {sourceMeta?.window && (
           <div className="t-small subtle" style={{ marginTop: 6, fontSize: 10.5 }}>
-            {sourceMeta.window}
+            {arTerm(lang, sourceMeta.window)}
           </div>
         )}
       </div>
@@ -4581,7 +7666,7 @@ function ChatPanel({ messages, sendQuestion, busy, onSuggested, sourceMeta }) {
             onMouseEnter={e => !busy && (e.currentTarget.style.background = "var(--surface-sunk)")}
             onMouseLeave={e => (e.currentTarget.style.background = "var(--surface)")}
           >
-            {s.text}
+            {ar ? s.textAr : s.text}
           </button>
         ))}
       </div>
@@ -4599,7 +7684,7 @@ function ChatPanel({ messages, sendQuestion, busy, onSuggested, sourceMeta }) {
             value={text}
             onChange={e => setText(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") submit(); }}
-            placeholder="Ask about a kiosk, product, anomaly..."
+            placeholder={ar ? "اسأل عن كشك أو منتج أو شذوذ..." : "Ask about a kiosk, product, anomaly..."}
             disabled={busy}
             style={{
               flex: 1, border: 0, outline: "none", background: "transparent",
@@ -4611,19 +7696,1237 @@ function ChatPanel({ messages, sendQuestion, busy, onSuggested, sourceMeta }) {
           </button>
         </div>
         <div className="t-small faint" style={{ fontSize: 10.5, marginTop: 6, fontFamily: "var(--font-mono)" }}>
-          Powered by your operations data - {new Date().toLocaleDateString()}
+          {ar ? "مدعوم ببيانات عملياتك" : "Powered by your operations data"} - {new Date().toLocaleDateString()}
         </div>
       </div>
     </div>
   );
 }
 
-function ChatMessage({ message }) {
+function UnifiedChatPanel({ messages, sendQuestion, busy, onSuggested, sourceMeta, liveMode, lang }) {
+  const ar = lang === "ar";
+  const [text, setText] = useStateIns("");
+  const scrollRef = useRefIns(null);
+
+  useEffectIns(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages.length, busy]);
+
+  const submit = (q) => {
+    const value = (typeof q === "string" ? q : text).trim();
+    if (!value) return;
+    sendQuestion(value);
+    setText("");
+  };
+
+  return (
+    <div className="ai-chat-panel">
+      <div className="ai-chat-header">
+        <span className={`ai-chat-live-dot${liveMode ? " is-live" : ""}`}>
+          <span/>
+          {liveMode && <span/>}
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="ai-chat-title">{ar ? `${BRAND.arabic} ${arTerm(lang, "Insights")}` : `${BRAND.name} Insights`}</div>
+          <div className="t-small subtle" style={{ fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {arTerm(lang, sourceMeta?.header || "Verified source rows")} - {ar ? arTerm(lang, "read-only") : "read-only"}
+          </div>
+        </div>
+        <span className={`badge ${liveMode ? "badge-pos" : "badge-warn"}`} style={{ height: 22, fontSize: 10.5 }}>
+          {liveMode ? aiCanvasText(lang, "Live LLM") : aiCanvasText(lang, "Local preview")}
+        </span>
+      </div>
+
+      <div ref={scrollRef} className="scroll ai-chat-scroll">
+        {messages.map((m, i) => (
+          <UnifiedChatMessage key={i} message={m} lang={lang}/>
+        ))}
+        {busy && <TypingIndicator/>}
+      </div>
+
+      <div className="ai-chat-meta-row">
+        {(sourceMeta?.chips || []).slice(0, 4).map(([label, value]) => (
+          <span key={label} className="badge" style={{ height: 20, fontSize: 10.5 }}>
+            {arTerm(lang, label)} <span className="t-num" style={{ marginInlineStart: 4 }}>{Number(value || 0).toLocaleString("en")}</span>
+          </span>
+        ))}
+        <span className="badge badge-ai" style={{ height: 22, fontSize: 10.5 }}>
+          {arTerm(lang, sourceMeta?.budget || "Daily summaries tier")}
+        </span>
+      </div>
+
+      {sourceMeta?.window && (
+        <div className="t-small subtle ai-chat-window">
+          {arTerm(lang, sourceMeta.window)}
+        </div>
+      )}
+
+      <div className="ai-chat-suggestions">
+        {SUGGESTED.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => onSuggested(s)}
+            disabled={busy}
+            className="ai-chat-suggestion"
+          >
+            {ar ? s.textAr : s.text}
+          </button>
+        ))}
+      </div>
+
+      <div className="ai-chat-input-zone">
+        <div className="ai-chat-input">
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+            placeholder={ar ? "اسأل عن كشك أو منتج أو شذوذ..." : "Ask about a kiosk, product, anomaly..."}
+            disabled={busy}
+          />
+          <button
+            className="btn btn-primary"
+            style={{ height: 28, padding: "0 10px" }}
+            aria-label={ar ? "إرسال" : "Send"}
+            disabled={busy}
+            onClick={() => submit()}
+          >
+            <Icon name="arrowUp" size={12}/>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UnifiedChatMessage({ message, lang }) {
+  const ar = lang === "ar";
+  const isUser = message.role === "user";
+  const isLive = message.streaming;
+  const target = message.text || "";
+  const streamed = useStream(isLive && !message.serverStream ? target : "", 12);
+  const display = isLive && !message.serverStream ? streamed : target;
+  const localizedDisplay = ar && message.nativeLocale !== "ar" ? arTerm(lang, display) : display;
+
+  if (isUser) {
+    return (
+      <div className="ai-chat-message ai-chat-message-user">
+        {target}
+      </div>
+    );
+  }
+
+  return (
+    <div className="ai-chat-message ai-chat-message-assistant">
+      <div className="row" style={{ gap: 6, marginBottom: 6 }}>
+        <AITag>AI</AITag>
+        <span className="t-small subtle" style={{ fontSize: 10.5 }}>{ar ? BRAND.arabic : BRAND.name.toLowerCase()}</span>
+      </div>
+      <div className="ai-chat-answer">
+        {localizedDisplay}
+        {isLive && (message.serverStream || display.length < target.length) && <span className="ins-caret"/>}
+      </div>
+      {message.artifact && (!isLive || message.serverStream) && <AiMessageArtifact artifact={message.artifact} lang={lang}/>}
+      {(!isLive || message.serverStream) && message.cite && (
+        <div className="t-small subtle ai-chat-cite">
+          {ar ? arTerm(lang, "rendered") : "rendered"} {arTerm(lang, message.cite)} {ar ? arTerm(lang, "inline") : "inline"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function createAssistantEventQueue() {
+  const items = [];
+  let waiter = null;
+  let closed = false;
+  return {
+    push(item) {
+      if (closed) return;
+      if (waiter) {
+        const resolve = waiter;
+        waiter = null;
+        resolve(item);
+      } else {
+        items.push(item);
+      }
+    },
+    close() {
+      closed = true;
+      if (waiter) {
+        const resolve = waiter;
+        waiter = null;
+        resolve(null);
+      }
+    },
+    next() {
+      if (items.length) return Promise.resolve(items.shift());
+      if (closed) return Promise.resolve(null);
+      return new Promise((resolve) => {
+        waiter = resolve;
+      });
+    },
+  };
+}
+
+function sleepAssistantFrame(ms, signal) {
+  if (signal?.aborted) return Promise.reject(signal.reason || new Error("cancelled"));
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(resolve, ms);
+    signal?.addEventListener?.("abort", () => {
+      clearTimeout(timeout);
+      reject(signal.reason || new Error("cancelled"));
+    }, { once: true });
+  });
+}
+
+function threadMessageText(message) {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => (part?.type === "text" && typeof part.text === "string" ? part.text : ""))
+    .join("");
+}
+
+function latestUserTurn(messages) {
+  for (let i = (messages || []).length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role === "user") {
+      return {
+        text: threadMessageText(message).trim(),
+        sceneIdHint: message?.metadata?.custom?.sceneIdHint,
+      };
+    }
+  }
+  return { text: "", sceneIdHint: null };
+}
+
+const BAYAAN_ASSISTANT_THREADS_KEY = "bayaan:assistant:threads:v1";
+const BAYAAN_ASSISTANT_MESSAGES_PREFIX = "bayaan:assistant:messages:v1:";
+
+function safeAssistantStorage() {
+  if (typeof window === "undefined") return null;
+  try {
+    const storage = window.localStorage;
+    const probe = "__bayaan_assistant_storage_probe__";
+    storage.setItem(probe, "1");
+    storage.removeItem(probe);
+    return storage;
+  } catch {
+    return null;
+  }
+}
+
+function cleanAssistantTitle(text) {
+  const compact = String(text || "")
+    .replace(/\s+/g, " ")
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .trim();
+  if (!compact) return "New Thread";
+  const titleSentence = compact.split(/[.!?\u061f]\s+/)[0] || compact;
+  return titleSentence.length > 44 ? `${titleSentence.slice(0, 41).trim()}...` : titleSentence;
+}
+
+function generatedAssistantTitle(messages) {
+  const firstUser = (messages || []).find((message) => message?.role === "user");
+  return cleanAssistantTitle(threadMessageText(firstUser));
+}
+
+function readAssistantThreads(storage) {
+  if (!storage) return [];
+  try {
+    const parsed = JSON.parse(storage.getItem(BAYAAN_ASSISTANT_THREADS_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeAssistantThreads(storage, threads) {
+  if (!storage) return false;
+  try {
+    storage.setItem(BAYAAN_ASSISTANT_THREADS_KEY, JSON.stringify(threads));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+class BayaanAssistantThreadListAdapter {
+  constructor() {
+    this.storage = safeAssistantStorage();
+    this.memoryThreads = [];
+    this.memoryMessages = new Map();
+    this.unstable_Provider = ({ children }) => {
+      const threadId = useAuiState((s) => s.threadListItem.remoteId || s.threadListItem.id);
+      const adapters = React.useMemo(() => ({
+        history: new BayaanAssistantHistoryAdapter(this, threadId),
+      }), [threadId]);
+
+      return (
+        <RuntimeAdapterProvider adapters={adapters}>
+          {children}
+        </RuntimeAdapterProvider>
+      );
+    };
+  }
+
+  readThreads() {
+    return this.storage ? readAssistantThreads(this.storage) : this.memoryThreads;
+  }
+
+  fallbackToMemory() {
+    if (!this.storage) return;
+    this.memoryThreads = readAssistantThreads(this.storage);
+    this.storage = null;
+  }
+
+  writeThreads(threads) {
+    const sorted = [...threads].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    if (this.storage && writeAssistantThreads(this.storage, sorted)) return;
+    this.fallbackToMemory();
+    this.memoryThreads = sorted;
+  }
+
+  touchThread(remoteId) {
+    if (!remoteId) return;
+    const now = Date.now();
+    const threads = this.readThreads();
+    const thread = threads.find((item) => item.remoteId === remoteId);
+    if (thread) {
+      thread.status = thread.status || "regular";
+      thread.updatedAt = now;
+      this.writeThreads(threads);
+      return;
+    }
+    this.writeThreads([
+      { remoteId, status: "regular", createdAt: now, updatedAt: now },
+      ...threads,
+    ]);
+  }
+
+  ensureThreadTitle(remoteId, messages) {
+    if (!remoteId) return;
+    const firstUser = (messages || []).find((message) => message?.role === "user");
+    if (!firstUser) return;
+    const now = Date.now();
+    const title = generatedAssistantTitle(messages);
+    const threads = this.readThreads();
+    const thread = threads.find((item) => item.remoteId === remoteId);
+    if (thread) {
+      if (thread.title && thread.title !== "New Thread") return;
+      thread.title = title;
+      thread.updatedAt = now;
+      this.writeThreads(threads);
+      return;
+    }
+    this.writeThreads([
+      { remoteId, status: "regular", title, createdAt: now, updatedAt: now },
+      ...threads,
+    ]);
+  }
+
+  async list() {
+    return {
+      threads: this.readThreads().map((thread) => ({
+        remoteId: thread.remoteId,
+        externalId: thread.externalId,
+        status: thread.status || "regular",
+        title: thread.title,
+      })),
+    };
+  }
+
+  async initialize(threadId) {
+    const now = Date.now();
+    const threads = this.readThreads();
+    const existing = threads.find((thread) => thread.remoteId === threadId);
+    if (existing) {
+      existing.status = "regular";
+      existing.updatedAt = now;
+      this.writeThreads(threads);
+    } else {
+      this.writeThreads([
+        { remoteId: threadId, status: "regular", createdAt: now, updatedAt: now },
+        ...threads,
+      ]);
+    }
+    return { remoteId: threadId, externalId: undefined };
+  }
+
+  async rename(remoteId, newTitle) {
+    const threads = this.readThreads();
+    const thread = threads.find((item) => item.remoteId === remoteId);
+    if (!thread) return;
+    thread.title = cleanAssistantTitle(newTitle);
+    thread.updatedAt = Date.now();
+    this.writeThreads(threads);
+  }
+
+  async archive(remoteId) {
+    const threads = this.readThreads();
+    const thread = threads.find((item) => item.remoteId === remoteId);
+    if (!thread) return;
+    thread.status = "archived";
+    thread.updatedAt = Date.now();
+    this.writeThreads(threads);
+  }
+
+  async unarchive(remoteId) {
+    const threads = this.readThreads();
+    const thread = threads.find((item) => item.remoteId === remoteId);
+    if (!thread) return;
+    thread.status = "regular";
+    thread.updatedAt = Date.now();
+    this.writeThreads(threads);
+  }
+
+  async delete(remoteId) {
+    this.writeThreads(this.readThreads().filter((thread) => thread.remoteId !== remoteId));
+    if (this.storage) {
+      try {
+        this.storage.removeItem(`${BAYAAN_ASSISTANT_MESSAGES_PREFIX}${remoteId}`);
+        return;
+      } catch {
+        this.fallbackToMemory();
+      }
+    }
+    this.memoryMessages.delete(remoteId);
+  }
+
+  async fetch(threadId) {
+    const thread = this.readThreads().find((item) => item.remoteId === threadId);
+    if (!thread) throw new Error("Thread not found");
+    return {
+      remoteId: thread.remoteId,
+      externalId: thread.externalId,
+      status: thread.status || "regular",
+      title: thread.title,
+    };
+  }
+
+  async generateTitle(remoteId, messages) {
+    const title = generatedAssistantTitle(messages);
+    await this.rename(remoteId, title);
+    return createAssistantStream((controller) => {
+      controller.appendText(title);
+    });
+  }
+}
+
+function normalizeAssistantHistoryRepository(repository) {
+  const normalized = repository && typeof repository === "object" ? repository : {};
+  return {
+    ...normalized,
+    messages: Array.isArray(normalized.messages)
+      ? normalized.messages.filter((entry) => entry && typeof entry === "object")
+      : [],
+  };
+}
+
+function compactAssistantHistoryRepository(repository) {
+  const normalized = normalizeAssistantHistoryRepository(repository);
+  const messages = normalized.messages.map((entry) => {
+    const message = entry?.message || {};
+    const metadata = message.metadata || {};
+    const custom = metadata.custom || {};
+    const artifact = custom.artifact;
+    if (!artifact?.reportPack) return entry;
+    const sourceEvidence = Array.isArray(artifact.sourceEvidence)
+      ? artifact.sourceEvidence
+      : artifact.reportPack?.sourceEvidence;
+    return {
+      ...entry,
+      message: {
+        ...message,
+        metadata: {
+          ...metadata,
+          custom: {
+            ...custom,
+            artifact: {
+              ...artifact,
+              sourceEvidence,
+              reportPack: null,
+            },
+          },
+        },
+      },
+    };
+  });
+  return { ...normalized, messages };
+}
+
+class BayaanAssistantHistoryAdapter {
+  constructor(owner, threadId) {
+    this.owner = owner;
+    this.threadId = threadId;
+  }
+
+  key() {
+    return `${BAYAAN_ASSISTANT_MESSAGES_PREFIX}${this.threadId}`;
+  }
+
+  readRepository() {
+    if (!this.threadId) return { messages: [] };
+    if (!this.owner.storage) {
+      return compactAssistantHistoryRepository(this.owner.memoryMessages.get(this.threadId) || { messages: [] });
+    }
+    try {
+      const raw = this.owner.storage.getItem(this.key());
+      return compactAssistantHistoryRepository(raw ? JSON.parse(raw) : { messages: [] });
+    } catch {
+      this.owner.fallbackToMemory();
+      return compactAssistantHistoryRepository(this.owner.memoryMessages.get(this.threadId) || { messages: [] });
+    }
+  }
+
+  writeRepository(repository) {
+    if (!this.threadId) return;
+    const compactRepository = compactAssistantHistoryRepository(repository);
+    if (this.owner.storage) {
+      try {
+        this.owner.storage.setItem(this.key(), JSON.stringify(compactRepository));
+        return;
+      } catch {
+        this.owner.fallbackToMemory();
+      }
+    }
+    this.owner.memoryMessages.set(this.threadId, compactRepository);
+  }
+
+  async load() {
+    return this.readRepository();
+  }
+
+  async append(item) {
+    if (!this.threadId) return;
+    const repository = this.readRepository();
+    const messageId = item?.message?.id;
+    const nextMessages = Array.isArray(repository.messages) ? [...repository.messages] : [];
+    const existingIndex = messageId
+      ? nextMessages.findIndex((entry) => entry?.message?.id === messageId)
+      : -1;
+    if (existingIndex >= 0) nextMessages[existingIndex] = item;
+    else nextMessages.push(item);
+    this.writeRepository({
+      ...repository,
+      messages: nextMessages,
+      headId: messageId || repository.headId,
+    });
+    this.owner.touchThread(this.threadId);
+    this.owner.ensureThreadTitle(
+      this.threadId,
+      nextMessages.map((entry) => entry?.message).filter(Boolean),
+    );
+  }
+}
+
+function assistantRunResult(text, custom = {}, status) {
+  return {
+    content: text ? [{ type: "text", text }] : [],
+    ...(status ? { status } : {}),
+    metadata: {
+      custom,
+    },
+  };
+}
+
+function assistantArtifactHasCanvas(artifact) {
+  return Boolean(
+    (Array.isArray(artifact?.visualizations) && artifact.visualizations.length) ||
+    (Array.isArray(artifact?.claims) && artifact.claims.length) ||
+    (Array.isArray(artifact?.sourceEvidence) && artifact.sourceEvidence.length)
+  );
+}
+
+function assistantArtifactSafeId(value, fallback) {
+  const text = String(value || fallback || "artifact").trim().toLowerCase();
+  return text.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 72) || "artifact";
+}
+
+function assistantArtifactBundleId(artifact, fallback) {
+  const llm = artifact?.runtime?.llm || {};
+  const raw = llm.responseId || llm.id || artifact?.plan?.intent || fallback || "assistant-artifact";
+  return `bundle-${assistantArtifactSafeId(raw, "assistant-artifact")}`;
+}
+
+function assistantEvidenceForRefs(sourceEvidence, refs) {
+  const refSet = new Set((refs || []).map((ref) => String(ref || "")));
+  if (!refSet.size) return sourceEvidence;
+  const filtered = sourceEvidence.filter((entry) => refSet.has(String(entry?.model || "")));
+  return filtered.length ? filtered : sourceEvidence;
+}
+
+function assistantClaimsForRefs(claims, refs) {
+  const refSet = new Set((refs || []).map((ref) => String(ref || "")));
+  if (!refSet.size) return claims;
+  const filtered = claims.filter((claim) => (
+    Array.isArray(claim?.sourceRefs) &&
+    claim.sourceRefs.some((ref) => refSet.has(String(ref || "")))
+  ));
+  return filtered.length ? filtered : claims;
+}
+
+function assistantArtifactItems(artifact, lang) {
+  if (!assistantArtifactHasCanvas(artifact)) return [];
+  const sourceEvidence = Array.isArray(artifact?.sourceEvidence) ? artifact.sourceEvidence : [];
+  const claims = Array.isArray(artifact?.claims) ? artifact.claims : [];
+  const visualizations = Array.isArray(artifact?.visualizations) ? artifact.visualizations : [];
+  const items = visualizations.map((visual, index) => {
+    const sourceRefs = Array.isArray(visual?.sourceRefs) ? visual.sourceRefs : [];
+    const title = aiVisualText(lang, visual?.title || visual?.type || `Visual ${index + 1}`);
+    const type = aiVisualText(lang, visual?.type || "visual");
+    return {
+      id: `visual-${assistantArtifactSafeId(visual?.id || visual?.title, index + 1)}`,
+      kind: "visual",
+      title,
+      meta: type,
+      detail: sourceRefs.length
+        ? `${sourceRefs.length} ${aiCanvasText(lang, "sources")}`
+        : aiCanvasText(lang, "source-backed"),
+      artifact: {
+        ...artifact,
+        visualizations: [visual],
+        claims: assistantClaimsForRefs(claims, sourceRefs),
+        sourceEvidence: assistantEvidenceForRefs(sourceEvidence, sourceRefs),
+      },
+    };
+  });
+
+  if (claims.length) {
+    items.push({
+      id: "claim-proof",
+      kind: "proof",
+      title: aiCanvasText(lang, "Claim proof"),
+      meta: `${claims.length} ${aiCanvasText(lang, "claims")}`,
+      detail: aiCanvasText(lang, "numeric refs"),
+      artifact: {
+        ...artifact,
+        visualizations: [],
+        claims,
+        sourceEvidence,
+      },
+    });
+  }
+
+  if (sourceEvidence.length) {
+    items.push({
+      id: "source-evidence",
+      kind: "sources",
+      title: aiCanvasText(lang, "Source evidence"),
+      meta: `${sourceEvidence.length} ${aiCanvasText(lang, "sources")}`,
+      detail: aiCanvasText(lang, "samples"),
+      artifact: {
+        ...artifact,
+        visualizations: [],
+        claims: [],
+        sourceEvidence,
+      },
+    });
+  }
+
+  return items;
+}
+
+function assistantArtifactDefaultItemId(artifact) {
+  return assistantArtifactItems(artifact, "en")[0]?.id || null;
+}
+
+function assistantArtifactSelectedItem(artifact, itemId, lang) {
+  const items = assistantArtifactItems(artifact, lang);
+  return items.find((item) => item.id === itemId) || items[0] || null;
+}
+
+function BayaanAssistantThreadPanel({ runTurn, sourceMeta, liveMode, lang, artifactCanvas }) {
+  const ar = lang === "ar";
+  const hasArtifactCanvas = Boolean(artifactCanvas?.pending || artifactCanvas?.artifact);
+  const selectedArtifactItemId = artifactCanvas?.selectedItemId || null;
+  const selectedArtifactMessageKey = artifactCanvas?.selectedMessageKey || null;
+  const onArtifactSelect = artifactCanvas?.onSelect;
+  const adapter = useMemoIns(() => ({ run: runTurn }), [runTurn]);
+  const threadListAdapter = useMemoIns(() => new BayaanAssistantThreadListAdapter(), []);
+  const runtime = useRemoteThreadListRuntime({
+    adapter: threadListAdapter,
+    runtimeHook: function BayaanAssistantThreadRuntime() {
+      return useLocalRuntime(adapter);
+    },
+    allowNesting: true,
+  });
+  const AssistantExtras = useMemoIns(() => function BayaanAssistantExtrasSlot() {
+    return (
+      <BayaanAssistantExtras
+        lang={lang}
+        onArtifactSelect={onArtifactSelect}
+        selectedItemId={selectedArtifactItemId}
+        selectedMessageKey={selectedArtifactMessageKey}
+      />
+    );
+  }, [lang, onArtifactSelect, selectedArtifactItemId, selectedArtifactMessageKey]);
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <SidebarProvider defaultOpen className="bayaan-assistant-sidebar-provider" dir={ar ? "rtl" : "ltr"}>
+        <div className="bayaan-assistant-shell" data-shell="assistant-ui-shadcn">
+          <ThreadListSidebar
+            className="bayaan-assistant-thread-list"
+            collapsible="offcanvas"
+            side={ar ? "right" : "left"}
+            variant="inset"
+            labels={{
+              archive: ar ? "أرشفة" : "Archive",
+              delete: ar ? "حذف" : "Delete",
+              loadingThreads: ar ? "تحميل المحادثات" : "Loading threads",
+              moreOptions: ar ? "خيارات إضافية" : "More options",
+              newChat: ar ? "محادثة جديدة" : "New Chat",
+              newThread: ar ? "محادثة جديدة" : "New Thread",
+            }}
+            footerContent={(
+              <div className="bayaan-assistant-sidebar-status">
+                <span className={`ai-chat-live-dot${liveMode ? " is-live" : ""}`}>
+                  <span/>
+                  {liveMode && <span/>}
+                </span>
+                <span>{liveMode ? aiCanvasText(lang, "Live LLM") : aiCanvasText(lang, "Local preview")}</span>
+              </div>
+            )}
+          />
+          <SidebarInset className="bayaan-assistant-thread-inset">
+            <div className="bayaan-assistant-thread-toolbar">
+              <SidebarTrigger className="bayaan-assistant-sidebar-trigger" />
+              <div className="bayaan-assistant-thread-title">
+                {ar ? "تحليلات ميزا" : "Miza Insights"}
+              </div>
+            </div>
+            <div className={`bayaan-assistant-main${hasArtifactCanvas ? " has-artifact-canvas" : ""}`} dir="ltr">
+              <div className="bayaan-assistant-chat-column" dir={ar ? "rtl" : "ltr"}>
+                <Thread
+                  assistantExtras={AssistantExtras}
+                  composerAriaLabel={ar ? "رسالة إلى مساعد بيان" : "Message Bayaan assistant"}
+                  composerInputClassName="assistant-thread-input"
+                  threadMaxWidth="100%"
+                  labels={{
+                    copy: ar ? "نسخ" : "Copy",
+                    exportMarkdown: ar ? "تصدير كـ Markdown" : "Export as Markdown",
+                    more: ar ? "المزيد" : "More",
+                    refresh: ar ? "تحديث" : "Refresh",
+                    scrollToBottom: ar ? "التمرير إلى الأسفل" : "Scroll to bottom",
+                    sendMessage: ar ? "إرسال الرسالة" : "Send message",
+                    stopGenerating: ar ? "إيقاف التوليد" : "Stop generating",
+                    welcomeSubtitle: ar ? "كيف يمكنني مساعدتك اليوم؟" : "How can I help you today?",
+                    welcomeTitle: ar ? "مرحباً!" : "Hello there!",
+                  }}
+                  composerPlaceholder={ar ? "اسألني أي سؤال..." : "Ask anything..."}
+                  footerBeforeComposer={(
+                    <div className="bayaan-assistant-thread-footer">
+                      <BayaanAssistantMeta sourceMeta={sourceMeta} lang={lang}/>
+                      <BayaanAssistantQuickPrompts lang={lang}/>
+                    </div>
+                  )}
+                />
+              </div>
+              {hasArtifactCanvas && (
+                <BayaanAssistantArtifactCanvas
+                  artifact={artifactCanvas.artifact}
+                  pending={artifactCanvas.pending}
+                  selectedItemId={artifactCanvas.selectedItemId}
+                  stage={artifactCanvas.stage}
+                  lang={lang}
+                />
+              )}
+            </div>
+          </SidebarInset>
+        </div>
+      </SidebarProvider>
+    </AssistantRuntimeProvider>
+  );
+}
+
+function BayaanAssistantArtifactCanvas({ artifact, pending, selectedItemId, stage, lang }) {
+  const selected = assistantArtifactSelectedItem(artifact, selectedItemId, lang);
+  const itemCount = assistantArtifactItems(artifact, lang).length;
+  return (
+    <section className="bayaan-assistant-artifact-pane" aria-live="polite" dir={lang === "ar" ? "rtl" : "ltr"}>
+      {pending && !artifact ? (
+        <AssistantArtifactPreparing lang={lang} stage={stage || "thinking"} hasText={false}/>
+      ) : selected ? (
+        <>
+          <div className="bayaan-assistant-artifact-head">
+            <div>
+              <div className="bayaan-assistant-artifact-kicker">{aiCanvasText(lang, "Selected artifact")}</div>
+              <div className="bayaan-assistant-artifact-title">{selected.title}</div>
+              <div className="bayaan-assistant-artifact-meta">{selected.meta} · {selected.detail}</div>
+            </div>
+            {itemCount > 1 && (
+              <span className="badge badge-ai" style={{ height: 22, fontSize: 10.5 }}>
+                {itemCount} {aiCanvasText(lang, "artifacts")}
+              </span>
+            )}
+          </div>
+          <AiMessageArtifact artifact={selected.artifact} lang={lang}/>
+        </>
+      ) : (
+        <AssistantArtifactPreparing lang={lang} stage={stage || "thinking"} hasText={false}/>
+      )}
+    </section>
+  );
+}
+
+function BayaanAssistantMeta({ sourceMeta, lang }) {
+  return (
+    <div className="assistant-thread-meta">
+      {sourceMeta?.header && (
+        <span className="assistant-thread-window">{arTerm(lang, sourceMeta.header)}</span>
+      )}
+      {(sourceMeta?.chips || []).map(([label, value]) => (
+        <span key={label} className="badge">
+          {arTerm(lang, label)} <span className="t-num" style={{ marginInlineStart: 4 }}>{Number(value || 0).toLocaleString("en")}</span>
+        </span>
+      ))}
+      <span className="badge badge-ai">{arTerm(lang, sourceMeta?.budget || "Daily summaries tier")}</span>
+      {sourceMeta?.window && (
+        <span className="assistant-thread-window">{arTerm(lang, sourceMeta.window)}</span>
+      )}
+    </div>
+  );
+}
+
+function BayaanAssistantQuickPrompts({ lang }) {
+  const ar = lang === "ar";
+  const thread = useThreadRuntime();
+  const running = useAuiState((s) => s.thread.isRunning);
+  return (
+    <div className="assistant-thread-suggestions">
+      {SUGGESTED.map((s) => (
+        <button
+          key={s.id}
+          type="button"
+          className="assistant-thread-suggestion"
+          disabled={running}
+          onClick={() => thread.append({
+            role: "user",
+            content: [{ type: "text", text: suggestedText(s, lang) }],
+            metadata: { custom: { sceneIdHint: s.id } },
+            startRun: true,
+          })}
+        >
+          {ar ? s.textAr : s.text}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function BayaanAssistantComposer({ lang }) {
+  const ar = lang === "ar";
+  const running = useAuiState((s) => s.thread.isRunning);
+  return (
+    <ComposerPrimitive.Root className="aui-composer-root assistant-thread-composer" data-slot="aui_composer-root">
+      <ComposerPrimitive.Input
+        className="aui-composer-input assistant-thread-input"
+        placeholder={ar ? "اسألني أي سؤال..." : "Ask anything..."}
+        rows={1}
+        submitMode="enter"
+        disabled={running}
+        aria-label={ar ? "رسالة إلى مساعد بيان" : "Message Bayaan assistant"}
+      />
+      {running ? (
+        <ComposerPrimitive.Cancel className="aui-composer-cancel assistant-thread-send is-cancel" aria-label={ar ? "إيقاف" : "Stop"}>
+          <Icon name="x" size={15}/>
+        </ComposerPrimitive.Cancel>
+      ) : (
+        <ComposerPrimitive.Send className="aui-composer-send assistant-thread-send" aria-label={ar ? "إرسال" : "Send"}>
+          <Icon name="arrowUp" size={15}/>
+        </ComposerPrimitive.Send>
+      )}
+    </ComposerPrimitive.Root>
+  );
+}
+
+function AssistantArtifactPreparing({ lang, stage = "thinking", hasText = false }) {
+  const ar = lang === "ar";
+  const title = ar
+    ? (hasText ? "أحضّر التصور الموثق..." : "أقرأ البيانات وأفكر...")
+    : (hasText ? "Preparing source-backed visualization..." : "Reading sources and thinking...");
+  const detail = ar
+    ? (stage === "assembling" ? "أربط الرسم بالأدلة الرقمية قبل عرضه." : "ستظهر البطاقات عندما يكتمل رد النموذج.")
+    : (stage === "assembling" ? "Binding the visual to numeric proof before showing it." : "The visual cards will appear when the model finishes.");
+  return (
+    <div className="assistant-artifact-loader" role="status" aria-live="polite">
+      <div className="assistant-artifact-loader-icon" aria-hidden="true"/>
+      <div className="assistant-artifact-loader-copy">
+        <div className="assistant-artifact-loader-title">{title}</div>
+        <div className="assistant-artifact-loader-detail">{detail}</div>
+        <div className="assistant-artifact-loader-bars" aria-hidden="true">
+          <span/>
+          <span/>
+          <span/>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BayaanAssistantExtras({ lang, onArtifactSelect, selectedItemId, selectedMessageKey }) {
+  const message = useAuiState((s) => s.message);
+  const custom = message?.metadata?.custom || {};
+  const running = message?.status?.type === "running";
+  const target = threadMessageText(message);
+  const showCanvasPending = running && custom.visualPending === true;
+  const artifact = custom.artifact;
+  const artifactItems = assistantArtifactItems(artifact, lang);
+  const messageKey = custom.artifactBundleId || assistantArtifactBundleId(artifact, message?.id || target);
+
+  return (
+    <>
+      {showCanvasPending && (
+        <div className="assistant-thread-artifact-tray" role="status" aria-live="polite">
+          <span className="assistant-thread-artifact-chip is-loading">
+            <span className="assistant-thread-canvas-pulse" aria-hidden="true"/>
+            {lang === "ar" ? "يتم تجهيز الأثر" : "Preparing artifact"}
+          </span>
+        </div>
+      )}
+      {artifactItems.length > 0 && (
+        <div className="assistant-thread-artifact-tray" role="list" aria-label={aiCanvasText(lang, "artifacts")}>
+          {artifactItems.map((item) => {
+            const active = selectedMessageKey === messageKey && selectedItemId === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className={`assistant-thread-artifact-chip${active ? " is-active" : ""}`}
+                aria-pressed={active}
+                onClick={() => onArtifactSelect?.(artifact, item.id, messageKey)}
+              >
+                <Icon name={item.kind === "sources" ? "fileText" : item.kind === "proof" ? "clipboardCheck" : "chart"} size={13}/>
+                <span className="assistant-thread-artifact-chip-copy">
+                  <b>{item.title}</b>
+                  <span>{item.meta}</span>
+                </span>
+                <Icon name={lang === "ar" ? "arrowLeft" : "arrowRight"} size={12}/>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {custom.cite && (
+        <div className="assistant-thread-cite">
+          {lang === "ar" ? arTerm(lang, "rendered") : "rendered"} {arTerm(lang, custom.cite)} {lang === "ar" ? aiCanvasText(lang, "canvas") : "canvas"}
+        </div>
+      )}
+    </>
+  );
+}
+
+function BayaanThreadMessage({ lang }) {
+  const ar = lang === "ar";
+  const message = useAuiState((s) => s.message);
+  const isUser = message?.role === "user";
+  const custom = message?.metadata?.custom || {};
+  const target = threadMessageText(message);
+  const display = ar && custom.nativeLocale && custom.nativeLocale !== "ar" ? arTerm(lang, target) : target;
+  const running = message?.status?.type === "running";
+
+  if (isUser) {
+    return (
+      <MessagePrimitive.Root className="assistant-thread-message assistant-thread-message-user" data-role="user">
+        <div className="assistant-thread-bubble">{display || target}</div>
+      </MessagePrimitive.Root>
+    );
+  }
+
+  return (
+    <MessagePrimitive.Root className="assistant-thread-message assistant-thread-message-assistant" data-role="assistant">
+      <div className="assistant-thread-assistant-head">
+        <AITag>AI</AITag>
+        <span>{ar ? BRAND.arabic : BRAND.name.toLowerCase()}</span>
+      </div>
+      <div className="assistant-thread-answer">
+        {display || (running ? (ar ? "أفكر..." : "Thinking...") : "")}
+        {running && <span className="ins-caret"/>}
+      </div>
+      {custom.cite && (
+        <div className="assistant-thread-cite">
+          {ar ? arTerm(lang, "rendered") : "rendered"} {arTerm(lang, custom.cite)} {ar ? aiCanvasText(lang, "canvas") : "canvas"}
+        </div>
+      )}
+    </MessagePrimitive.Root>
+  );
+}
+
+const AI_VISUAL_COLORS = [
+  "var(--chart-5)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--accent)",
+  "var(--warn)",
+  "var(--ink-3)",
+];
+
+function aiVisualText(lang, value) {
+  const text = String(value || "");
+  if (lang !== "ar") return text;
+  if (hasArabicText(text)) return text;
+  return AI_CANVAS_AR[text] || text;
+}
+
+function aiVisualSeries(visual) {
+  return (Array.isArray(visual?.series) ? visual.series : [])
+    .map((item) => ({
+      label: String(item?.label || "value"),
+      value: Number(item?.value || 0),
+      unit: String(item?.unit || ""),
+      category: String(item?.category || item?.label || "value"),
+    }))
+    .filter((item) => Number.isFinite(item.value))
+    .slice(0, 12);
+}
+
+function formatAiVisualValue(value, unit) {
+  const normalizedUnit = String(unit || "").toLowerCase();
+  if (normalizedUnit === "currency" || normalizedUnit === "iqd") return fmtMoneyShort(Number(value || 0));
+  const formatted = Number(value || 0).toLocaleString("en");
+  return unit ? `${formatted} ${unit}` : formatted;
+}
+
+function aiVisualCommonUnit(series) {
+  const units = Array.from(new Set(series.map((item) => String(item.unit || "").trim()).filter(Boolean)));
+  return units.length === 1 ? units[0] : "";
+}
+
+function AiStudioBarChart({ rows, lang }) {
+  const ar = lang === "ar";
+  return (
+    <StudioPatternBarChart
+      ar={ar}
+      ariaLabel={ar ? "رسم أعمدة للذكاء" : "AI bar chart"}
+      barSize={34}
+      className="ai-studio-bar"
+      initialDimension={{ width: 520, height: 230 }}
+      rows={rows}
+      tickFormatter={(value) => {
+        const text = String(value || "");
+        return text.length > 10 ? `${text.slice(0, 10)}...` : text;
+      }}
+      tooltipTitle={(row) => row.label}
+      tooltipValue={(row) => formatAiVisualValue(row.value, row.unit)}
+      valueDataKey="value"
+      valueLabel={ar ? "القيمة" : "Value"}
+      xDataKey="label"
+    />
+  );
+}
+
+function aiTokenBudgetBadgeText(lang, totalTokens, remainingTokens) {
+  const isFiniteCount = (value) => (
+    value !== null &&
+    value !== undefined &&
+    value !== false &&
+    value !== "" &&
+    Number.isFinite(Number(value))
+  );
+  if (isFiniteCount(totalTokens)) return `${Number(totalTokens).toLocaleString("en")} ${aiCanvasText(lang, "tokens")}`;
+  if (remainingTokens === false) return aiCanvasText(lang, "unlimited");
+  if (isFiniteCount(remainingTokens)) return `${Number(remainingTokens).toLocaleString("en")} ${aiCanvasText(lang, "left")}`;
+  return aiCanvasText(lang, "token guarded");
+}
+
+function AiAgentVisualization({ visual, lang, index = 0 }) {
+  const type = String(visual?.type || "callout");
+  const series = aiVisualSeries(visual);
+  const sourceRefs = Array.isArray(visual?.sourceRefs) ? visual.sourceRefs.slice(0, 4) : [];
+  const max = Math.max(...series.map((item) => Math.abs(item.value)), 1);
+  const chartData = series.map((item, itemIndex) => ({
+    ...item,
+    label: aiVisualText(lang, item.label),
+    fill: AI_VISUAL_COLORS[itemIndex % AI_VISUAL_COLORS.length],
+  }));
+  const pieData = chartData.filter((item) => item.value > 0);
+  const commonUnit = aiVisualCommonUnit(series);
+
+  const renderBody = () => {
+    if (type === "pie-chart" && pieData.length) {
+      const total = pieData.reduce((sum, item) => sum + Number(item.value || 0), 0);
+      return (
+        <div className="ai-agent-chart ai-payment-visual ai-studio-pie-visual">
+          <PaymentMixDonut
+            centerLabel={aiCanvasText(lang, "Total")}
+            centerValue={formatAiVisualValue(total, commonUnit)}
+            compact
+            formatValue={(amount) => formatAiVisualValue(amount, commonUnit)}
+            rows={pieData.map((item, itemIndex) => ({
+              id: `${item.category || item.label}-${itemIndex}`,
+              label: item.label,
+              value: item.value,
+              color: item.fill,
+            }))}
+            total={total}
+          />
+        </div>
+      );
+    }
+
+    if (type === "bar-chart" && chartData.length) {
+      return (
+        <div className="ai-agent-chart">
+          <AiStudioBarChart rows={chartData} lang={lang}/>
+        </div>
+      );
+    }
+
+    if ((type === "metric-card" || type === "metric-grid") && series.length) {
+      return (
+        <div className="ai-agent-metric-grid">
+          {series.map((item, itemIndex) => (
+            <div key={`${item.label}-${itemIndex}`} className="ai-agent-metric" style={{ "--ai-agent-delay": `${itemIndex * 70}ms` }}>
+              <span>{aiVisualText(lang, item.label)}</span>
+              <strong>{formatAiVisualValue(item.value, item.unit)}</strong>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    if (type === "rank-list" || type === "proposal-list" || type === "timeline" || type === "table") {
+      return (
+        <div className="ai-agent-rank-list">
+          {series.length ? series.map((item, itemIndex) => (
+            <div key={`${item.label}-${itemIndex}`} className="ai-agent-rank-row" style={{ "--ai-agent-delay": `${itemIndex * 70}ms` }}>
+              <div className="ai-agent-rank-meta">
+                <span>{aiVisualText(lang, item.label)}</span>
+                <b>{formatAiVisualValue(item.value, item.unit)}</b>
+              </div>
+              <div className="ai-agent-rank-track">
+                <div style={{ width: `${Math.max(4, Math.min(100, Math.abs(item.value) / max * 100))}%` }}/>
+              </div>
+            </div>
+          )) : (
+            <div className="t-small subtle">{aiVisualText(lang, visual?.reason || "No numeric rows needed for this response.")}</div>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="ai-agent-callout">
+        {aiVisualText(lang, visual?.reason || "")}
+      </div>
+    );
+  };
+
+  return (
+    <div className="ai-agent-visual-card" style={{ "--ai-agent-index": index, "--ai-agent-card-delay": `${index * 110}ms` }}>
+      <div className="ai-agent-visual-head">
+        <span className="badge badge-ai">{aiVisualText(lang, type)}</span>
+        {sourceRefs.length > 0 && <span>{sourceRefs.join(" / ")}</span>}
+      </div>
+      <div className="ai-agent-visual-title">{aiVisualText(lang, visual?.title)}</div>
+      {visual?.reason && <div className="ai-agent-visual-reason">{aiVisualText(lang, visual.reason)}</div>}
+      {renderBody()}
+    </div>
+  );
+}
+
+function AiMessageArtifact({ artifact, lang }) {
+  const sourceEvidence = Array.isArray(artifact?.sourceEvidence) ? artifact.sourceEvidence : [];
+  const claims = Array.isArray(artifact?.claims) ? artifact.claims : [];
+  const visualizations = Array.isArray(artifact?.visualizations) ? artifact.visualizations : [];
+  const runtime = artifact?.runtime || {};
+  const llm = runtime.llm || {};
+  const budget = runtime.budget || {};
+  const visibleSources = sourceEvidence.filter((ref) => ref?.model).slice(0, 4);
+  const totalTokens =
+    llm.totalTokens ??
+    llm.usage?.total_tokens ??
+    llm.usage?.totalTokens ??
+    budget.tokensUsed ??
+    null;
+  const remainingTokens =
+    budget.remainingTokens ??
+    budget.tokensRemaining ??
+    budget.remaining ??
+    null;
+
+  return (
+    <div className="ai-artifact">
+      <div className="ai-artifact-runtime">
+        <div className="t-small" style={{ fontWeight: 600 }}>{aiCanvasText(lang, "AI runtime")}</div>
+        <div className="ai-artifact-runtime-items">
+          <span className="badge badge-ai" style={{ height: 20, fontSize: 10.5 }}>{aiStatusText(lang, llm.status || "pending")}</span>
+          <span className="badge" style={{ height: 20, fontSize: 10.5 }}>{llm.model || llm.provider || "server-side"}</span>
+          <span className="badge" style={{ height: 20, fontSize: 10.5 }}>
+            {aiTokenBudgetBadgeText(lang, totalTokens, remainingTokens)}
+          </span>
+        </div>
+      </div>
+
+      {visualizations.length > 0 && (
+        <div className="ai-agent-visual-grid">
+          {visualizations.map((visual, index) => (
+            <AiAgentVisualization key={visual?.id || `${visual?.type}-${index}`} visual={visual} lang={lang} index={index}/>
+          ))}
+        </div>
+      )}
+
+      {claims.length > 0 && (
+        <div className="ai-artifact-proof">
+          <div className="between" style={{ gap: 10 }}>
+            <div className="t-small" style={{ fontWeight: 600 }}>{aiCanvasText(lang, "Claim proof")}</div>
+            <span className="badge badge-ai" style={{ height: 20, fontSize: 10 }}>{aiCanvasText(lang, "numeric refs")}</span>
+          </div>
+          <div className="ai-artifact-proof-list">
+            {claims.slice(0, 2).map((claim, index) => (
+              <div key={`${claim.text || "claim"}-${index}`} className="ai-artifact-claim">
+                <div className="t-small" style={{ lineHeight: 1.45 }}>{claim.text || aiCanvasText(lang, "Source-backed claim")}</div>
+                <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 7 }}>
+                  {(claim.numericValues || []).slice(0, 3).map((numeric) => (
+                    <span key={`${numeric.label}-${numeric.value}`} className="badge" style={{ height: 20, fontSize: 10.5 }}>
+                      {aiCanvasText(lang, numeric.label)}: <span className="t-num" style={{ marginInlineStart: 4 }}>{Number(numeric.value || 0).toLocaleString("en")}</span>{numeric.unit ? ` ${aiCanvasText(lang, numeric.unit)}` : ""}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {visibleSources.length > 0 && (
+        <div className="ai-artifact-proof">
+          <div className="t-small" style={{ fontWeight: 600 }}>{aiCanvasText(lang, "Source evidence")}</div>
+          <div className="ai-artifact-source-grid">
+            {visibleSources.map((ref, index) => {
+              const modelLabel = String(ref.model || "").replace(/^bayaan\./, "").replace(/^pos\./, "");
+              const samples = Array.isArray(ref.sampleRefs) ? ref.sampleRefs.slice(0, 2).filter(Boolean) : [];
+              return (
+                <div key={`${ref.model || "source"}-${index}`} className="ai-artifact-source">
+                  <span>{modelLabel || ref.model}</span>
+                  <span>{Number(ref.rowCount || 0).toLocaleString("en")} {aiCanvasText(lang, "rows")}</span>
+                  {samples.length > 0 && (
+                    <span className="ai-artifact-source-samples">
+                      {aiCanvasText(lang, "samples")}: {samples.join(", ")}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+function ChatMessage({ message, lang }) {
+  const ar = lang === "ar";
   const isUser = message.role === "user";
   const isLive = message.streaming;
   const target = message.text || "";
   const streamed = useStream(isLive ? target : "", 12);
   const display = isLive ? streamed : target;
+  const localizedDisplay = ar ? arTerm(lang, display) : display;
 
   if (isUser) {
     return (
@@ -4646,18 +8949,18 @@ function ChatMessage({ message }) {
     }}>
       <div className="row" style={{ gap: 6, marginBottom: 4 }}>
         <AITag>AI</AITag>
-        <span className="t-small subtle" style={{ fontSize: 10.5 }}>maqha</span>
+        <span className="t-small subtle" style={{ fontSize: 10.5 }}>{ar ? BRAND.arabic : BRAND.name.toLowerCase()}</span>
       </div>
       <div style={{
         fontSize: 13, lineHeight: 1.55,
         color: "var(--ink-1)",
       }}>
-        {display}
+        {localizedDisplay}
         {isLive && display.length < target.length && <span className="ins-caret"/>}
       </div>
       {!isLive && message.cite && (
         <div className="t-small subtle" style={{ fontSize: 10.5, marginTop: 6, fontFamily: "var(--font-mono)" }}>
-          rendered {message.cite} on canvas
+          {ar ? "تم عرض" : "rendered"} {arTerm(lang, message.cite)} {ar ? "على اللوحة" : "on canvas"}
         </div>
       )}
     </div>
@@ -4674,61 +8977,370 @@ function TypingIndicator() {
   );
 }
 
+function aiAssistantIntroText(ar, sourceMeta, liveAiEnabled) {
+  if (sourceMeta.empty) {
+    return ar
+      ? "لا توجد صفوف موثقة بعد. لن أعرض أي ملخص تجريبي في وضع البيانات المباشرة فقط."
+      : "No verified rows are loaded yet. I will not show a demo summary in live-only mode.";
+  }
+  if (liveAiEnabled) {
+    return ar
+      ? "أهلاً. أنا مساعد بيان المباشر. اسألني أي شيء؛ عندما يلمس سؤالك العمليات سأستدعي نموذج اللغة من الخادم، وأقرأ حزم تقارير المحرك الموثقة، وأعرض دليل المصدر. لن أنفذ أي تغييرات تجارية من دون موافقة بشرية."
+      : "Hi. I am the live Bayaan assistant. Ask me anything; when your question touches operations I will call the server-side LLM, read verified engine report packs, and show source proof. I will not execute business changes without a human.";
+  }
+  return ar
+    ? "الذكاء المباشر غير متصل في هذه الجلسة. يمكنني عرض معاينة تخطيط محلية فقط إلى أن يتم تفعيل مسار نموذج اللغة الموثق."
+    : "Live AI is not connected in this session. I will not replace it with a mock answer until the verified engine LLM route is enabled.";
+}
+
+function aiLocalPreviewText(ar) {
+  return ar
+    ? "الذكاء المباشر غير متصل في هذه الجلسة. هذه معاينة تخطيط محلية فقط، وليست إجابة من نموذج اللغة."
+    : "Live AI is not connected in this session. I will not answer with a mockup; connect the verified engine LLM route first.";
+}
+
 // ============================================================
 // Main screen
 // ============================================================
-function InsightsScreen({ lang, bootstrap }) {
+function InsightsScreen({ lang, bootstrap, sourceOfTruth }) {
   const sourceMeta = useMemoIns(() => insightSourceMeta(bootstrap), [bootstrap]);
   const ar = lang === "ar";
+  const liveAiEnabled = Boolean(sourceOfTruth?.enabled && !isSimulationRuntime());
+  const introText = aiAssistantIntroText(ar, sourceMeta, liveAiEnabled);
+  const introLocale = ar ? "ar" : "en";
   const [scene, setScene] = useStateIns("default");
-  const [messages, setMessages] = useStateIns([
-    {
-      role: "ai",
-      text: sourceMeta.empty
-        ? (ar ? "لا توجد صفوف موثقة بعد. لن أعرض أي ملخص تجريبي." : "No verified rows are loaded yet. I will not show a demo summary in live-only mode.")
-        : ar ? (SCENES.default.replyAr || SCENES.default.reply) : SCENES.default.reply,
-      cite: sourceMeta.cite,
-    },
-  ]);
+  const [plan, setPlan] = useStateIns(null);
+  const [aiEvidence, setAiEvidence] = useStateIns(null);
+  const [aiRuntime, setAiRuntime] = useStateIns(null);
+  const [aiClaims, setAiClaims] = useStateIns(null);
+  const [aiReportPack, setAiReportPack] = useStateIns(null);
+  const [assistantCanvasArtifact, setAssistantCanvasArtifact] = useStateIns(null);
+  const [assistantCanvasSelectedItemId, setAssistantCanvasSelectedItemId] = useStateIns(null);
+  const [assistantCanvasMessageKey, setAssistantCanvasMessageKey] = useStateIns(null);
+  const [assistantCanvasPending, setAssistantCanvasPending] = useStateIns(false);
+  const [assistantCanvasStage, setAssistantCanvasStage] = useStateIns("idle");
+  const [messages, setMessages] = useStateIns([]);
   const [busy, setBusy] = useStateIns(false);
 
-  useEffectIns(() => {
-    setMessages((items) => items.map((item, index) => (
-      index === 0 && item.role === "ai"
-        ? {
-            ...item,
-            text: sourceMeta.empty
-              ? (ar ? "لا توجد صفوف موثقة بعد. لن أعرض أي ملخص تجريبي." : "No verified rows are loaded yet. I will not show a demo summary in live-only mode.")
-              : item.text,
-            cite: sourceMeta.cite,
-          }
-        : item
-    )));
-  }, [sourceMeta.cite, sourceMeta.empty, ar]);
+  const assistantInitialMessages = useMemoIns(() => ([
+    {
+      role: "assistant",
+      content: introText,
+      status: { type: "complete", reason: "stop" },
+      metadata: {
+        custom: {
+          cite: liveAiEnabled ? "live LLM ready" : sourceMeta.cite,
+          nativeLocale: introLocale,
+        },
+      },
+    },
+  ]), [introText, liveAiEnabled, sourceMeta.cite, introLocale]);
 
-  const sendQuestion = (q, sceneIdHint) => {
-    if (sourceMeta.empty) {
+  const selectAssistantArtifact = useMemoIns(() => (artifact, itemId, messageKey) => {
+    if (!assistantArtifactHasCanvas(artifact)) return;
+    const nextItemId = itemId || assistantArtifactDefaultItemId(artifact);
+    setAssistantCanvasArtifact(artifact);
+    setAssistantCanvasSelectedItemId(nextItemId);
+    setAssistantCanvasMessageKey(messageKey || assistantArtifactBundleId(artifact));
+    setAssistantCanvasPending(false);
+    setAssistantCanvasStage("ready");
+  }, []);
+
+  const runAssistantTurn = useMemoIns(() => async function* runBayaanAssistantTurn(options) {
+    const { text: q, sceneIdHint } = latestUserTurn(options?.messages || []);
+    const abortSignal = options?.abortSignal;
+
+    const applyAiResponseToState = (response) => {
+      const resolvedPlan = response?.plan || null;
+      const responseEvidence = Array.isArray(response?.sourceEvidence)
+        ? response.sourceEvidence
+        : response?.reportPack?.sourceEvidence || null;
+      const responseClaims = Array.isArray(response?.claims) ? response.claims : null;
+      const responseVisualizations = Array.isArray(response?.visualizations) ? response.visualizations : [];
+      const responseRuntime = {
+        llm: response?.llm || null,
+        featureTier: response?.featureTier || null,
+        budget: response?.budget || null,
+      };
+      setPlan(resolvedPlan);
+      setAiEvidence(responseEvidence);
+      setAiClaims(responseClaims);
+      setAiReportPack(response?.reportPack || null);
+      setAiRuntime(responseRuntime);
+      const responseArtifact = {
+        plan: resolvedPlan,
+        sourceEvidence: responseEvidence,
+        claims: responseClaims,
+        visualizations: responseVisualizations,
+        reportPack: response?.reportPack || null,
+        runtime: responseRuntime,
+      };
+      const guessed = sceneIdHint || sceneIdForAiDashboardPlan(resolvedPlan);
+      const sceneObj = SCENES[guessed] || SCENES.default;
+      const target = aiDashboardResponseText(response, sceneObj, ar);
+      const artifactBundleId = assistantArtifactBundleId(responseArtifact, response?.llm?.responseId || target);
+      const defaultArtifactItemId = assistantArtifactDefaultItemId(responseArtifact);
+      const hasCanvasArtifact = assistantArtifactHasCanvas(responseArtifact);
+      setAssistantCanvasArtifact(hasCanvasArtifact ? responseArtifact : null);
+      setAssistantCanvasSelectedItemId(hasCanvasArtifact ? defaultArtifactItemId : null);
+      setAssistantCanvasMessageKey(hasCanvasArtifact ? artifactBundleId : null);
+      setAssistantCanvasPending(false);
+      setAssistantCanvasStage("ready");
+      setScene(guessed);
+      const cite = aiDashboardCitation(response, sourceMeta);
+      return {
+        target,
+        custom: {
+          cite,
+          nativeLocale: response?.locale || lang,
+          serverStream: true,
+          artifact: responseArtifact,
+          artifactBundleId,
+        },
+      };
+    };
+
+    if (!q) {
+      setAssistantCanvasPending(false);
+      yield assistantRunResult("", { cite: sourceMeta.cite, nativeLocale: lang }, { type: "complete", reason: "stop" });
+      return;
+    }
+
+    if (sourceMeta.empty && !sourceOfTruth?.enabled) {
+      setAssistantCanvasArtifact(null);
+      setAssistantCanvasSelectedItemId(null);
+      setAssistantCanvasMessageKey(null);
+      setAssistantCanvasPending(false);
+      const target = ar ? "لا توجد بيانات محرك موثقة للإجابة عليها الآن." : "There are no verified engine rows to answer from yet.";
+      yield assistantRunResult(target, { cite: sourceMeta.cite, nativeLocale: lang }, { type: "complete", reason: "stop" });
+      return;
+    }
+
+    if (liveAiEnabled) {
+      setAssistantCanvasArtifact(null);
+      setAssistantCanvasSelectedItemId(null);
+      setAssistantCanvasMessageKey(null);
+      setAssistantCanvasPending(true);
+      setAssistantCanvasStage("thinking");
+      const queue = createAssistantEventQueue();
+      let streamedText = "";
+      let latestCustom = {
+        cite: "live LLM stream",
+        nativeLocale: lang,
+        serverStream: true,
+        visualPending: true,
+        visualStage: "thinking",
+      };
+      let sawFinal = false;
+      let sawStreamError = false;
+      const request = sourceOfTruth.streamAiDashboardPlan({
+        query: q,
+        locale: lang,
+        scope: { sectionId: "insights", timeRange: "today" },
+      }, {
+        signal: abortSignal,
+        onArtifact: (response) => queue.push({ type: "artifact_pending", response }),
+        onTextDelta: (delta) => queue.push({ type: "text_delta", delta }),
+        onFinal: (response) => {
+          sawFinal = true;
+          queue.push({ type: "final", response });
+        },
+        onError: (message) => {
+          sawStreamError = true;
+          queue.push({ type: "stream_error", message });
+        },
+      })
+        .then((response) => {
+          if (!sawFinal) queue.push({ type: "final", response });
+        })
+        .catch((error) => {
+          if (!sawStreamError) queue.push({ type: "error", error });
+        })
+        .finally(() => queue.close());
+
+      yield assistantRunResult("", latestCustom);
+
+      while (true) {
+        const event = await queue.next();
+        if (!event || abortSignal?.aborted) break;
+        if (event.type === "text_delta") {
+          streamedText += event.delta || "";
+          latestCustom = { ...latestCustom, visualStage: streamedText ? "assembling" : "thinking" };
+          if (streamedText) setAssistantCanvasStage("assembling");
+          yield assistantRunResult(streamedText, latestCustom);
+        } else if (event.type === "artifact_pending") {
+          latestCustom = { ...latestCustom, visualStage: "assembling" };
+          setAssistantCanvasPending(true);
+          setAssistantCanvasStage("assembling");
+          continue;
+        } else if (event.type === "final") {
+          const { target, custom } = applyAiResponseToState(event.response);
+          latestCustom = custom;
+          yield assistantRunResult(target || streamedText, latestCustom, { type: "complete", reason: "stop" });
+        } else if (event.type === "stream_error") {
+          setAssistantCanvasPending(false);
+          const target = ar ? "أرسل الخادم خطأ أثناء البث. لم يتم اختراع إجابة بديلة." : `The server stream reported an error: ${event.message}`;
+          yield assistantRunResult(target, { cite: sourceMeta.cite, nativeLocale: lang }, { type: "complete", reason: "unknown" });
+        } else if (event.type === "error") {
+          setPlan(null);
+          setAiEvidence(null);
+          setAiClaims(null);
+          setAiReportPack(null);
+          setAiRuntime({ llm: { status: "provider_error", error: compactError(event.error) }, featureTier: null, budget: null });
+          setAssistantCanvasArtifact(null);
+          setAssistantCanvasSelectedItemId(null);
+          setAssistantCanvasMessageKey(null);
+          setAssistantCanvasPending(false);
+          setAssistantCanvasStage("error");
+          setScene(sceneIdHint || "default");
+          const target = ar
+            ? "تعذر الوصول إلى خدمة الذكاء على الخادم. لم يتم اختراع إجابة."
+            : `Server AI request failed: ${compactError(event.error)}`;
+          yield assistantRunResult(target, { cite: sourceMeta.cite, nativeLocale: lang }, { type: "complete", reason: "unknown" });
+        }
+      }
+      await request.catch(() => undefined);
+      return;
+    }
+
+    setPlan(null);
+    setAiEvidence(null);
+    setAiClaims(null);
+    setAiReportPack(null);
+    setAiRuntime({ llm: { status: "local-plan" }, featureTier: null, budget: null });
+    setAssistantCanvasArtifact(null);
+    setAssistantCanvasSelectedItemId(null);
+    setAssistantCanvasMessageKey(null);
+    setAssistantCanvasPending(false);
+    setAssistantCanvasStage("idle");
+    setScene(sceneIdHint || "default");
+    const target = aiLocalPreviewText(ar);
+    for (let index = 1; index <= target.length; index += 5) {
+      yield assistantRunResult(target.slice(0, index), { cite: sourceMeta.cite, nativeLocale: introLocale, visualPending: false });
+      await sleepAssistantFrame(16, abortSignal);
+    }
+    yield assistantRunResult(target, { cite: sourceMeta.cite, nativeLocale: introLocale, visualPending: false }, { type: "complete", reason: "stop" });
+  }, [ar, introLocale, lang, liveAiEnabled, sourceMeta, sourceOfTruth]);
+
+  const sendQuestion = async (q, sceneIdHint) => {
+    if (sourceMeta.empty && !sourceOfTruth?.enabled) {
       setMessages((m) => [
         ...m,
-        { role: "user", text: q },
+        { role: "user", text: q, nativeLocale: lang },
         {
           role: "ai",
           text: ar ? "لا توجد بيانات محرك موثقة للإجابة عليها الآن." : "There are no verified engine rows to answer from yet.",
           cite: sourceMeta.cite,
+          nativeLocale: lang,
         },
       ]);
       return;
     }
-    // pick the matching scene by keyword if no hint
-    const guessed = sceneIdHint || guessScene(q);
-    setMessages(m => [...m, { role: "user", text: q }]);
+
+    setMessages(m => [...m, { role: "user", text: q, nativeLocale: lang }]);
     setBusy(true);
-    // after a brief "thinking", swap canvas + start streaming reply
+
+    if (liveAiEnabled) {
+      const assistantMessageId = `ai-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const applyLiveAiResponse = (response, keepExistingText = false, stillStreaming = false) => {
+        const resolvedPlan = response?.plan || null;
+        const responseEvidence = Array.isArray(response?.sourceEvidence)
+          ? response.sourceEvidence
+          : response?.reportPack?.sourceEvidence || null;
+        const responseClaims = Array.isArray(response?.claims) ? response.claims : null;
+        const responseVisualizations = Array.isArray(response?.visualizations) ? response.visualizations : [];
+        const responseRuntime = {
+          llm: response?.llm || null,
+          featureTier: response?.featureTier || null,
+          budget: response?.budget || null,
+        };
+        setPlan(resolvedPlan);
+        setAiEvidence(responseEvidence);
+        setAiClaims(responseClaims);
+        setAiReportPack(response?.reportPack || null);
+        setAiRuntime(responseRuntime);
+        const guessed = sceneIdHint || sceneIdForAiDashboardPlan(resolvedPlan);
+        setScene(guessed);
+        const sceneObj = SCENES[guessed] || SCENES.default;
+        const target = aiDashboardResponseText(response, sceneObj, ar);
+        const cite = aiDashboardCitation(response, sourceMeta);
+        setMessages(m => m.map((item) => (
+          item.id === assistantMessageId
+            ? {
+                ...item,
+                text: keepExistingText && item.text ? item.text : target,
+                streaming: stillStreaming,
+                serverStream: true,
+                cite,
+                nativeLocale: response?.locale || lang,
+                artifact: {
+                  plan: resolvedPlan,
+                  sourceEvidence: responseEvidence,
+                  claims: responseClaims,
+                  visualizations: responseVisualizations,
+                  reportPack: response?.reportPack || null,
+                  runtime: responseRuntime,
+                },
+              }
+            : item
+        )));
+      };
+      setMessages(m => [...m, {
+        id: assistantMessageId,
+        role: "ai",
+        text: "",
+        streaming: true,
+        serverStream: true,
+        cite: "live LLM stream",
+        nativeLocale: lang,
+      }]);
+      try {
+        await sourceOfTruth.streamAiDashboardPlan({
+          query: q,
+          locale: lang,
+          scope: { sectionId: "insights", timeRange: "today" },
+        }, {
+          onArtifact: () => undefined,
+          onTextDelta: (delta) => {
+            setMessages(m => m.map((item) => (
+              item.id === assistantMessageId
+                ? { ...item, text: `${item.text || ""}${delta}`, streaming: true, serverStream: true }
+                : item
+            )));
+          },
+          onFinal: (response) => applyLiveAiResponse(response, false, false),
+        });
+        setBusy(false);
+      } catch (error) {
+        setPlan(null);
+        setAiEvidence(null);
+        setAiClaims(null);
+        setAiReportPack(null);
+        setAiRuntime({ llm: { status: "provider_error", error: compactError(error) }, featureTier: null, budget: null });
+        setScene(sceneIdHint || "default");
+        setMessages(m => m.filter((item) => item.id !== assistantMessageId));
+        setMessages(m => [...m, {
+          role: "ai",
+          text: ar ? "تعذر الوصول إلى خدمة الذكاء على الخادم. لم يتم اختراع إجابة." : `Server AI request failed: ${compactError(error)}`,
+          cite: sourceMeta.cite,
+          nativeLocale: lang,
+        }]);
+        setBusy(false);
+      }
+      return;
+    }
+
+    setPlan(null);
+    setAiEvidence(null);
+    setAiClaims(null);
+    setAiReportPack(null);
+    setAiRuntime({ llm: { status: "local-plan" }, featureTier: null, budget: null });
+
+    const guessed = sceneIdHint || "default";
     setTimeout(() => {
       setScene(guessed);
-      const sceneObj = SCENES[guessed] || SCENES.default;
-      const target = ar ? (sceneObj.replyAr || sceneObj.reply) : sceneObj.reply;
-      setMessages(m => [...m, { role: "ai", text: target, streaming: true, cite: sourceMeta.cite }]);
+      const target = aiLocalPreviewText(ar);
+      setMessages(m => [...m, { role: "ai", text: target, streaming: true, cite: sourceMeta.cite, nativeLocale: introLocale }]);
       // mark stream complete after enough time
       const streamMs = Math.min(4500, target.length * 14 + 400);
       setTimeout(() => {
@@ -4740,15 +9352,13 @@ function InsightsScreen({ lang, bootstrap }) {
 
   const onSuggested = (s) => {
     if (busy) return;
-    sendQuestion(s.text, s.id);
+    sendQuestion(suggestedText(s, lang), s.id);
   };
 
   return (
-    <div style={{
-      display: "flex",
-      height: "calc(100vh - 100px)",
-      margin: "-24px -28px",
-      background: "var(--paper)",
+    <div className="ai-chat-workspace" style={{
+      height: "100%",
+      margin: 0,
     }}>
       {/* Inline animation rules */}
       <style>{`
@@ -4787,9 +9397,10 @@ function InsightsScreen({ lang, bootstrap }) {
         .ins-card {
           background: var(--surface);
           border: 1px solid var(--line);
-          border-radius: 8px;
-          padding: 14px 16px;
+          border-radius: var(--r-3);
+          padding: 16px;
           padding-inline-start: 18px;
+          box-shadow: var(--shadow-1);
         }
         .ins-caret {
           display: inline-block; width: 1.5px; height: 13px;
@@ -4803,26 +9414,94 @@ function InsightsScreen({ lang, bootstrap }) {
         }
       `}</style>
 
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <InsightCanvas sceneId={scene} sourceMeta={sourceMeta} lang={lang}/>
-      </div>
-      <ChatPanel
-        messages={messages}
-        sendQuestion={sendQuestion}
-        busy={busy}
-        onSuggested={onSuggested}
+      <BayaanAssistantThreadPanel
+        key={`${lang}-${liveAiEnabled ? "live" : "local"}-${sourceMeta.cite}`}
+        runTurn={runAssistantTurn}
         sourceMeta={sourceMeta}
+        liveMode={liveAiEnabled}
+        lang={lang}
+        artifactCanvas={{
+          artifact: assistantCanvasArtifact,
+          pending: assistantCanvasPending,
+          selectedItemId: assistantCanvasSelectedItemId,
+          selectedMessageKey: assistantCanvasMessageKey,
+          onSelect: selectAssistantArtifact,
+          stage: assistantCanvasStage,
+        }}
       />
     </div>
   );
 }
 
-function guessScene(q) {
-  const s = q.toLowerCase();
-  if (/zayouna|k-?04|behind|stockout|milk|oat|why/.test(s)) return "k04";
-  if (/weekend|push|product|recommend/.test(s)) return "weekend";
-  if (/waste|anomal|spoil|loss/.test(s)) return "waste";
+function sceneIdForAiDashboardPlan(plan) {
+  if (!plan?.intent) return "default";
+  if (plan.intent === "kiosk-diagnosis") return "k04";
+  if (plan.intent === "waste-anomaly-review") return "waste";
+  if (plan.intent === "recipe-margin-review") return "weekend";
+  if (plan.intent === "stock-allocation") return "stock";
+  if (plan.intent === "close-review") return "close";
   return "default";
+}
+
+function aiDashboardResponseText(response, sceneObj, ar) {
+  const explanation = typeof response?.explanation === "string" ? response.explanation.trim() : "";
+  if (explanation) return explanation;
+  if (response?.skipped || response?.demo || response?.simulation) {
+    return ar
+      ? "الذكاء المباشر غير متصل في هذه الجلسة. لن أستبدله بإجابة مساعد تجريبية."
+      : "Live AI is not connected in this session. I will not replace it with a mock assistant answer.";
+  }
+  const llmStatus = response?.llm?.status;
+  if (llmStatus === "llm_called") {
+    return ar
+      ? "أرجع النموذج المباشر خطة موثقة من دون نص سردي. أعد السؤال أو ضيّقه؛ لم أستبدل ذلك بإجابة جاهزة."
+      : "The live model returned a validated plan but no narrative text. Ask again or narrow the question; no canned dashboard answer was substituted.";
+  }
+  if (llmStatus === "missing_credentials") {
+    return ar
+      ? "مفاتيح الذكاء على الخادم غير مضبوطة بعد. أرجع بيان خطة مدعومة بالمصدر من دون استدعاء نموذج اللغة."
+      : "Server AI credentials are not configured yet. Bayaan did not make an LLM call or create AI-authored visuals.";
+  }
+  if (llmStatus === "provider_error") {
+    return ar
+      ? "فشل مزوّد الذكاء على الخادم. أرجع بيان الخطة الموثقة بالمصدر ولم يخترع إجابة."
+      : "The server AI provider failed. Bayaan did not invent an answer or visualization.";
+  }
+  if (llmStatus === "tier_limited") {
+    return ar
+      ? "هذه باقة الذكاء لا تسمح بهذا النطاق بعد. أرجع بيان الخطة المدعومة بالمصدر من دون إنفاق رموز النموذج."
+      : "This AI tier does not allow that range yet. Bayaan did not ask the model to answer it.";
+  }
+  if (llmStatus === "budget_exhausted") {
+    return ar
+      ? "ميزانية رموز الذكاء مستنفدة أو غير كافية لهذا الطلب. أرجع بيان الخطة المدعومة بالمصدر من دون استدعاء النموذج."
+      : "The AI token budget is exhausted or too low for this request. Bayaan did not call the model.";
+  }
+  return ar
+    ? "لم ترجع إجابة ذكاء مباشرة. لن أستبدلها برد لوحة جاهز."
+    : "No live AI answer was returned. I will not substitute a canned dashboard response.";
+}
+
+function formatAiBudgetRemaining(budget) {
+  if (!budget) return "-";
+  if (budget.remainingTokens === false) return "unlimited";
+  if (budget.remainingTokens === undefined || budget.remainingTokens === null) return "-";
+  return Number(budget.remainingTokens || 0).toLocaleString("en");
+}
+
+function aiDashboardCitation(response, sourceMeta) {
+  const refs = Array.isArray(response?.sourceEvidence)
+    ? response.sourceEvidence
+    : Array.isArray(response?.reportPack?.sourceEvidence)
+      ? response.reportPack.sourceEvidence
+      : [];
+  const topRefs = refs
+    .filter((ref) => Number(ref?.rowCount || 0) > 0)
+    .slice(0, 4)
+    .map((ref) => `${ref.model}:${ref.rowCount}`)
+    .join(", ");
+  const status = response?.llm?.status || "local-plan";
+  return topRefs ? `${status} / ${topRefs}` : `${status} / ${sourceMeta?.cite || "source evidence pending"}`;
 }
 
 // =============== KIOSKS ===============
@@ -5039,7 +9718,7 @@ function KiosksScreenPrevious({ lang, onPick, bootstrap }) {
 
 const WASTE_TARGET = 4.0;
 
-function deriveKioskOps(k) {
+function deriveKioskOps(k, allowDemoEstimate = false) {
   const code = String(k.id || "K-00");
   const a = code.charCodeAt(2) || code.charCodeAt(0) || 75;
   const b = code.charCodeAt(3) || code.charCodeAt(code.length - 1) || 48;
@@ -5048,12 +9727,12 @@ function deriveKioskOps(k) {
   if (k.status === "good") inv = 66 + seed;
   else if (k.status === "warn") inv = 38 + (seed % 24);
   else inv = 18 + (seed % 16);
-  const slots = 24;
-  const lowItems = k.status === "crit" ? 5 + (seed % 3) : k.status === "warn" ? 2 + (seed % 2) : (seed % 2);
-  const critItems = k.status === "crit" ? 2 + (seed % 2) : k.status === "warn" ? (seed % 2) : 0;
-  const hours = k.status === "crit" ? 2 + (seed % 4) : k.status === "warn" ? 6 + (seed % 6) : 18 + (seed % 24);
-  const queue = seed % 5;
-  const lastSale = (seed % 50) + 4;
+  const slots = Number(k.stockItems || 0) || (allowDemoEstimate ? 24 : 0);
+  const lowItems = Number(k.lowStockItems ?? (allowDemoEstimate ? (k.status === "crit" ? 5 + (seed % 3) : k.status === "warn" ? 2 + (seed % 2) : (seed % 2)) : 0));
+  const critItems = Number(k.zeroStockItems ?? (allowDemoEstimate ? (k.status === "crit" ? 2 + (seed % 2) : k.status === "warn" ? (seed % 2) : 0) : 0));
+  const hours = k.runoutHours ?? k.runout_hours ?? (allowDemoEstimate ? (k.status === "crit" ? 2 + (seed % 4) : k.status === "warn" ? 6 + (seed % 6) : 18 + (seed % 24)) : null);
+  const queue = Number(k.queueDepth ?? k.queue_depth ?? (allowDemoEstimate ? seed % 5 : 0));
+  const lastSale = Number(k.lastSaleMinutes ?? k.last_sale_minutes ?? (allowDemoEstimate ? (seed % 50) + 4 : 0));
   return { inv: Math.min(96, Math.max(8, k.stockHealth || inv)), lowItems, critItems, slots, hours, queue, lastSale };
 }
 
@@ -5104,7 +9783,7 @@ function WasteMeter({ pct, status }) {
   );
 }
 
-function LivePulse({ status }) {
+function LivePulse({ status, lang = "en" }) {
   const color = status === "crit" ? "var(--crit)" : status === "warn" ? "var(--warn)" : "var(--pos)";
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
@@ -5115,24 +9794,36 @@ function LivePulse({ status }) {
           opacity: 0.35, animation: "kioskPulse 1.6s ease-out infinite",
         }}/>
       </span>
-      <span style={{ fontSize: 10, fontWeight: 500, letterSpacing: "0.06em", color: "var(--ink-3)" }}>LIVE</span>
+      <span style={{ fontSize: 10, fontWeight: 500, letterSpacing: "0.06em", color: "var(--ink-3)" }}>{lang === "ar" ? "مباشر" : "LIVE"}</span>
     </span>
   );
 }
 
-function kioskOperationalStatus(k) {
+function kioskOperationalStatus(k, lang = "en") {
   const issue = String(k.issue || "").toLowerCase();
-  if (issue.includes("variance")) return "variance issue";
-  if (issue.includes("closing")) return "needs closing";
-  if (Number(k.stockHealth || 0) < 55 || Number(k.ops?.inv || 100) < 55) return "low stock";
-  if (k.status === "crit") return "needs closing";
-  if (k.status === "warn") return "open / watch";
-  return "open";
+  let label = "open";
+  if (issue.includes("variance")) label = "variance issue";
+  else if (issue.includes("closing")) label = "needs closing";
+  else if (Number(k.stockHealth || 0) < 55 || Number(k.ops?.inv || 100) < 55) label = "low stock";
+  else if (k.status === "crit") label = "needs closing";
+  else if (k.status === "warn") label = "open / watch";
+  return arTerm(lang, label);
 }
 
-function RealtimeKioskCard({ k, ops, onPick }) {
-  const statusLabel = kioskOperationalStatus({ ...k, ops });
+function RealtimeKioskCard({ k, ops, onPick, lang }) {
+  const ar = lang === "ar";
+  const statusLabel = kioskOperationalStatus({ ...k, ops }, lang);
   const badgeClass = k.status === "good" ? "badge-pos" : k.status === "warn" ? "badge-warn" : "badge-crit";
+  const stockedItems = Math.max(0, Number(ops.slots || 0) - Number(ops.critItems || 0) - Number(ops.lowItems || 0));
+  const staffCount = Number(k.staff);
+  const staffLabel = Number.isFinite(staffCount) && staffCount > 0
+    ? (ar ? `${staffCount} موظفين` : `${staffCount} staff`)
+    : (ar ? "الطاقم غير متاح" : "staff unknown");
+  const activityLabel = ops.queue > 0
+    ? (ar ? `${ops.queue} في الطابور` : `${ops.queue} in queue`)
+    : ops.lastSale > 0
+      ? (ar ? `بيع قبل ${ops.lastSale}ث` : `sale ${ops.lastSale}s ago`)
+      : (ar ? "متزامن" : "synced");
   return (
     <div className="card" onClick={onPick} style={{
       display: "flex", flexDirection: "column",
@@ -5148,94 +9839,119 @@ function RealtimeKioskCard({ k, ops, onPick }) {
             <span className={`badge ${badgeClass}`} style={{ height: 18, fontSize: 10.5 }}>{statusLabel}</span>
             <span className="t-small faint t-num">{k.id}</span>
           </div>
-          <LivePulse status={k.status}/>
+          <LivePulse status={k.status} lang={lang}/>
         </div>
-        <div style={{ fontSize: 15.5, fontWeight: 500, letterSpacing: "-0.01em", lineHeight: 1.2 }}>{k.name}</div>
+        <div style={{ fontSize: 15.5, fontWeight: 500, letterSpacing: "-0.01em", lineHeight: 1.2 }}>{arTerm(lang, k.name)}</div>
         <div className="t-small subtle" style={{ marginTop: 2 }}>
-          {k.city} · {k.staff || 3} staff · {ops.queue > 0 ? `${ops.queue} in queue` : `sale ${ops.lastSale}s ago`}
+          {arTerm(lang, k.city)} · {staffLabel} · {activityLabel}
         </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", borderBottom: "1px solid var(--line-soft)" }}>
         <div style={{ padding: "10px 12px 10px 16px", borderInlineEnd: "1px solid var(--line-soft)" }}>
-          <div className="t-micro" style={{ marginBottom: 2 }}>Revenue</div>
+          <div className="t-micro" style={{ marginBottom: 2 }}>{ar ? "الإيراد" : "Revenue"}</div>
           <div className="t-num" style={{ fontSize: 16, fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{fmtMoney(k.revenue)}</div>
         </div>
         <div style={{ padding: "10px 12px", borderInlineEnd: "1px solid var(--line-soft)" }}>
-          <div className="t-micro" style={{ marginBottom: 2 }}>Orders</div>
+          <div className="t-micro" style={{ marginBottom: 2 }}>{ar ? "الطلبات" : "Orders"}</div>
           <div className="t-num" style={{ fontSize: 16, fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{k.orders}</div>
         </div>
         <div style={{ padding: "10px 16px 10px 12px" }}>
-          <div className="t-micro" style={{ marginBottom: 2 }}>Margin</div>
+          <div className="t-micro" style={{ marginBottom: 2 }}>{ar ? "الهامش" : "Margin"}</div>
           <div className="t-num" style={{ fontSize: 16, fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{k.margin}%</div>
         </div>
       </div>
 
       <div style={{ padding: "14px 16px 8px" }}>
         <div className="between" style={{ marginBottom: 6 }}>
-          <span className="t-micro">Inventory</span>
+          <span className="t-micro">{ar ? "المخزون" : "Inventory"}</span>
           <span className="t-num" style={{ fontSize: 12.5, fontWeight: 500 }}>{ops.inv}%</span>
         </div>
         <InventoryMeter pct={ops.inv} status={k.status}/>
         <div className="t-small subtle" style={{ marginTop: 6, fontSize: 11.5 }}>
           {ops.critItems > 0
-            ? <><span style={{ color: "var(--crit)" }}>{ops.critItems} critical</span> · {ops.lowItems} low · {ops.slots - ops.critItems - ops.lowItems} stocked</>
+            ? <><span style={{ color: "var(--crit)" }}>{ops.critItems} {ar ? "حرج" : "critical"}</span> · {ops.lowItems} {ar ? "منخفض" : "low"} · {stockedItems} {ar ? "متوفر" : "stocked"}</>
             : ops.lowItems > 0
-              ? <><span style={{ color: "var(--warn)" }}>{ops.lowItems} low</span> · {ops.slots - ops.lowItems} stocked · runout ~{ops.hours}h</>
-              : <>{ops.slots} items in good standing · runout {ops.hours}h+</>
+              ? <><span style={{ color: "var(--warn)" }}>{ops.lowItems} {ar ? "منخفض" : "low"}</span> · {stockedItems} {ar ? "متوفر" : "stocked"}{ops.hours != null ? <> · {ar ? "نفاد خلال" : "runout"} ~{ops.hours}h</> : null}</>
+              : <>{ops.slots} {ar ? "بنود بحالة جيدة" : "items in good standing"}{ops.hours != null ? <> · {ar ? "نفاد خلال" : "runout"} {ops.hours}h+</> : null}</>
           }
         </div>
       </div>
 
       <div style={{ padding: "10px 16px 14px" }}>
         <div className="between" style={{ marginBottom: 6 }}>
-          <span className="t-micro">Waste today</span>
+          <span className="t-micro">{ar ? "هدر اليوم" : "Waste today"}</span>
           <div className="row" style={{ gap: 8 }}>
-            <span className="t-small subtle" style={{ fontSize: 11 }}>target {WASTE_TARGET}%</span>
+            <span className="t-small subtle" style={{ fontSize: 11 }}>{ar ? "الهدف" : "target"} {WASTE_TARGET}%</span>
             <span className={"t-num " + (k.waste > WASTE_TARGET ? "delta-neg" : "")} style={{ fontSize: 12.5, fontWeight: 500 }}>{Number(k.waste).toFixed(1)}%</span>
           </div>
         </div>
         <WasteMeter pct={k.waste} status={k.status}/>
         <div className="t-small subtle" style={{ marginTop: 6, fontSize: 11.5 }}>
-          IQD {Math.round(k.revenue * k.waste / 100).toLocaleString()} estimated loss
-          {k.waste > WASTE_TARGET && <> · <span style={{ color: "var(--warn)" }}>{(k.waste - WASTE_TARGET).toFixed(1)} pts over</span></>}
+          IQD {Math.round(k.revenue * k.waste / 100).toLocaleString()} {ar ? "خسارة تقديرية" : "estimated loss"}
+          {k.waste > WASTE_TARGET && <> · <span style={{ color: "var(--warn)" }}>{(k.waste - WASTE_TARGET).toFixed(1)} {ar ? "نقاط فوق" : "pts over"}</span></>}
         </div>
       </div>
     </div>
   );
 }
 
+const makeKioskDraft = (sourceDriven = false) => ({
+  kioskCode: sourceDriven ? "" : "K-11",
+  name: sourceDriven ? "" : "New Kiosk",
+  city: sourceDriven ? "" : "Baghdad",
+  area: sourceDriven ? "" : "Mansour",
+  warehouse: "",
+});
+
 function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdoo }) {
+  const ar = lang === "ar";
   const [view, setView] = useState("cards");
   const [city, setCity] = useState("all");
   const [sortBy, setSortBy] = useState("status");
   const rows = odooKioskRows(bootstrap);
   const [tick, setTick] = useState(0);
+  const sourceDriven = isSourceDrivenPayload(bootstrap);
+  const animateDemoMetrics = canUseDemoFallback(bootstrap);
 
   const setup = unwrapOdoo(sync?.warehouseSetup) || DEMO_WAREHOUSE_SETUP;
   const enabled = Boolean(sourceOfTruth?.enabled);
   const [kioskModalOpen, setKioskModalOpen] = useState(false);
   const [kioskBusy, setKioskBusy] = useState(false);
   const [kioskError, setKioskError] = useState("");
-  const [kioskDraft, setKioskDraft] = useState({
-    kioskCode: "K-11",
-    name: "New Kiosk",
-    city: "Baghdad",
-    area: "Mansour",
-    warehouse: "",
-  });
+  const [kioskDraft, setKioskDraft] = useState(() => makeKioskDraft(sourceDriven));
+  useEffect(() => {
+    if (!sourceDriven) return;
+    setKioskDraft((d) => {
+      const next = {
+        ...d,
+        kioskCode: d.kioskCode === "K-11" ? "" : d.kioskCode,
+        name: d.name === "New Kiosk" ? "" : d.name,
+        city: d.city === "Baghdad" ? "" : d.city,
+        area: d.area === "Mansour" ? "" : d.area,
+      };
+      return next.kioskCode === d.kioskCode && next.name === d.name && next.city === d.city && next.area === d.area ? d : next;
+    });
+  }, [sourceDriven]);
   useEffect(() => {
     setKioskDraft((d) => d.warehouse ? d : { ...d, warehouse: setup.warehouses?.[0]?.id || setup.warehouses?.[0]?.code || "" });
   }, [setup.warehouses]);
 
   const submitKiosk = async (event) => {
     event.preventDefault();
-    if (!enabled) return;
+    if (!enabled) {
+      setKioskError("Connect the source engine before creating source kiosks");
+      return;
+    }
     setKioskBusy(true);
     setKioskError("");
     try {
       await sourceOfTruth.createKiosk(kioskDraft);
       await refreshOdoo?.();
+      setKioskDraft({
+        ...makeKioskDraft(sourceDriven),
+        warehouse: setup.warehouses?.[0]?.id || setup.warehouses?.[0]?.code || "",
+      });
       setKioskModalOpen(false);
     } catch (error) {
       setKioskError(compactError(error));
@@ -5245,12 +9961,16 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
   };
 
   useEffect(() => {
+    if (!animateDemoMetrics) return undefined;
     const id = setInterval(() => setTick(t => t + 1), 3200);
     return () => clearInterval(id);
-  }, []);
+  }, [animateDemoMetrics]);
 
   const live = useMemo(() => rows.map((k, i) => {
-    const ops = deriveKioskOps(k);
+    const ops = deriveKioskOps(k, animateDemoMetrics);
+    if (!animateDemoMetrics) {
+      return { ...k, ops };
+    }
     const phase = (tick + i) % 6;
     const revBump = phase * 4 + (i * 3) % 11;
     const ordBump = phase % 3;
@@ -5263,7 +9983,7 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
       waste: Math.max(0.4, Number(k.waste || 0) + wasteJitter),
       ops: { ...ops, inv: Math.max(8, Math.min(96, ops.inv + invJitter)) },
     };
-  }), [rows, tick]);
+  }), [animateDemoMetrics, rows, tick]);
 
   const cities = ["all", ...new Set(rows.map(k => k.city))];
   const sorted = useMemo(() => {
@@ -5285,6 +10005,11 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
     avgInv: live.length ? Math.round(live.reduce((s, k) => s + k.ops.inv, 0) / live.length) : 0,
     avgWaste: live.length ? (live.reduce((s, k) => s + k.waste, 0) / live.length).toFixed(1) : "0.0",
   }), [live]);
+  const totalRevenue = live.reduce((s, k) => s + k.revenue, 0);
+  const totalOrders = live.reduce((s, k) => s + k.orders, 0);
+  const revenueDelta = sourceDriven
+    ? (ar ? `${totalOrders} طلبات مصدر` : `${totalOrders} source orders`)
+    : "8.4%";
 
   return (
     <div className="col" style={{ gap: 14 }}>
@@ -5297,10 +10022,10 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
       `}</style>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        <KPI label="Active" value={String(rows.length)} footer={`${counts.good} ok · ${counts.warn} watch · ${counts.crit} crit`}/>
-        <KPI label="Today's revenue" value={fmtMoney(live.reduce((s, k) => s + k.revenue, 0))} delta="8.4%" deltaDir="up"/>
-        <KPI label="Avg inventory" value={`${counts.avgInv}%`} footer="across fleet"/>
-        <KPI label="Avg waste" value={`${counts.avgWaste}%`} delta={`target ${WASTE_TARGET}%`} deltaDir={parseFloat(counts.avgWaste) <= WASTE_TARGET ? "up" : "down"}/>
+        <KPI label={ar ? "النشطة" : "Active"} value={String(rows.length)} footer={ar ? `${counts.good} سليم · ${counts.warn} مراقبة · ${counts.crit} حرج` : `${counts.good} ok · ${counts.warn} watch · ${counts.crit} crit`}/>
+        <KPI label={ar ? "إيراد اليوم" : "Today's revenue"} value={fmtMoney(totalRevenue)} delta={revenueDelta} deltaDir={sourceDriven ? "flat" : "up"}/>
+        <KPI label={ar ? "متوسط المخزون" : "Avg inventory"} value={`${counts.avgInv}%`} footer={ar ? "عبر الشبكة" : "across fleet"}/>
+        <KPI label={ar ? "متوسط الهدر" : "Avg waste"} value={`${counts.avgWaste}%`} delta={`${ar ? "الهدف" : "target"} ${WASTE_TARGET}%`} deltaDir={parseFloat(counts.avgWaste) <= WASTE_TARGET ? "up" : "down"}/>
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "0 2px" }}>
@@ -5309,19 +10034,19 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
             <button key={c} onClick={() => setCity(c)}
               className={"btn " + (city === c ? "btn-primary" : "btn-ghost")}
               style={{ height: 28, fontSize: 12 }}>
-              {c === "all" ? "All cities" : c}
+              {c === "all" ? (ar ? "كل المدن" : "All cities") : arTerm(lang, c)}
               {c !== "all" && <span className="subtle" style={{ marginInlineStart: 4, fontSize: 11 }}>{rows.filter(k => k.city === c).length}</span>}
             </button>
           ))}
         </div>
         <div className="row" style={{ gap: 8 }}>
-          <span className="t-small subtle" style={{ fontSize: 11.5 }}>Sort</span>
+          <span className="t-small subtle" style={{ fontSize: 11.5 }}>{ar ? "ترتيب" : "Sort"}</span>
           <div className="row" style={{ gap: 0, border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden", height: 28 }}>
             {[
-              { id: "status", l: "Status" },
-              { id: "revenue", l: "Revenue" },
-              { id: "inventory", l: "Inventory" },
-              { id: "waste", l: "Waste" },
+              { id: "status", l: ar ? "الحالة" : "Status" },
+              { id: "revenue", l: ar ? "الإيراد" : "Revenue" },
+              { id: "inventory", l: ar ? "المخزون" : "Inventory" },
+              { id: "waste", l: ar ? "الهدر" : "Waste" },
             ].map(s => (
               <button key={s.id} onClick={() => setSortBy(s.id)}
                 style={{
@@ -5334,7 +10059,7 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
           </div>
           <div className="row" style={{ gap: 0, border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden", height: 28 }}>
             <button onClick={() => setView("cards")}
-              title="Cards"
+              title={ar ? "بطاقات" : "Cards"}
               style={{
                 width: 32, display: "grid", placeItems: "center",
                 background: view === "cards" ? "var(--surface-sunk)" : "transparent",
@@ -5342,7 +10067,7 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
                 borderInlineEnd: "1px solid var(--line-soft)",
               }}><Icon name="grid" size={13}/></button>
             <button onClick={() => setView("table")}
-              title="Table"
+              title={ar ? "جدول" : "Table"}
               style={{
                 width: 32, display: "grid", placeItems: "center",
                 background: view === "table" ? "var(--surface-sunk)" : "transparent",
@@ -5353,14 +10078,14 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
             onClick={() => { setKioskError(""); setKioskModalOpen(true); }}
             disabled={!enabled}
             style={{ height: 28, fontSize: 12 }}>
-            <Icon name="plus" size={12}/> Create kiosk location
+            <Icon name="plus" size={12}/> {ar ? "إنشاء موقع كشك" : "Create kiosk location"}
           </button>
         </div>
       </div>
 
       {view === "cards" ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12 }}>
-          {sorted.map(k => <RealtimeKioskCard key={k.id} k={k} ops={k.ops} onPick={() => onPick(k)}/>)}
+          {sorted.map(k => <RealtimeKioskCard key={k.id} k={k} ops={k.ops} onPick={() => onPick(k)} lang={lang}/>)}
         </div>
       ) : (
         <div className="card">
@@ -5368,14 +10093,14 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
             <thead>
               <tr>
                 <th scope="col" style={{ width: 32 }}></th>
-                <th scope="col">Kiosk</th>
-                <th scope="col">City</th>
-                <th scope="col">Status</th>
-                <th scope="col" style={{ textAlign: "end" }}>Revenue today</th>
-                <th scope="col" style={{ textAlign: "end" }}>Orders</th>
-                <th scope="col" style={{ width: 160 }}>Inventory</th>
-                <th scope="col" style={{ width: 160 }}>Waste</th>
-                <th scope="col" style={{ textAlign: "end" }}>Margin</th>
+                <th scope="col">{ar ? "الكشك" : "Kiosk"}</th>
+                <th scope="col">{ar ? "المدينة" : "City"}</th>
+                <th scope="col">{ar ? "الحالة" : "Status"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "إيراد اليوم" : "Revenue today"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "الطلبات" : "Orders"}</th>
+                <th scope="col" style={{ width: 160 }}>{ar ? "المخزون" : "Inventory"}</th>
+                <th scope="col" style={{ width: 160 }}>{ar ? "الهدر" : "Waste"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "الهامش" : "Margin"}</th>
                 <th scope="col"></th>
               </tr>
             </thead>
@@ -5387,15 +10112,15 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
                   onClick={() => onPick(k)}
                   tabIndex={0}
                   onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPick(k); } }}
-                  aria-label={`${k.name}, open kiosk details`}
+                  aria-label={`${arTerm(lang, k.name)}, ${ar ? "فتح تفاصيل الكشك" : "open kiosk details"}`}
                 >
                   <td><span className={`dot ${statusTone(k.status)}`}></span></td>
                   <td>
-                    <div style={{ fontWeight: 500 }}>{k.name}</div>
+                    <div style={{ fontWeight: 500 }}>{arTerm(lang, k.name)}</div>
                     <div className="t-small faint">{k.id}</div>
                   </td>
-                  <td className="muted">{k.city}</td>
-                  <td><span className={`badge ${k.status === "good" ? "badge-pos" : k.status === "warn" ? "badge-warn" : "badge-crit"}`}>{kioskOperationalStatus(k)}</span></td>
+                  <td className="muted">{arTerm(lang, k.city)}</td>
+                  <td><span className={`badge ${k.status === "good" ? "badge-pos" : k.status === "warn" ? "badge-warn" : "badge-crit"}`}>{kioskOperationalStatus(k, lang)}</span></td>
                   <td style={{ textAlign: "end" }} className="t-num">{fmtMoney(k.revenue)}</td>
                   <td style={{ textAlign: "end" }} className="t-num muted">{k.orders}</td>
                   <td>
@@ -5420,36 +10145,36 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
       )}
 
       <Modal open={kioskModalOpen} onClose={() => !kioskBusy && setKioskModalOpen(false)}
-        title="Create kiosk location"
-        sub="Creates stock.location + POS config + Bayaan kiosk">
+        title={ar ? "إنشاء موقع كشك" : "Create kiosk location"}
+        sub={ar ? "ينشئ stock.location + ضبط POS + كشك بيان" : "Creates stock.location + POS config + Bayaan kiosk"}>
         <form onSubmit={submitKiosk}>
           <div className="col" style={{ gap: 10 }}>
             {!enabled && (
               <div className="t-small muted" style={{ padding: 10, background: "var(--warn-soft)", borderRadius: 8 }}>
-                Backend engine is not configured in this browser session. Set the backend URL and sign in to create real records.
+                {ar ? "المحرك الخلفي غير مضبوط في جلسة المتصفح. اضبط رابط الخلفية وسجل الدخول لإنشاء سجلات حقيقية." : "Backend engine is not configured in this browser session. Set the backend URL and sign in to create real records."}
               </div>
             )}
             <div style={{ display: "grid", gridTemplateColumns: "0.55fr 1fr", gap: 10 }}>
               <div>
-                <label className="t-small muted">Code</label>
-                <input className="input" value={kioskDraft.kioskCode} onChange={(event) => setKioskDraft({ ...kioskDraft, kioskCode: event.target.value.toUpperCase() })} />
+                <label className="t-small muted">{ar ? "الرمز" : "Code"}</label>
+                <input className="input" placeholder={sourceDriven ? "Source kiosk code" : "K-11"} value={kioskDraft.kioskCode} onChange={(event) => setKioskDraft({ ...kioskDraft, kioskCode: event.target.value.toUpperCase() })} />
               </div>
               <div>
-                <label className="t-small muted">Name</label>
-                <input className="input" value={kioskDraft.name} onChange={(event) => setKioskDraft({ ...kioskDraft, name: event.target.value })} />
+                <label className="t-small muted">{ar ? "الاسم" : "Name"}</label>
+                <input className="input" placeholder={sourceDriven ? "Source kiosk name" : "New Kiosk"} value={kioskDraft.name} onChange={(event) => setKioskDraft({ ...kioskDraft, name: event.target.value })} />
               </div>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <div>
-                <label className="t-small muted">City</label>
-                <input className="input" value={kioskDraft.city} onChange={(event) => setKioskDraft({ ...kioskDraft, city: event.target.value })} />
+                <label className="t-small muted">{ar ? "المدينة" : "City"}</label>
+                <input className="input" placeholder={sourceDriven ? "City from source setup" : "Baghdad"} value={kioskDraft.city} onChange={(event) => setKioskDraft({ ...kioskDraft, city: event.target.value })} />
               </div>
               <div>
-                <label className="t-small muted">Area</label>
-                <input className="input" value={kioskDraft.area} onChange={(event) => setKioskDraft({ ...kioskDraft, area: event.target.value })} />
+                <label className="t-small muted">{ar ? "المنطقة" : "Area"}</label>
+                <input className="input" placeholder={sourceDriven ? "Area from source setup" : "Mansour"} value={kioskDraft.area} onChange={(event) => setKioskDraft({ ...kioskDraft, area: event.target.value })} />
               </div>
             </div>
-            <label className="t-small muted">Parent warehouse</label>
+            <label className="t-small muted">{ar ? "المستودع الأب" : "Parent warehouse"}</label>
             <select className="input" value={kioskDraft.warehouse} onChange={(event) => setKioskDraft({ ...kioskDraft, warehouse: event.target.value })}>
               {(setup.warehouses || []).map((warehouse) => (
                 <option key={warehouse.id} value={warehouse.id}>{warehouse.code} · {warehouse.name}</option>
@@ -5457,11 +10182,11 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
             </select>
             {kioskError && <div className="t-small delta-neg">{kioskError}</div>}
             <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
-              <button type="button" className="btn btn-ghost" onClick={() => setKioskModalOpen(false)} disabled={kioskBusy}>Cancel</button>
+              <button type="button" className="btn btn-ghost" onClick={() => setKioskModalOpen(false)} disabled={kioskBusy}>{ui(ar, "cancel")}</button>
               <button type="submit" className="btn btn-primary"
                 disabled={!enabled || kioskBusy || !(setup.warehouses || []).length}
                 style={{ justifyContent: "center" }}>
-                <Icon name="plus" size={12}/> {kioskBusy ? "Creating…" : "Create synced kiosk"}
+                <Icon name="plus" size={12}/> {kioskBusy ? (ar ? "جار الإنشاء..." : "Creating...") : (ar ? "إنشاء كشك متزامن" : "Create synced kiosk")}
               </button>
             </div>
           </div>
@@ -5610,7 +10335,7 @@ function KioskDetailScreenLegacy({ lang, onBack }) {
       </div>
 
       <div className="card card-pad">
-        <SectionHead title={ar ? "ملاحظات الذكاء" : "AI notes for this kiosk"} sub={ar ? "آخر ٧ أيام" : "Last 7 days"}/>
+        <SectionHead title={ar ? "ملاحظات ذكاء تجريبية لهذا الكشك" : "Demo AI notes for this kiosk"} sub={ar ? "آخر ٧ أيام تجريبية" : "Demo last 7 days"}/>
         <div className="col" style={{ gap: 14, marginTop: 4 }}>
           <div className="ai-block">
             <div style={{ fontWeight: 500, fontSize: 14 }}>{ar ? "وقت الذروة يبدأ متأخراً ١٥ دقيقة" : "Peak start has shifted 15 min later vs last month"}</div>
@@ -5632,15 +10357,58 @@ function KioskDetailScreenLegacy({ lang, onBack }) {
 
 
 
-function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
+function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refreshOdoo }) {
   const ar = lang === "ar";
-  const selected = kiosk || MOCK.kiosks[0];
-  const [tab, setTab] = useState("currentStock");
+  const { showToast } = useToast();
   const liveOnly = isLiveOnlyPayload(bootstrap);
-  const stockRows = odooKioskStockReconciliationRows(bootstrap, selected) || (liveOnly ? [] : MOCK.kioskStockDetails[selected.id] || MOCK.kioskStockDetails["K-01"]);
+  const selectedCandidate = kiosk || (liveOnly ? odooKioskRows(bootstrap)[0] : MOCK.kiosks[0]);
+  const hasSelectedKiosk = Boolean(selectedCandidate);
+  const selected = selectedCandidate || {
+    id: "--",
+    kiosk_code: "--",
+    name: ar ? "Ù„Ø§ ÙŠÙˆØ¬Ø¯ ÙƒØ´Ùƒ" : "No kiosk selected",
+    city: "-",
+    staff: 0,
+    revenue: 0,
+    orders: 0,
+    margin: 0,
+    waste: 0,
+    stockHealth: 0,
+    variance: 0,
+    criticalStock: "",
+    issue: "",
+    status: "warn",
+    trend: [],
+  };
+  const [tab, setTab] = useState("currentStock");
+  const sourceDriven = isSourceDrivenPayload(bootstrap);
+  const [selectedWeekStart, setSelectedWeekStart] = useState(() => startOfWeekIso());
+  const selectedWeekEnd = addDaysIso(selectedWeekStart, 6);
+  const [scheduleSnapshot, setScheduleSnapshot] = useState(null);
+  const [localShifts, setLocalShifts] = useState(() => sourceDriven ? [] : makeDemoKioskWeekShifts(selected, selectedWeekStart));
+  const [shiftModalOpen, setShiftModalOpen] = useState(false);
+  const [editingShiftId, setEditingShiftId] = useState(null);
+  const selectedKioskId = selected.kiosk_code || selected.id || selected.name;
+  const [shiftDraft, setShiftDraft] = useState({
+    employee: "",
+    kiosk: selectedKioskId,
+    date: selectedWeekStart,
+    role: "Cashier",
+    start: "08:00",
+    end: "16:00",
+    state: "planned",
+    note: "",
+  });
+  const stockRows = odooKioskStockReconciliationRows(bootstrap, selected) || (sourceDriven ? [] : MOCK.kioskStockDetails[selected.id] || MOCK.kioskStockDetails["K-01"]);
   const orders = odooPosOrderRows(bootstrap).filter((order) => matchesKiosk(order.kioskId || order.kiosk, selected));
-  const visibleOrders = orders.length ? orders : liveOnly ? [] : MOCK.posOrders.slice(0, 4);
+  const visibleOrders = orders.length ? orders : sourceDriven ? [] : MOCK.posOrders.slice(0, 4);
   const closing = odooClosingRows(bootstrap).find((c) => matchesKiosk(c.kioskId || c.kioskName, selected));
+  const expectedCash = sourceDriven
+    ? (closing?.expectedCash == null ? null : Number(closing?.expectedCash || 0))
+    : Math.round(selected.revenue * 0.65);
+  const expectedCashFooter = sourceDriven
+    ? (closing ? (ar ? "من إغلاق المصدر" : "from source close") : "No source close")
+    : (ar ? "حسب طرق الدفع" : "by payment split");
   const movementRows = odooKioskStockMovementRows(bootstrap, selected);
   const demoMovementRows = [
     { id: "demo-open", time: "07:00", action: "Opening stock count", detail: "Posted by cashier", source: "stock.quant" },
@@ -5648,8 +10416,62 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
     { id: "demo-consumption", time: "14:42", action: "Recipe deduction", detail: "10 x Orange Juice 350ml", source: "bayaan.consumption.ledger" },
     { id: "demo-waste", time: "15:10", action: "Waste recorded", detail: "Wrong order / spill", source: "bayaan.waste.entry" },
   ];
-  const visibleMovementRows = movementRows.length ? movementRows : liveOnly ? [] : demoMovementRows;
+  const visibleMovementRows = movementRows.length ? movementRows : sourceDriven ? [] : demoMovementRows;
+  const sessionRows = odooPosSessionRows(bootstrap, selected);
+  const demoSessionRows = !sourceDriven ? [
+    { id: "demo-morning", name: "Morning", open: "07:00", close: "15:00", cashier: "Maya Ahmed", status: "closed" },
+    { id: "demo-evening", name: "Evening", open: "15:00", close: "23:00", cashier: "Sara Younis", status: selected.status === "crit" ? "needs closing" : "open" },
+  ] : [];
+  const visibleSessionRows = sessionRows.length ? sessionRows : demoSessionRows;
   const fmtQty = (value, unit) => `${Number(value).toLocaleString("en", { maximumFractionDigits: 2 })} ${unit}`;
+  const kioskWasteRows = sourceDriven
+    ? odooWasteRows(bootstrap).filter((row) => matchesKiosk(row.kiosk, selected))
+    : [];
+  const sourceWasteCost = kioskWasteRows.reduce((sum, row) => sum + Number(row.cost || 0), 0);
+  const sourceWastePct = sourceDriven && selected.revenue
+    ? Number(((sourceWasteCost / Number(selected.revenue || 1)) * 100).toFixed(2))
+    : 0;
+  const sourceStockVarianceRows = sourceDriven
+    ? stockRows.filter((row) => Math.abs(Number(row.variance || 0)) > 0)
+    : [];
+  const sourceSensitiveStockRow = sourceDriven
+    ? [...stockRows]
+      .sort((left, right) => Math.abs(Number(right.variance || 0)) - Math.abs(Number(left.variance || 0)))
+      .find((row) => Math.abs(Number(row.variance || 0)) > 0 || ["issue", "watch"].includes(String(row.status || "")))
+    : null;
+  useEffect(() => {
+    setLocalShifts(sourceDriven ? [] : makeDemoKioskWeekShifts(selected, selectedWeekStart));
+    setShiftDraft((draft) => ({ ...draft, kiosk: selected.kiosk_code || selected.id || selected.name, date: selectedWeekStart }));
+  }, [selected.id, selected.kiosk_code, selected.name, selectedWeekStart, sourceDriven]);
+  useEffect(() => {
+    if (!sourceDriven) return;
+    let cancelled = false;
+    sourceOfTruth.getHrSchedule({
+      dateFrom: selectedWeekStart,
+      dateTo: selectedWeekEnd,
+      kiosk: selectedKioskId,
+    }).then((schedule) => {
+      if (!cancelled) setScheduleSnapshot(unwrapOdoo(schedule));
+    }).catch((error) => {
+      if (!cancelled) showToast(compactError(error) || "Could not load kiosk roster", "warn");
+    });
+    return () => { cancelled = true; };
+  }, [sourceDriven, sourceOfTruth, selectedWeekStart, selectedWeekEnd, selectedKioskId, showToast]);
+  if (!hasSelectedKiosk) {
+    return (
+      <div className="col" style={{ gap: 12 }}>
+        <button className="btn btn-ghost" onClick={onBack} style={{ width: "fit-content" }}>
+          <Icon name="chevLeft" size={14}/> {ar ? "Ø±Ø¬ÙˆØ¹" : "Back"}
+        </button>
+        <div className="card card-pad">
+          <div className="t-h2">{ar ? "Ù„Ø§ ØªÙˆØ¬Ø¯ Ø£ÙƒØ´Ø§Ùƒ Ù…Ø­Ù…Ù„Ø©" : "No kiosks loaded"}</div>
+          <div className="t-small subtle" style={{ marginTop: 6 }}>
+            {ar ? "Ø§Ø±Ø¨Ø· Ù…Ø­Ø±Ùƒ Ø§Ù„Ù…ØµØ¯Ø± Ø£ÙˆÙ„Ø§Ù‹ Ø«Ù… Ø£Ø¹Ø¯ Ø§Ù„Ù…Ø²Ø§Ù…Ù†Ø©." : "Connect the source engine first, then resync before opening kiosk details."}
+          </div>
+        </div>
+      </div>
+    );
+  }
   const tabs = [
     { id: "overview", label: ar ? "نظرة عامة" : "Overview" },
     { id: "sales", label: ar ? "المبيعات" : "Sales" },
@@ -5726,7 +10548,7 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
   const renderOrders = () => (
     <div className="card">
       <div className="between" style={{ padding: "14px 18px" }}>
-        <div className="t-h2">{ar ? "مبيعات POS المباشرة" : "Live POS orders"}</div>
+        <div className="t-h2">{sourceDriven ? (ar ? "طلبات POS من المصدر" : "Source POS orders") : (ar ? "طلبات POS تجريبية" : "Demo POS orders")}</div>
         <span className="t-small subtle">{selected.id} - {selected.name}</span>
       </div>
       <table className="tbl">
@@ -5774,7 +10596,7 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
           {!visibleMovementRows.length && (
             <tr>
               <td colSpan={4} className="muted" style={{ padding: 18, textAlign: "center" }}>
-                {ar ? "Ù„Ø§ ØªÙˆØ¬Ø¯ Ø­Ø±ÙƒØ§Øª Ù…Ø®Ø²ÙˆÙ† Ù„Ù‡Ø°Ø§ Ø§Ù„ÙƒØ´Ùƒ Ø§Ù„ÙŠÙˆÙ…" : "No stock movements for this kiosk today."}
+                {ui(ar, "noStockMovementsForKiosk")}
               </td>
             </tr>
           )}
@@ -5787,9 +10609,26 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
     <div className="card card-pad">
       <SectionHead title={ar ? "الهدر والخسارة" : "Waste and loss"} sub={ar ? "الأسباب التي تؤثر على الفرق" : "Reasons that feed variance investigation"} />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 14 }}>
-        <KPI label={ar ? "هدر اليوم" : "Waste today"} value={fmtMoney(Math.round(selected.revenue * selected.waste / 100))} footer={`${selected.waste}% of sales`} />
-        <KPI label={ar ? "فرق المخزون" : "Stock variance"} value={`${selected.variance}%`} delta={selected.variance < -2 ? "review" : "within tolerance"} deltaDir={selected.variance < -2 ? "down" : "up"} />
-        <KPI label={ar ? "عنصر حساس" : "Sensitive item"} value={selected.criticalStock} footer={selected.issue} />
+        <KPI
+          label={ar ? "هدر اليوم" : "Waste today"}
+          value={sourceDriven ? fmtMoney(sourceWasteCost) : fmtMoney(Math.round(selected.revenue * selected.waste / 100))}
+          footer={sourceDriven
+            ? (kioskWasteRows.length ? `${kioskWasteRows.length} source rows${selected.revenue ? ` / ${sourceWastePct}% of source sales` : ""}` : "No source waste rows")
+            : `${selected.waste}% of sales`}
+        />
+        <KPI
+          label={ar ? "فرق المخزون" : "Stock variance"}
+          value={sourceDriven ? `${sourceStockVarianceRows.length} rows` : `${selected.variance}%`}
+          delta={sourceDriven ? (sourceStockVarianceRows.length ? "review source rows" : "no source variance") : selected.variance < -2 ? "review" : "within tolerance"}
+          deltaDir={sourceDriven ? (sourceStockVarianceRows.length ? "down" : "flat") : selected.variance < -2 ? "down" : "up"}
+        />
+        <KPI
+          label={ar ? "عنصر حساس" : "Sensitive item"}
+          value={sourceDriven ? (sourceSensitiveStockRow?.item || "No source item") : selected.criticalStock}
+          footer={sourceDriven
+            ? (sourceSensitiveStockRow ? `${fmtQty(sourceSensitiveStockRow.variance, sourceSensitiveStockRow.unit)} variance` : "From source stock rows")
+            : selected.issue}
+        />
       </div>
       <div className="ai-block">
         <div style={{ fontWeight: 500 }}>{ar ? "كل سبب هدر يجب أن يطابق بند مخزون" : "Each waste reason must tie back to a stock item"}</div>
@@ -5804,21 +10643,31 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
 
   const renderSessions = () => (
     <div className="card card-pad">
-      <SectionHead title={ar ? "جلسات POS" : "POS sessions"} sub={ar ? "جلسات نقطة البيع المرتبطة بالكشك" : "POS sessions tied to this kiosk"} />
+      <SectionHead
+        title={ar ? "جلسات POS" : "POS sessions"}
+        sub={sourceDriven
+          ? (ar ? "لا تُعرض إلا الجلسات القادمة من مصدر Bayaan/Odoo" : "Only Bayaan/Odoo source session rows are shown here")
+          : (ar ? "جلسات تجريبية للواجهة فقط" : "Demo session rows for the interface only")} />
       <table className="tbl">
         <tbody>
-          {[
-            ["Morning", "07:00", "15:00", "Maya Ahmed", "closed"],
-            ["Evening", "15:00", "23:00", "Sara Younis", selected.status === "crit" ? "needs closing" : "open"],
-          ].map(([name, open, close, cashier, status]) => (
-            <tr key={name}>
-              <td>{name}</td>
-              <td className="t-num muted">{open}</td>
-              <td className="t-num muted">{close}</td>
-              <td>{cashier}</td>
-              <td><span className={`badge ${status === "closed" ? "badge-pos" : status === "needs closing" ? "badge-crit" : "badge-warn"}`}>{status}</span></td>
+          {visibleSessionRows.map((session) => (
+            <tr key={session.id || session.name}>
+              <td>{session.name}</td>
+              <td className="t-num muted">{session.open ? movementTimeLabel(session.open) : "--:--"}</td>
+              <td className="t-num muted">{session.close ? movementTimeLabel(session.close) : "--:--"}</td>
+              <td>{session.cashier}</td>
+              <td><span className={`badge ${session.status === "closed" ? "badge-pos" : session.status === "needs closing" ? "badge-crit" : "badge-warn"}`}>{session.status}</span></td>
             </tr>
           ))}
+          {!visibleSessionRows.length && (
+            <tr>
+              <td colSpan={5} className="muted" style={{ padding: 18, textAlign: "center" }}>
+                {ar
+                  ? "لا توجد جلسات POS مؤكدة في /bayaan/api/chain_bootstrap بعد. افتح الجلسة عبر /bayaan/api/open_session ولا نستنتج ورديات صباحية/مسائية."
+                  : "No source POS session rows loaded from /bayaan/api/chain_bootstrap yet. Open sessions through /bayaan/api/open_session; Morning/Evening rows are not inferred."}
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
@@ -5841,7 +10690,197 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
     </div>
   );
 
-  const renderStaff = () => (
+  const kioskOptions = [
+    { id: selectedKioskId, label: `${selectedKioskId} ${selected.name || ""}`.trim() },
+    ...odooKioskRows(bootstrap).map((row) => ({
+      id: row.id || row.kiosk_code,
+      label: `${row.id || row.kiosk_code} ${row.name || ""}`.trim(),
+    })),
+    ...(!sourceDriven ? MOCK.kiosks.map((row) => ({ id: row.id, label: `${row.id} ${row.name}` })) : []),
+  ].filter((row, index, rows) => row.id && rows.findIndex((item) => String(item.id) === String(row.id)) === index);
+  const fallbackHrSnapshot = odooHrSnapshot(bootstrap);
+  const activeScheduleSnapshot = sourceDriven
+    ? {
+      ...fallbackHrSnapshot,
+      employees: scheduleSnapshot?.employees?.length ? scheduleSnapshot.employees : fallbackHrSnapshot.employees || [],
+      shifts: Array.isArray(scheduleSnapshot?.shifts) ? scheduleSnapshot.shifts : fallbackHrSnapshot.shifts || [],
+      coverageGaps: Array.isArray(scheduleSnapshot?.coverageGaps) ? scheduleSnapshot.coverageGaps : fallbackHrSnapshot.coverageGaps || [],
+    }
+    : null;
+  const scheduleStaffRows = staffRowsFromHrEmployees(activeScheduleSnapshot?.employees || []);
+  const rosterStaff = sourceDriven
+    ? (scheduleStaffRows.length ? scheduleStaffRows : odooStaffRows(bootstrap))
+    : MOCK.staff;
+  const liveShiftRows = (activeScheduleSnapshot?.shifts || []).map((shift) => ({
+    ...shift,
+    staff: shift.employee,
+    employeeId: shift.employeeId || shift.employee,
+    kioskName: shift.kioskName || selected.name,
+    roleLabel: hrRoleLabel(shift.role),
+    time: `${hourToTime(shift.startHour)}-${hourToTime(shift.endHour)}`,
+    plannedHours: Number(shift.plannedHours || Number(shift.endHour || 0) - Number(shift.startHour || 0)),
+  }));
+  const kioskShiftRows = (sourceDriven ? liveShiftRows : localShifts)
+    .filter((shift) => matchesKiosk(shift.kiosk || shift.kioskName, selected))
+    .filter((shift) => shift.date >= selectedWeekStart && shift.date <= selectedWeekEnd)
+    .sort((left, right) => (
+      String(left.date || "").localeCompare(String(right.date || ""))
+      || Number(left.startHour || 0) - Number(right.startHour || 0)
+      || String(left.employee || left.staff || "").localeCompare(String(right.employee || right.staff || ""))
+    ));
+  const scheduleCoverageGaps = (activeScheduleSnapshot?.coverageGaps || []).filter((gap) => (
+    matchesKiosk(gap.kiosk || gap.kioskName, selected)
+    && (!gap.date || (gap.date >= selectedWeekStart && gap.date <= selectedWeekEnd))
+  ));
+  const demoCoverageGaps = !sourceDriven && selected.status !== "good"
+    ? [{
+      ruleId: `demo-gap-${selectedKioskId}`,
+      date: selectedWeekStart,
+      kiosk: selectedKioskId,
+      kioskName: selected.name,
+      role: "cashier",
+      startHour: 15,
+      endHour: 23,
+      requiredCount: 2,
+      assignedCount: 1,
+      missingCount: 1,
+    }]
+    : [];
+  const kioskCoverageGaps = sourceDriven ? scheduleCoverageGaps : demoCoverageGaps;
+  const rosterWeekDays = weekDaysFromStartLang(selectedWeekStart, lang);
+  const assignedTeam = rosterStaff.filter((person) => (
+    matchesKiosk(person.kiosk || person.kioskName, selected)
+    || kioskShiftRows.some((shift) => (
+      String(shift.staff || shift.employee) === String(person.name)
+      || String(shift.employeeId || "") === String(person.id || "")
+    ))
+  ));
+  const assignedTeamRows = assignedTeam.length ? assignedTeam : sourceDriven ? [] : rosterStaff.slice(0, 4);
+  const plannedHours = Math.round(kioskShiftRows.reduce((sum, shift) => sum + Number(shift.plannedHours || 0), 0));
+  const scheduledPeople = new Set(kioskShiftRows.map((shift) => shift.staff || shift.employee).filter(Boolean)).size;
+  const missingPeople = kioskCoverageGaps.reduce((sum, gap) => sum + Number(gap.missingCount || 0), 0);
+
+  const refreshKioskRosterSchedule = async () => {
+    if (sourceDriven && sourceOfTruth?.enabled) {
+      const schedule = unwrapOdoo(await sourceOfTruth.getHrSchedule({
+        dateFrom: selectedWeekStart,
+        dateTo: selectedWeekEnd,
+        kiosk: selectedKioskId,
+      }));
+      setScheduleSnapshot(schedule);
+    }
+    await refreshOdoo?.();
+  };
+
+  const openKioskShiftEditor = (shift = null, date = selectedWeekStart) => {
+    const firstStaff = rosterStaff[0];
+    const defaultEmployee = firstStaff?.id || firstStaff?.name || "";
+    if (shift) {
+      setEditingShiftId(shift.id || null);
+      setShiftDraft({
+        employee: shift.employeeId || shift.employee || shift.staff || defaultEmployee,
+        kiosk: selectedKioskId,
+        date: shift.date || date,
+        role: hrRoleLabel(shift.role || shift.roleLabel),
+        start: hourToTime(shift.startHour ?? timeToHour(String(shift.time || "08:00-16:00").split("-")[0])),
+        end: hourToTime(shift.endHour ?? timeToHour(String(shift.time || "08:00-16:00").split("-")[1] || "16:00")),
+        state: shift.state || "planned",
+        note: shift.note || "",
+      });
+      setShiftModalOpen(true);
+      return;
+    }
+    setEditingShiftId(null);
+    setShiftDraft({
+      employee: defaultEmployee,
+      kiosk: selectedKioskId,
+      date,
+      role: "Cashier",
+      start: "08:00",
+      end: "16:00",
+      state: "planned",
+      note: "",
+    });
+    setShiftModalOpen(true);
+  };
+
+  const submitKioskShift = async (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const submittedState = String(formData.get("shiftState") || shiftDraft.state || "planned");
+    if (!shiftDraft.employee || !shiftDraft.date) {
+      showToast("Shift needs staff and date", "warn");
+      return;
+    }
+    const startHour = timeToHour(shiftDraft.start);
+    const endHour = timeToHour(shiftDraft.end);
+    if (endHour <= startHour) {
+      showToast("Shift end time must be after start time", "warn");
+      return;
+    }
+    if (sourceDriven) {
+      if (!sourceOfTruth?.enabled) {
+        showToast("Connect the source engine before saving source kiosk shifts", "warn");
+        return;
+      }
+      try {
+        const payload = {
+          employee: shiftDraft.employee,
+          kiosk: selectedKioskId,
+          date: shiftDraft.date,
+          role: normalizeHrRole(shiftDraft.role),
+          startHour,
+          endHour,
+          state: submittedState,
+          note: shiftDraft.note,
+        };
+        if (editingShiftId) {
+          await sourceOfTruth.updateHrShift({
+            id: editingShiftId,
+            ...payload,
+          });
+        } else {
+          await sourceOfTruth.createHrShift(payload);
+        }
+        await refreshKioskRosterSchedule();
+        setShiftModalOpen(false);
+        setEditingShiftId(null);
+        showToast(editingShiftId ? "Shift updated" : "Shift assigned", "success");
+      } catch (error) {
+        showToast(compactError(error) || "Could not save shift", "warn");
+      }
+      return;
+    }
+    const selectedStaff = rosterStaff.find((person) => String(person.id || person.name) === String(shiftDraft.employee));
+    const employeeName = selectedStaff?.name || shiftDraft.employee;
+    const nextShift = {
+      id: editingShiftId || `demo-kiosk-shift-${Date.now()}`,
+      employee: employeeName,
+      staff: employeeName,
+      employeeId: selectedStaff?.id || employeeName,
+      kiosk: selectedKioskId,
+      kioskName: selected.name || kioskNameForRoster(selectedKioskId, kioskOptions),
+      date: shiftDraft.date,
+      role: normalizeHrRole(shiftDraft.role),
+      roleLabel: hrRoleLabel(shiftDraft.role),
+      startHour,
+      endHour,
+      time: `${hourToTime(startHour)}-${hourToTime(endHour)}`,
+      plannedHours: endHour - startHour,
+      state: submittedState,
+      note: shiftDraft.note,
+    };
+    setLocalShifts((rows) => (
+      editingShiftId
+        ? rows.map((row) => String(row.id) === String(editingShiftId) ? nextShift : row)
+        : [nextShift, ...rows]
+    ));
+    setShiftModalOpen(false);
+    setEditingShiftId(null);
+    showToast(editingShiftId ? "Demo shift updated" : "Demo shift assigned", "success");
+  };
+
+  const renderStaffStatic = () => (
     <div className="card card-pad">
       <SectionHead title={ar ? "الفريق المناوب" : "Shift roster"} />
       <div className="col" style={{ gap: 10 }}>
@@ -5854,8 +10893,8 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
           <div key={s.n} className="row" style={{ gap: 10 }}>
             <Avatar name={s.n} size={26} />
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, fontWeight: 500 }}>{s.n}</div>
-              <div className="t-small subtle">{s.r} - {s.h}</div>
+              <div style={{ fontSize: 13, fontWeight: 500 }}>{arTerm(lang, s.n)}</div>
+              <div className="t-small subtle">{hrRoleLabel(s.r, lang)} - {arTerm(lang, s.h)}</div>
             </div>
             <span className={`badge ${s.on ? "badge-pos" : ""}`}>{s.on ? (ar ? "في الخدمة" : "On shift") : (ar ? "لاحقا" : "Later")}</span>
           </div>
@@ -5864,17 +10903,320 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
     </div>
   );
 
+  const renderStaff = () => (
+    <>
+      <div className="col" style={{ gap: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
+          <KPI label={ui(ar, "staffAssigned")} value={String(assignedTeamRows.length)} footer={arTerm(lang, selected.name)} />
+          <KPI label={ui(ar, "weekHours")} value={`${plannedHours}${ar ? "س" : "h"}`} footer={weekRangeLabelLang(selectedWeekStart, lang)} />
+          <KPI label={ar ? "الورديات" : "Shifts"} value={String(kioskShiftRows.length)} footer={ar ? `${scheduledPeople} مجدول` : `${scheduledPeople} people scheduled`} />
+          <KPI label={ui(ar, "coverageGaps")} value={String(missingPeople)} footer={missingPeople ? ui(ar, "missingStaff") : (ar ? "مغطى" : "covered")} />
+        </div>
+
+        <div className="staff-roster-layout">
+          <div className="card">
+            <div className="between" style={{ padding: "14px 18px" }}>
+              <div>
+                <div className="t-h2">{ui(ar, "kioskTeam")}</div>
+                <div className="t-small subtle">{ui(ar, "kioskTeamSub")}</div>
+              </div>
+              <span className={`badge ${missingPeople > 0 ? "badge-warn" : "badge-pos"}`}>{missingPeople > 0 ? (ar ? `${missingPeople} فجوة` : `${missingPeople} gap`) : arTerm(lang, "Covered")}</span>
+            </div>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">{ui(ar, "staff")}</th>
+                  <th scope="col">{ui(ar, "role")}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "hours")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assignedTeamRows.map((person) => {
+                  const personHours = kioskShiftRows
+                    .filter((shift) => String(shift.staff || shift.employee) === String(person.name) || String(shift.employeeId || "") === String(person.id || ""))
+                    .reduce((sum, shift) => sum + Number(shift.plannedHours || 0), 0);
+                  return (
+                    <tr key={person.id || person.name}>
+                      <td>
+                        <div className="row" style={{ gap: 10 }}>
+                          <Avatar name={person.name} size={28} />
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 500 }}>{arTerm(lang, person.name)}</div>
+                            <div className="t-small muted">{arTerm(lang, person.status || "active")}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="muted">{hrRoleLabel(person.roleValue || person.role, lang)}</td>
+                      <td className="t-num" style={{ textAlign: "end" }}>{Math.round(personHours || 0)}{ar ? "س" : "h"}</td>
+                    </tr>
+                  );
+                })}
+                {!assignedTeamRows.length && (
+                  <tr>
+                    <td colSpan={3} className="muted" style={{ textAlign: "center" }}>
+                      {sourceDriven ? (ar ? "لا يوجد موظفون مصدر معينون لهذا الكشك بعد." : "No source staff assigned to this kiosk yet.") : ui(ar, "noStaffForKiosk")}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="card card-pad staff-roster-summary-card">
+            <div className="between" style={{ gap: 12, alignItems: "flex-start" }}>
+              <div>
+                <div className="t-h2">{ui(ar, "workWeek")}</div>
+                <div className="t-small subtle">{ar ? "ورديات مؤرخة لهذا الكشك" : "Dated shifts for this kiosk"}</div>
+              </div>
+              <button className="btn btn-primary" onClick={() => openKioskShiftEditor(null, selectedWeekStart)} style={{ height: 28, fontSize: 12 }}>
+                <Icon name="plus" size={12} />{ui(ar, "assignShift")}
+              </button>
+            </div>
+            <div className="staff-roster-summary-grid">
+              <div className="staff-roster-summary-item">
+                <span className="t-micro">{ui(ar, "week")}</span>
+                <strong>{weekRangeLabelLang(selectedWeekStart, lang)}</strong>
+              </div>
+              <div className="staff-roster-summary-item">
+                <span className="t-micro">{ui(ar, "kiosk")}</span>
+                <strong>{selectedKioskId}</strong>
+              </div>
+              <div className="staff-roster-summary-item">
+                <span className="t-micro">{ui(ar, "plannedHours")}</span>
+                <strong>{ar ? `${kioskShiftRows.length} ورديات / ${plannedHours}س` : `${kioskShiftRows.length} shifts / ${plannedHours}h`}</strong>
+              </div>
+              <div className="staff-roster-summary-item">
+                <span className="t-micro">{ui(ar, "people")}</span>
+                <strong>{ar ? `${scheduledPeople} مجدول` : `${scheduledPeople} scheduled`}</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="card staff-week-card">
+          <div className="staff-week-header">
+            <div>
+              <div className="row" style={{ gap: 8, marginBottom: 6 }}>
+                <AITag>{ui(ar, "roster")}</AITag>
+                <span className={`badge ${missingPeople > 0 ? "badge-warn" : "badge-pos"}`}>{missingPeople > 0 ? (ar ? `${missingPeople} فجوة` : `${missingPeople} gap`) : arTerm(lang, "Covered")}</span>
+              </div>
+              <div className="t-h2">{ui(ar, "weeklyShiftRoster")}</div>
+              <div className="t-small subtle">{ar ? "خطط كل يوم لهذا الكشك" : `Plan each day for ${selected.name}`}</div>
+            </div>
+            <div className="staff-week-toolbar">
+              <button className="btn btn-ghost" onClick={() => setSelectedWeekStart((week) => addDaysIso(week, -7))} style={{ height: 30, fontSize: 12 }}>
+                <Icon name="chevLeft" size={12} />{ui(ar, "prev")}
+              </button>
+              <button className="btn btn-ghost" onClick={() => setSelectedWeekStart(startOfWeekIso(todayIsoDate()))} style={{ height: 30, fontSize: 12 }}>
+                {ui(ar, "today")}
+              </button>
+              <button className="btn btn-ghost" onClick={() => setSelectedWeekStart((week) => addDaysIso(week, 7))} style={{ height: 30, fontSize: 12 }}>
+                {ui(ar, "next")}<Icon name="chevRight" size={12} />
+              </button>
+              <button className="btn btn-ghost" onClick={() => refreshKioskRosterSchedule().catch((error) => showToast(compactError(error) || "Could not refresh roster", "warn"))} style={{ height: 30, fontSize: 12 }}>
+                <Icon name="refresh" size={12} />{ui(ar, "refresh")}
+              </button>
+              <button className="btn btn-primary" onClick={() => openKioskShiftEditor(null, selectedWeekStart)} style={{ height: 30, fontSize: 12 }}>
+                <Icon name="plus" size={12} />{ui(ar, "assignShift")}
+              </button>
+            </div>
+          </div>
+          <div className="staff-week-grid">
+            {rosterWeekDays.map((day, dayIndex) => {
+              const dayShifts = kioskShiftRows.filter((shift) => shift.date === day.date);
+              const dayGaps = kioskCoverageGaps.filter((gap) => (
+                gap.date ? gap.date === day.date : Number(gap.dayOfWeek || gap.dayofweek || 0) === dayIndex
+              ));
+              return (
+                <div className="staff-day-card" key={day.date}>
+                  <div className="staff-day-head">
+                    <div>
+                      <div className="t-micro">{day.label}</div>
+                      <div className="staff-day-date">{day.shortDate}</div>
+                    </div>
+                    <button className="btn btn-quiet staff-day-add" onClick={() => openKioskShiftEditor(null, day.date)} aria-label={ar ? `إضافة وردية ليوم ${day.label}` : `Add shift for ${day.label}`}>
+                      <Icon name="plus" size={12} />
+                    </button>
+                  </div>
+                  {dayGaps.map((gap) => (
+                    <div className="staff-gap-row" key={`${gap.ruleId || gap.kiosk}-${gap.date || day.date}-${gap.role}-${gap.startHour}`}>
+                      <span className="dot warn" />
+                      <span>{ar ? `${gap.missingCount || 0} ناقص ${hrRoleLabel(gap.role, lang)}` : `${gap.missingCount || 0} missing ${hrRoleLabel(gap.role)}`}</span>
+                    </div>
+                  ))}
+                  <div className="staff-day-shifts">
+                    {dayShifts.length ? dayShifts.map((shift) => {
+                      const state = String(shift.state || "planned").toLowerCase();
+                      const stateBadge = state === "confirmed" ? "badge-pos" : state === "cancelled" ? "badge-crit" : "";
+                      const stripeClass = state === "confirmed" ? "is-confirmed" : state === "cancelled" ? "is-cancelled" : "";
+                      return (
+                        <div className="staff-shift-row" role="button" tabIndex={0}
+                          key={shift.id || `${shift.employee}-${shift.date}-${shift.startHour}`}
+                          onClick={() => openKioskShiftEditor(shift)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              openKioskShiftEditor(shift);
+                            }
+                          }}>
+                          <span className={`staff-shift-stripe ${stripeClass}`} />
+                          <div className="staff-shift-time">
+                            <strong>{shift.time || `${hourToTime(shift.startHour)}-${hourToTime(shift.endHour)}`}</strong>
+                            <span>{Number(shift.plannedHours || 0).toFixed(1)}{ar ? "س" : "h"}</span>
+                          </div>
+                          <div className="staff-shift-main">
+                            <strong>{arTerm(lang, shift.staff || shift.employee)}</strong>
+                            <span>{hrRoleLabel(shift.role || shift.roleLabel, lang)}</span>
+                          </div>
+                          <span className={`badge ${stateBadge}`}>{arTerm(lang, shift.state || "planned")}</span>
+                        </div>
+                      );
+                    }) : (
+                      <button className="staff-empty-shift" onClick={() => openKioskShiftEditor(null, day.date)}>
+                        <Icon name="plusCircle" size={14} />{ui(ar, "addShift")}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="between" style={{ padding: "14px 18px" }}>
+            <div>
+              <div className="t-h2">{ui(ar, "coverageGaps")}</div>
+              <div className="t-small subtle">{ui(ar, "coverageGapsSub")}</div>
+            </div>
+            <span className={`badge ${missingPeople ? "badge-warn" : "badge-pos"}`}>{missingPeople ? (ar ? `${missingPeople} ناقص` : `${missingPeople} missing`) : ui(ar, "allCovered")}</span>
+          </div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th scope="col">{ui(ar, "day")}</th>
+                <th scope="col">{ui(ar, "slot")}</th>
+                <th scope="col">{ui(ar, "role")}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "need")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {kioskCoverageGaps.length ? kioskCoverageGaps.map((gap) => (
+                <tr key={`${gap.ruleId || gap.kiosk}-${gap.date || gap.dayOfWeek}-${gap.role}-${gap.startHour}`}>
+                  <td style={{ fontWeight: 500 }}>{gap.date ? (ar ? rosterDateFormatterAr.format(dateFromIso(gap.date)) : rosterDateFormatter.format(dateFromIso(gap.date))) : (ar ? WEEKDAY_LABELS_AR[Number(gap.dayOfWeek || 0)] : WEEKDAY_LABELS[Number(gap.dayOfWeek || 0)])}</td>
+                  <td className="muted">{hourToTime(gap.startHour)}-{hourToTime(gap.endHour)}</td>
+                  <td>{hrRoleLabel(gap.role, lang)}</td>
+                  <td className="t-num" style={{ textAlign: "end" }}>
+                    <span className="badge badge-warn">{ar ? `${gap.assignedCount || 0}/${gap.requiredCount || 0} مغطى` : `${gap.assignedCount || 0}/${gap.requiredCount || 0} staffed`}</span>
+                  </td>
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan={4} className="muted" style={{ padding: 18, textAlign: "center" }}>{ui(ar, "allPlannedShiftsCovered")}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <Modal open={shiftModalOpen} onClose={() => { setShiftModalOpen(false); setEditingShiftId(null); }}
+        width={560}
+        title={editingShiftId ? ui(ar, "editShift") : ui(ar, "assignShift")}
+        sub={ui(ar, "updateKioskWorkWeek", { kiosk: arTerm(lang, selected.name) })}>
+        <form onSubmit={submitKioskShift} className="col" style={{ gap: 10 }}>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ui(ar, "staff")}</label>
+              <select className="input" value={shiftDraft.employee}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, employee: event.target.value }))}>
+                {rosterStaff.length
+                  ? rosterStaff.map((person) => <option key={person.id || person.name} value={person.id || person.name}>{arTerm(lang, person.name)}</option>)
+                  : <option value="">{ui(ar, "noStaffLoaded")}</option>}
+              </select>
+            </div>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ui(ar, "kiosk")}</label>
+              <select className="input" value={selectedKioskId} disabled>
+                {kioskOptions.map((option) => <option key={option.id} value={option.id}>{arTerm(lang, option.label)}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ui(ar, "date")}</label>
+              <input className="input" type="date" value={shiftDraft.date}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, date: event.target.value }))} />
+            </div>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ui(ar, "role")}</label>
+              <select className="input" value={shiftDraft.role}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, role: event.target.value }))}>
+                {HR_ROLE_OPTIONS.map((role) => <option key={role} value={role}>{hrRoleLabel(role, lang)}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ui(ar, "start")}</label>
+              <input className="input" type="time" value={shiftDraft.start}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, start: event.target.value }))} />
+            </div>
+            <div className="col" style={{ flex: 1, gap: 4 }}>
+              <label className="t-micro">{ui(ar, "end")}</label>
+              <input className="input" type="time" value={shiftDraft.end}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, end: event.target.value }))} />
+            </div>
+          </div>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 0.8, gap: 4 }}>
+              <label className="t-micro">{ui(ar, "state")}</label>
+              <select className="input" name="shiftState" value={shiftDraft.state}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, state: event.target.value }))}>
+                <option value="planned">{ui(ar, "planned")}</option>
+                <option value="confirmed">{ui(ar, "confirmed")}</option>
+                <option value="cancelled">{ar ? "ملغاة" : "Cancelled"}</option>
+              </select>
+            </div>
+            <div className="col" style={{ flex: 1.6, gap: 4 }}>
+              <label className="t-micro">{ui(ar, "note")}</label>
+              <input className="input" value={shiftDraft.note}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, note: event.target.value }))}
+                placeholder={ui(ar, "note")} />
+            </div>
+          </div>
+          <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+            <button type="button" className="btn btn-ghost" onClick={() => { setShiftModalOpen(false); setEditingShiftId(null); }}>{ui(ar, "cancel")}</button>
+            <button type="submit" className="btn btn-primary">{editingShiftId ? ui(ar, "updateShift") : ui(ar, "assignShift")}</button>
+          </div>
+        </form>
+      </Modal>
+    </>
+  );
+
+  const overviewNoteTitle = sourceDriven
+    ? (ar ? "ملاحظات مصدرية لهذا الكشك" : "Source notes for this kiosk")
+    : (ar ? "ملاحظات ذكاء تجريبية لهذا الكشك" : "Demo AI notes for this kiosk");
+  const overviewNoteSub = sourceDriven
+    ? (ar ? "مشتقة من صفوف المصدر" : "Derived from source rows")
+    : (ar ? "آخر ٧ أيام تجريبية" : "Demo last 7 days");
+  const overviewNoteBody = sourceDriven
+    ? (ar
+      ? "هذه الملاحظة مشتقة من صفوف المصدر فقط. ليست توصية ذكاء ولا تغير الأرقام الرسمية."
+      : "This note is derived from source rows only. It is not an AI recommendation and does not change official numbers.")
+    : (ar
+      ? "ملخص ذكاء تجريبي فقط. الأرقام الرسمية تأتي من أوامر POS ودفتر الاستهلاك وإغلاق الوردية."
+      : "Demo AI summary only. Official numbers come from POS orders, the consumption ledger, and shift close rows.");
+
   const renderOverview = () => (
     <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
       {renderOrders()}
       <div className="card card-pad">
-        <SectionHead title={ar ? "ملاحظات الذكاء" : "AI notes for this kiosk"} sub={ar ? "آخر ٧ أيام" : "Last 7 days"} />
+        <SectionHead title={overviewNoteTitle} sub={overviewNoteSub} />
         <div className="ai-block">
           <div style={{ fontWeight: 500, fontSize: 14 }}>{selected.issue}</div>
           <div className="t-small muted" style={{ marginTop: 4, lineHeight: 1.55 }}>
-            {ar
-              ? "الذكاء يعرض ملخصا فقط. الأرقام الرسمية تأتي من أوامر POS، دفتر الاستهلاك، وإغلاق الوردية."
-              : "AI summarizes only. Official numbers come from POS orders, the consumption ledger, and shift close rows."}
+            {overviewNoteBody}
           </div>
         </div>
       </div>
@@ -5899,9 +11241,9 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap }) {
       </button>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
-        <KPI label={ar ? "اليوم" : "Today"} value={fmtMoney(selected.revenue)} delta="live" deltaDir="up" sparkData={selected.trend}/>
-        <KPI label={ar ? "الطلبات" : "Orders"} value={String(selected.orders)} delta="POS" deltaDir="up"/>
-        <KPI label={ar ? "النقد المتوقع" : "Expected cash"} value={fmtMoney(Math.round(selected.revenue * 0.65))} footer={ar ? "حسب طرق الدفع" : "by payment split"}/>
+        <KPI label={ar ? "اليوم" : "Today"} value={fmtMoney(selected.revenue)} delta={sourceDriven ? "source" : "demo"} deltaDir="up" sparkData={selected.trend}/>
+        <KPI label={ar ? "الطلبات" : "Orders"} value={String(selected.orders)} delta={sourceDriven ? "source POS" : "demo POS"} deltaDir="up"/>
+        <KPI label={ar ? "النقد المتوقع" : "Expected cash"} value={fmtMoney(expectedCash)} footer={expectedCashFooter}/>
         <KPI label={ar ? "صحة المخزون" : "Stock health"} value={`${selected.stockHealth}%`} delta={selected.status === "crit" ? "critical" : selected.status === "warn" ? "watch" : "ok"} deltaDir={selected.status === "crit" ? "down" : "up"}/>
         <KPI label={ar ? "الفرق" : "Variance"} value={`${selected.variance}%`} delta={selected.issue} deltaDir={selected.variance < -2 ? "down" : "up"}/>
       </div>
@@ -5958,8 +11300,9 @@ function WarehousePressureMeter({ pct, status }) {
   );
 }
 
-function RealtimeWarehouseCard({ node }) {
-  const statusLabel = node.status === "good" ? "Healthy" : node.status === "warn" ? "Watch" : "Critical";
+function RealtimeWarehouseCard({ node, lang }) {
+  const ar = lang === "ar";
+  const statusLabel = node.status === "good" ? (ar ? "سليم" : "Healthy") : node.status === "warn" ? (ar ? "مراقبة" : "Watch") : (ar ? "حرج" : "Critical");
   const badgeClass = node.status === "good" ? "badge-pos" : node.status === "warn" ? "badge-warn" : "badge-crit";
   return (
     <div className="card" style={{
@@ -5973,46 +11316,46 @@ function RealtimeWarehouseCard({ node }) {
             <span className={`badge ${badgeClass}`} style={{ height: 18, fontSize: 10.5 }}>{statusLabel}</span>
             <span className="t-small faint t-num">{node.code}</span>
           </div>
-          <LivePulse status={node.status}/>
+          <LivePulse status={node.status} lang={lang}/>
         </div>
-        <div style={{ fontSize: 15.5, fontWeight: 500, letterSpacing: "-0.01em", lineHeight: 1.2 }}>{node.name}</div>
-        <div className="t-small subtle" style={{ marginTop: 2 }}>{node.type} · {node.badge}</div>
+        <div style={{ fontSize: 15.5, fontWeight: 500, letterSpacing: "-0.01em", lineHeight: 1.2 }}>{arTerm(lang, node.name)}</div>
+        <div className="t-small subtle" style={{ marginTop: 2 }}>{arTerm(lang, node.type)} · {node.badge}</div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", borderBottom: "1px solid var(--line-soft)" }}>
         <div style={{ padding: "10px 12px 10px 16px", borderInlineEnd: "1px solid var(--line-soft)" }}>
-          <div className="t-micro" style={{ marginBottom: 2 }}>On hand</div>
+          <div className="t-micro" style={{ marginBottom: 2 }}>{ar ? "المتوفر" : "On hand"}</div>
           <div className="t-num" style={{ fontSize: 16, fontWeight: 500 }}>{fmtNum(Math.round(node.qty || 0))}</div>
         </div>
         <div style={{ padding: "10px 12px", borderInlineEnd: "1px solid var(--line-soft)" }}>
-          <div className="t-micro" style={{ marginBottom: 2 }}>Reserved</div>
+          <div className="t-micro" style={{ marginBottom: 2 }}>{ar ? "محجوز" : "Reserved"}</div>
           <div className="t-num" style={{ fontSize: 16, fontWeight: 500 }}>{fmtNum(Math.round(node.reserved || 0))}</div>
         </div>
         <div style={{ padding: "10px 16px 10px 12px" }}>
-          <div className="t-micro" style={{ marginBottom: 2 }}>Linked</div>
+          <div className="t-micro" style={{ marginBottom: 2 }}>{ar ? "مرتبط" : "Linked"}</div>
           <div className="t-num" style={{ fontSize: 16, fontWeight: 500 }}>{node.linkedCount}</div>
         </div>
       </div>
 
       <div style={{ padding: "14px 16px 8px" }}>
         <div className="between" style={{ marginBottom: 6 }}>
-          <span className="t-micro">Stock availability</span>
+          <span className="t-micro">{ar ? "توفر المخزون" : "Stock availability"}</span>
           <span className="t-num" style={{ fontSize: 12.5, fontWeight: 500 }}>{node.stockPct}%</span>
         </div>
         <InventoryMeter pct={node.stockPct} status={node.status}/>
-        <div className="t-small subtle" style={{ marginTop: 6, fontSize: 11.5 }}>{node.location}</div>
+        <div className="t-small subtle" style={{ marginTop: 6, fontSize: 11.5 }}>{arTerm(lang, node.location)}</div>
       </div>
 
       <div style={{ padding: "10px 16px 14px" }}>
         <div className="between" style={{ marginBottom: 6 }}>
-          <span className="t-micro">Movement pressure</span>
+          <span className="t-micro">{ar ? "ضغط الحركة" : "Movement pressure"}</span>
           <div className="row" style={{ gap: 8 }}>
-            <span className="t-small subtle" style={{ fontSize: 11 }}>target 70%</span>
+            <span className="t-small subtle" style={{ fontSize: 11 }}>{ar ? "الهدف" : "target"} 70%</span>
             <span className={"t-num " + (node.pressurePct > 70 ? "delta-neg" : "")} style={{ fontSize: 12.5, fontWeight: 500 }}>{node.pressurePct}%</span>
           </div>
         </div>
         <WarehousePressureMeter pct={node.pressurePct} status={node.status}/>
-        <div className="t-small subtle" style={{ marginTop: 6, fontSize: 11.5 }}>{node.note}</div>
+        <div className="t-small subtle" style={{ marginTop: 6, fontSize: 11.5 }}>{arTerm(lang, node.note)}</div>
       </div>
     </div>
   );
@@ -6025,7 +11368,6 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
   const [view, setView] = useState("cards");
   const [scope, setScope] = useState("all");
   const [sortBy, setSortBy] = useState("status");
-  const [tick, setTick] = useState(0);
   const [warehouseDraft, setWarehouseDraft] = useState({ name: "Baghdad Central Warehouse", code: "BGD" });
   const [warehouseModalOpen, setWarehouseModalOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -6033,10 +11375,6 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
   const enabled = Boolean(sourceOfTruth?.enabled);
   const kioskLocations = (setup.locations || []).filter((location) => location.kind === "kiosk");
   const centralLocations = (setup.locations || []).filter((location) => location.kind === "central");
-  useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 3600);
-    return () => clearInterval(id);
-  }, []);
   const warehouseCards = [
     ...(setup.warehouses || []).map((warehouse) => {
       const stockLocation = (setup.locations || []).find((location) => location.id === warehouse.stock_location_id);
@@ -6060,39 +11398,21 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
         note: `Receipts #${warehouse.receipt_type_id || "-"} · POS type #${warehouse.pos_type_id || "-"}`,
       };
     }),
-    ...(setup.kiosks || []).map((kiosk) => {
-      const stockLocation = (setup.locations || []).find((location) => location.id === kiosk.stock_location_id);
-      return {
-        id: `kiosk-${kiosk.id}`,
-        type: "Kiosk stock source",
-        badge: "bayaan.kiosk",
-        tone: kiosk.stock_deduction_policy === "strict" ? "warn" : "accent",
-        name: kiosk.name,
-        code: kiosk.kiosk_code,
-        record: `bayaan.kiosk #${kiosk.id}`,
-        location: kiosk.stock_location,
-        metric: kiosk.pos_config || "No POS config",
-        kind: "kiosk",
-        linkedCount: kiosk.pos_config_id ? 1 : 0,
-        qty: stockLocation?.quantity || 0,
-        reserved: stockLocation?.reserved_quantity || 0,
-        note: `${kiosk.city || kiosk.area || "No city"} · ${kiosk.stock_deduction_policy || "warning"} policy`,
-      };
-    }),
   ];
-  const liveWarehouseCards = warehouseCards.map((node, index) => {
+  const liveWarehouseCards = warehouseCards.map((node) => {
     const physicalRatio = node.qty > 100
       ? Math.min(96, 62 + Math.log10(node.qty + 1) * 8)
-      : Math.min(96, Math.max(18, node.qty || (node.kind === "central" ? 72 : 48)));
+      : Math.min(96, Math.max(0, node.qty));
     const pressureBase = node.qty > 0
       ? Math.min(100, (node.reserved / Math.max(node.qty + node.reserved, 1)) * 100)
       : Math.min(100, (node.reserved || 0) * 8);
-    const stockPct = clampPercent(Math.round(physicalRatio + (((tick + index) % 5) - 2)));
-    const pressurePct = clampPercent(Math.round(pressureBase + ((tick + index * 2) % 7)));
+    const stockPct = clampPercent(Math.round(physicalRatio));
+    const pressurePct = clampPercent(Math.round(pressureBase));
     const status = stockPct < 35 ? "crit" : stockPct < 65 || pressurePct > 70 ? "warn" : "good";
     return { ...node, stockPct, pressurePct, status };
   });
-  const visibleWarehouseCards = liveWarehouseCards
+  const centralWarehouseCards = liveWarehouseCards.filter((node) => node.kind === "central");
+  const visibleWarehouseCards = centralWarehouseCards
     .filter((node) => scope === "all" || node.kind === scope)
     .sort((a, b) => {
       if (sortBy === "stock") return a.stockPct - b.stockPct;
@@ -6102,10 +11422,10 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
       return order[a.status] - order[b.status] || a.name.localeCompare(b.name);
     });
   const warehouseCounts = {
-    good: liveWarehouseCards.filter((node) => node.status === "good").length,
-    warn: liveWarehouseCards.filter((node) => node.status === "warn").length,
-    crit: liveWarehouseCards.filter((node) => node.status === "crit").length,
-    avgStock: Math.round(liveWarehouseCards.reduce((sum, node) => sum + node.stockPct, 0) / Math.max(liveWarehouseCards.length, 1)),
+    good: centralWarehouseCards.filter((node) => node.status === "good").length,
+    warn: centralWarehouseCards.filter((node) => node.status === "warn").length,
+    crit: centralWarehouseCards.filter((node) => node.status === "crit").length,
+    avgStock: Math.round(centralWarehouseCards.reduce((sum, node) => sum + node.stockPct, 0) / Math.max(centralWarehouseCards.length, 1)),
   };
 
   const submitWarehouse = async (event) => {
@@ -6127,26 +11447,26 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
   return (
     <div className="col" style={{ gap: 14 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        <KPI label={ar ? "مستودعات" : "Warehouses"} value={String(setup.warehouses?.length || 0)} footer={enabled || liveOnly ? "stock.warehouse" : "demo fallback"}/>
+        <KPI label={ar ? "مستودعات" : "Warehouses"} value={String(setup.warehouses?.length || 0)} footer={enabled || liveOnly ? "stock.warehouse" : (ar ? "بديل تجريبي" : "demo fallback")}/>
         <KPI label={ar ? "مواقع أكشاك" : "Kiosk locations"} value={String(kioskLocations.length)} footer="stock.location"/>
         <KPI label={ar ? "نقاط بيع" : "POS configs"} value={String(setup.pos_configs?.length || 0)} footer="pos.config"/>
-        <KPI label={ar ? "المصدر" : "Source"} value={enabled || liveOnly ? "Engine" : "Demo"} footer={sync?.status === "error" ? "sync error" : sync?.status || "ready"}/>
+        <KPI label={ar ? "المصدر" : "Source"} value={enabled || liveOnly ? (ar ? "المحرك" : "Engine") : (ar ? "تجريبي" : "Demo")} footer={arTerm(lang, sync?.status === "error" ? "sync error" : sync?.status || "ready")}/>
       </div>
 
       <div className="card card-pad" style={{ background: enabled ? "var(--pos-soft)" : "var(--warn-soft)", borderColor: "transparent" }}>
         <div className="between" style={{ gap: 14, alignItems: "flex-start" }}>
           <div className="ai-block" style={{ flex: 1 }}>
-            <div style={{ fontWeight: 500, marginBottom: 4 }}>{enabled ? "Bayaan is reading the source engine" : liveOnly ? "Live-only mode is hiding demo topology" : "Backend engine is not configured in this browser session"}</div>
+            <div style={{ fontWeight: 500, marginBottom: 4 }}>{enabled ? (ar ? "بيان يقرأ من محرك المصدر" : "Bayaan is reading the source engine") : liveOnly ? (ar ? "وضع التشغيل فقط يخفي الهيكل التجريبي" : "Live-only mode is hiding demo topology") : (ar ? "المحرك الخلفي غير مضبوط في جلسة المتصفح" : "Backend engine is not configured in this browser session")}</div>
             <div className="t-small muted" style={{ lineHeight: 1.6 }}>
               {enabled
-                ? "Creating warehouses or kiosks here writes real inventory, POS, and Bayaan records in the single backend database."
+                ? (ar ? "إنشاء المستودع المركزي هنا يكتب سجلات مخزون حقيقية في قاعدة البيانات الخلفية الواحدة." : "Creating a central warehouse here writes real inventory records in the single backend database.")
                 : liveOnly
-                  ? "No demo warehouses or kiosk locations are shown. Configure the backend URL and refresh to load real records."
-                  : "Set the backend URL and sign in to the engine in the same browser session. Until then this page shows the demo topology only."}
+                  ? (ar ? "لا تظهر مستودعات أو مواقع أكشاك تجريبية. اضبط رابط الخلفية وحدث لتحميل السجلات الحقيقية." : "No demo warehouses or kiosk locations are shown. Configure the backend URL and refresh to load real records.")
+                  : (ar ? "اضبط رابط الخلفية وسجل الدخول إلى المحرك في نفس جلسة المتصفح. حتى ذلك الحين تعرض هذه الصفحة الهيكل التجريبي فقط." : "Set the backend URL and sign in to the engine in the same browser session. Until then this page shows the demo topology only.")}
             </div>
             {(sync?.error || localError) && <div className="t-small delta-neg" style={{ marginTop: 8 }}>{sync?.error || localError}</div>}
           </div>
-          <button className="btn btn-ghost" onClick={refreshOdoo} disabled={!enabled || busy}>{busy ? "Syncing" : "Refresh from engine"}</button>
+          <button className="btn btn-ghost" onClick={refreshOdoo} disabled={!enabled || busy}>{busy ? (ar ? "جار التزامن" : "Syncing") : (ar ? "تحديث من المحرك" : "Refresh from engine")}</button>
         </div>
       </div>
 
@@ -6154,24 +11474,24 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
         <button type="button" className="btn btn-primary"
           onClick={() => { setLocalError(""); setWarehouseModalOpen(true); }}
           disabled={!enabled || busy}>
-          <Icon name="plus" size={12}/> Create central warehouse
+          <Icon name="plus" size={12}/> {ar ? "إنشاء مستودع مركزي" : "Create central warehouse"}
         </button>
       </div>
 
       <Modal open={warehouseModalOpen} onClose={() => !busy && setWarehouseModalOpen(false)}
-        title="Create central warehouse"
-        sub="Creates stock.warehouse and its stock locations">
+        title={ar ? "إنشاء مستودع مركزي" : "Create central warehouse"}
+        sub={ar ? "ينشئ stock.warehouse ومواقع المخزون الخاصة به" : "Creates stock.warehouse and its stock locations"}>
         <form onSubmit={submitWarehouse}>
           <div className="col" style={{ gap: 10 }}>
-            <label className="t-small muted">Warehouse name</label>
+            <label className="t-small muted">{ar ? "اسم المستودع" : "Warehouse name"}</label>
             <input className="input" value={warehouseDraft.name} onChange={(event) => setWarehouseDraft({ ...warehouseDraft, name: event.target.value })} />
-            <label className="t-small muted">Short code</label>
+            <label className="t-small muted">{ar ? "رمز قصير" : "Short code"}</label>
             <input className="input" value={warehouseDraft.code} onChange={(event) => setWarehouseDraft({ ...warehouseDraft, code: event.target.value.toUpperCase().slice(0, 5) })} />
             {localError && <div className="t-small delta-neg">{localError}</div>}
             <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
-              <button type="button" className="btn btn-ghost" onClick={() => setWarehouseModalOpen(false)} disabled={busy}>Cancel</button>
+              <button type="button" className="btn btn-ghost" onClick={() => setWarehouseModalOpen(false)} disabled={busy}>{ui(ar, "cancel")}</button>
               <button type="submit" className="btn btn-primary" disabled={!enabled || busy} style={{ justifyContent: "center" }}>
-                <Icon name="plus" size={12}/> {busy ? "Creating…" : "Create in engine"}
+                <Icon name="plus" size={12}/> {busy ? (ar ? "جار الإنشاء..." : "Creating...") : (ar ? "إنشاء في المحرك" : "Create in engine")}
               </button>
             </div>
           </div>
@@ -6180,15 +11500,14 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
 
       <div className="between kiosk-toolbar">
         <div>
-          <div style={{ fontWeight: 500 }}>Bayaan warehouse topology</div>
-          <div className="t-small muted">Every card is backed by the single backend database, not a separate Bayaan-only store.</div>
+          <div style={{ fontWeight: 500 }}>{ar ? "هيكل مستودعات بيان" : "Bayaan warehouse topology"}</div>
+          <div className="t-small muted">{enabled || liveOnly ? (ar ? "كل بطاقة مستودع مدعومة بقاعدة البيانات الخلفية الواحدة، وليست مخزنا منفصلا خاصا ببيان." : "Every warehouse card is backed by the single backend database, not a separate Bayaan-only store.") : (ar ? "البيانات التجريبية تستخدم نفس شكل المستودع والموقع حتى يظل التدفق من المستودع إلى الكشك واضحا." : "Demo data uses the same warehouse/location shape so the warehouse-to-kiosk flow stays visible.")}</div>
         </div>
         <div className="row" style={{ gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
           <div className="row" style={{ gap: 6 }}>
             {[
-              { id: "all", label: "All" },
-              { id: "central", label: "Central" },
-              { id: "kiosk", label: "Kiosk stock" },
+              { id: "all", label: ar ? "الكل" : "All" },
+              { id: "central", label: ar ? "المركزي" : "Central" },
             ].map((item) => (
               <button key={item.id} className={"btn " + (scope === item.id ? "btn-primary" : "btn-ghost")} style={{ height: 28, fontSize: 12 }} onClick={() => setScope(item.id)}>
                 {item.label}
@@ -6197,10 +11516,10 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
           </div>
           <div className="row" style={{ gap: 0, border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden", height: 28 }}>
             {[
-              { id: "status", label: "Status" },
-              { id: "stock", label: "Stock" },
-              { id: "pressure", label: "Pressure" },
-              { id: "name", label: "Name" },
+              { id: "status", label: ar ? "الحالة" : "Status" },
+              { id: "stock", label: ar ? "المخزون" : "Stock" },
+              { id: "pressure", label: ar ? "الضغط" : "Pressure" },
+              { id: "name", label: ar ? "الاسم" : "Name" },
             ].map((item) => (
               <button key={item.id} onClick={() => setSortBy(item.id)}
                 style={{
@@ -6212,8 +11531,8 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
             ))}
           </div>
           <div className="segmented" aria-label="Warehouse view">
-            <button className={`seg-btn ${view === "list" ? "active" : ""}`} onClick={() => setView("list")}><Icon name="list" size={12}/>List</button>
-            <button className={`seg-btn ${view === "cards" ? "active" : ""}`} onClick={() => setView("cards")}><Icon name="grid" size={12}/>Cards</button>
+            <button className={`seg-btn ${view === "list" ? "active" : ""}`} onClick={() => setView("list")}><Icon name="list" size={12}/>{ar ? "قائمة" : "List"}</button>
+            <button className={`seg-btn ${view === "cards" ? "active" : ""}`} onClick={() => setView("cards")}><Icon name="grid" size={12}/>{ar ? "بطاقات" : "Cards"}</button>
           </div>
         </div>
       </div>
@@ -6221,7 +11540,7 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
       {view === "cards" ? (
         <div className="kiosk-card-grid">
           {visibleWarehouseCards.map((node) => (
-            <RealtimeWarehouseCard key={node.id} node={node}/>
+            <RealtimeWarehouseCard key={node.id} node={node} lang={lang}/>
           ))}
           {false && visibleWarehouseCards.map((node) => (
             <div className="card card-pad" key={`legacy-${node.id}`}>
@@ -6270,42 +11589,29 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
       ) : (
       <div className="card">
         <div className="between" style={{ padding: "14px 18px" }}>
-          <SectionHead title="Bayaan warehouse topology" sub="Records Bayaan reads and writes" />
-          <span className="badge badge-accent">{setup.company?.name || "Company"}</span>
+          <SectionHead title={ar ? "هيكل مستودعات بيان" : "Bayaan warehouse topology"} sub={ar ? "السجلات التي يقرأها ويكتبها بيان" : "Records Bayaan reads and writes"} />
+          <span className="badge badge-accent">{setup.company?.name || (ar ? "الشركة" : "Company")}</span>
         </div>
         <table className="tbl">
           <thead>
             <tr>
-              <th scope="col">Type</th>
-              <th scope="col">Name</th>
-              <th scope="col">Engine record</th>
-              <th scope="col">Stock location</th>
+              <th scope="col">{ar ? "النوع" : "Type"}</th>
+              <th scope="col">{ar ? "الاسم" : "Name"}</th>
+              <th scope="col">{ar ? "سجل المحرك" : "Engine record"}</th>
+              <th scope="col">{ar ? "موقع المخزون" : "Stock location"}</th>
               <th scope="col" style={{ textAlign: "end" }}>Qty</th>
-              <th scope="col" style={{ textAlign: "end" }}>Reserved / policy</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "محجوز / سياسة" : "Reserved / policy"}</th>
             </tr>
           </thead>
           <tbody>
             {centralLocations.map((location) => (
               <tr key={location.id}>
-                <td><span className="badge badge-pos">Central</span></td>
-                <td>{location.name}</td>
+                <td><span className="badge badge-pos">{ar ? "مركزي" : "Central"}</span></td>
+                <td>{arTerm(lang, location.name)}</td>
                 <td className="muted">stock.location #{location.id}</td>
-                <td className="muted">{location.complete_name}</td>
+                <td className="muted">{arTerm(lang, location.complete_name)}</td>
                 <td className="t-num" style={{ textAlign: "end" }}>{fmtNum(Math.round(location.quantity || 0))}</td>
                 <td className="t-num muted" style={{ textAlign: "end" }}>{fmtNum(Math.round(location.reserved_quantity || 0))}</td>
-              </tr>
-            ))}
-            {(setup.kiosks || []).map((kiosk) => (
-              <tr key={kiosk.id}>
-                <td><span className="badge badge-accent">Kiosk</span></td>
-                <td>
-                  <div style={{ fontWeight: 500 }}>{kiosk.name}</div>
-                  <div className="t-small faint">{kiosk.kiosk_code} · {kiosk.city || kiosk.area || "No city"}</div>
-                </td>
-                <td className="muted">bayaan.kiosk #{kiosk.id}</td>
-                <td className="muted">{kiosk.stock_location}</td>
-                <td className="muted" style={{ textAlign: "end" }}>{kiosk.pos_config}</td>
-                <td style={{ textAlign: "end" }}><span className="badge">{kiosk.stock_deduction_policy}</span></td>
               </tr>
             ))}
           </tbody>
@@ -6319,6 +11625,7 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
 // =============== SALES & POS MONITOR ===============
 function SalesMonitorScreen({ lang, bootstrap }) {
   const ar = lang === "ar";
+  const sourceDriven = isSourceDrivenPayload(bootstrap);
   const rawOrders = odooPosOrderRows(bootstrap);
   const [kioskFilter, setKioskFilter] = useState("all");
   const [paymentFilter, setPaymentFilter] = useState("all");
@@ -6337,17 +11644,34 @@ function SalesMonitorScreen({ lang, bootstrap }) {
     addPaymentToSplit(split, order.payment, order.amount);
     return split;
   }, createPaymentSplit()));
-  const gatewayRows = paymentGatewayRows(paymentSplit);
+  const gatewayRows = paymentGatewayRows(paymentSplit, !sourceDriven);
+  const sourceSessionRows = sourceDriven ? odooPosSessionRows(bootstrap) : [];
+  const demoSessionRows = !sourceDriven ? kioskOptions.filter((kiosk) => kiosk !== "all").map((kiosk) => {
+    const sessionOrders = rawOrders.filter((order) => order.kioskId === kiosk || order.kiosk === kiosk);
+    return {
+      id: `demo-session-${kiosk}`,
+      name: kiosk,
+      kiosk,
+      cashier: sessionOrders[0]?.cashier || "Cashier",
+      orders: sessionOrders.length,
+      revenue: sessionOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0),
+      status: "demo order group",
+    };
+  }) : [];
+  const visibleSessionRows = sourceDriven ? sourceSessionRows : demoSessionRows;
+  const digitalPaymentFooter = sourceDriven
+    ? (paymentSplit.digital > 0 ? paymentMethodSignal(paymentSplit) : "no verified digital payments")
+    : "demo: card, QR, wallet, FIB";
   const issueCount = orders.filter((order) => order.status !== "paid" || order.sync !== "live").length;
   const recipeHeld = orders.filter((order) => order.recipe === "held").length;
 
   return (
     <div className="col" style={{ gap: 14 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        <KPI label={ar ? "طلبات POS" : "POS orders"} value={String(orders.length)} footer={ar ? "آخر دقائق" : "live feed"} />
+        <KPI label={ar ? "طلبات POS" : "POS orders"} value={String(orders.length)} footer={sourceDriven ? (ar ? "تدفق المصدر" : "source feed") : (ar ? "تدفق تجريبي" : "demo feed")} />
         <KPI label={ar ? "نقد" : "Cash"} value={fmtMoney(paymentTotals.cash || 0)} footer={ar ? "متوقع في الصندوق" : "expected in drawer"} />
-        <KPI label={ar ? "مدفوعات رقمية" : "Digital payments"} value={fmtMoney(paymentSplit.digital)} footer="card, QR, wallet, FIB" />
-        <KPI label={ar ? "تحتاج مراجعة" : "Needs review"} value={String(issueCount)} delta={recipeHeld ? `${recipeHeld} recipe held` : "all posted"} deltaDir={issueCount ? "down" : "up"} />
+        <KPI label={ar ? "مدفوعات رقمية" : "Digital payments"} value={fmtMoney(paymentSplit.digital)} footer={digitalPaymentFooter} />
+        <KPI label={ar ? "تحتاج مراجعة" : "Needs review"} value={String(issueCount)} delta={recipeHeld ? (ar ? `${recipeHeld} وصفات معلقة` : `${recipeHeld} recipe held`) : (ar ? "كلها مرحلة" : "all posted")} deltaDir={issueCount ? "down" : "up"} />
       </div>
 
       <div className="card card-pad" style={{ display: "none", background: "var(--accent-soft)", borderColor: "transparent" }}>
@@ -6373,32 +11697,41 @@ function SalesMonitorScreen({ lang, bootstrap }) {
         <div className="card">
           <div className="between" style={{ padding: "14px 18px" }}>
             <div>
-              <div className="t-h2">{ar ? "Open POS sessions" : "Open POS sessions"}</div>
-              <div className="t-small subtle">{ar ? "Grouped from the live order stream" : "Grouped from the live order stream"}</div>
+              <div className="t-h2">{ar ? "جلسات POS المفتوحة" : "Open POS sessions"}</div>
+              <div className="t-small subtle">
+                {sourceDriven
+                  ? (ar ? "من صفوف جلسات /bayaan/api/chain_bootstrap فقط" : "From /bayaan/api/chain_bootstrap session rows only")
+                  : (ar ? "مجمعة تجريبية من تدفق الطلبات المحلي" : "Demo grouping from the local order stream")}
+              </div>
             </div>
-            <span className="badge">{kioskOptions.length - 1} sessions</span>
+            <span className="badge">{ar ? `${visibleSessionRows.length} جلسات` : `${visibleSessionRows.length} sessions`}</span>
           </div>
           <table className="tbl">
             <tbody>
-              {kioskOptions.filter((kiosk) => kiosk !== "all").map((kiosk) => {
-                const sessionOrders = rawOrders.filter((order) => order.kioskId === kiosk || order.kiosk === kiosk);
-                const revenue = sessionOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0);
-                return (
-                  <tr key={kiosk}>
-                    <td style={{ fontWeight: 500 }}>{kiosk}</td>
-                    <td className="muted">{sessionOrders[0]?.cashier || "Cashier"}</td>
-                    <td className="t-num" style={{ textAlign: "end" }}>{sessionOrders.length} orders</td>
-                    <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(revenue)}</td>
-                    <td style={{ textAlign: "end" }}><span className="badge badge-pos">open</span></td>
-                  </tr>
-                );
-              })}
+              {visibleSessionRows.map((session) => (
+                <tr key={session.id || session.name}>
+                  <td style={{ fontWeight: 500 }}>{session.kiosk || session.name}</td>
+                  <td className="muted">{arTerm(lang, session.cashier || "Cashier")}</td>
+                  <td className="t-num" style={{ textAlign: "end" }}>{ar ? `${session.orders || 0} طلبات` : `${session.orders || 0} orders`}</td>
+                  <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(session.revenue || 0)}</td>
+                  <td style={{ textAlign: "end" }}><span className={`badge ${session.status === "closed" ? "badge-pos" : session.status === "open" ? "badge-warn" : ""}`}>{arTerm(lang, session.status)}</span></td>
+                </tr>
+              ))}
+              {!visibleSessionRows.length && (
+                <tr>
+                  <td colSpan={5} className="muted" style={{ padding: 18, textAlign: "center" }}>
+                    {ar
+                      ? "لا توجد جلسات POS موثقة في /bayaan/api/chain_bootstrap بعد. لا يتم تحويل الطلبات إلى جلسات مفترضة."
+                      : "No verified POS session rows are loaded from /bayaan/api/chain_bootstrap yet. Orders are not converted into inferred sessions."}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(280px, 0.8fr) minmax(860px, 1.8fr)", gap: 14 }}>
         <div className="col" style={{ gap: 14 }}>
           <div className="card">
             <div className="between" style={{ padding: "14px 18px" }}>
@@ -6412,12 +11745,19 @@ function SalesMonitorScreen({ lang, bootstrap }) {
                     <td>
                       <div className="row">
                         <Icon name={String(method).toLowerCase() === "cash" ? "cash" : "card"} size={13}/>
-                        <span style={{ textTransform: "capitalize" }}>{method}</span>
+                        <span style={{ textTransform: ar ? "none" : "capitalize" }}>{arTerm(lang, method)}</span>
                       </div>
                     </td>
                     <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(total)}</td>
                   </tr>
                 ))}
+                {!Object.entries(paymentTotals).length && (
+                  <tr>
+                    <td colSpan={2} className="muted" style={{ padding: 18, textAlign: "center" }}>
+                      {sourceDriven ? "No verified payment rows loaded" : "No demo payment rows loaded"}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -6425,27 +11765,43 @@ function SalesMonitorScreen({ lang, bootstrap }) {
           <div className="card">
             <div className="between" style={{ padding: "14px 18px" }}>
               <div className="t-h2">{ar ? "بوابات الدفع" : "Gateway providers"}</div>
-              <span className="badge">Iraq</span>
+              <span className="badge">{ar ? "العراق" : "Iraq"}</span>
             </div>
             <table className="tbl">
               <tbody>
-                {gatewayRows.slice(0, 7).map((row) => (
+                {gatewayRows.length ? gatewayRows.slice(0, 7).map((row) => (
                   <tr key={row.provider || row.id}>
                     <td>
-                      <div style={{ fontWeight: 500 }}>{row.label}</div>
-                      <div className="t-small faint">{paymentCategoryLabel(row.category)} - {String(row.settlement || "").replace(/_/g, " ")}</div>
+                      <div style={{ fontWeight: 500 }}>{arTerm(lang, row.label)}</div>
+                      <div className="t-small faint">{arTerm(lang, paymentCategoryLabel(row.category))} - {arTerm(lang, String(row.settlement || "").replace(/_/g, " "))}</div>
                     </td>
                     <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(row.amount || 0)}</td>
                   </tr>
-                ))}
+                )) : (
+                  <tr>
+                    <td colSpan={2} className="muted">{ar ? "لا توجد مدفوعات مزود موثقة" : "No verified provider payments loaded"}</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
 
-        <div className="card">
+        <RecentPosOrdersTable
+          orders={orders}
+          kioskOptions={kioskOptions}
+          paymentOptions={paymentOptions}
+          kioskFilter={kioskFilter}
+          setKioskFilter={setKioskFilter}
+          paymentFilter={paymentFilter}
+          setPaymentFilter={setPaymentFilter}
+          ar={ar}
+          sourceDriven={sourceDriven}
+        />
+
+        <div className="card" style={{ display: "none" }}>
           <div className="between" style={{ padding: "14px 18px" }}>
-            <div className="t-h2">{ar ? "المراقبة الحية" : "Live POS orders"}</div>
+            <div className="t-h2">{sourceDriven ? (ar ? "طلبات POS من المصدر" : "Source POS orders") : (ar ? "طلبات POS تجريبية" : "Demo POS orders")}</div>
             <div className="row" style={{ gap: 6 }}>
               <select className="input" value={kioskFilter} onChange={(event) => setKioskFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 132 }}>
                 {kioskOptions.map((kiosk) => <option key={kiosk} value={kiosk}>{kiosk === "all" ? "All kiosks" : kiosk}</option>)}
@@ -6500,10 +11856,14 @@ function SalesMonitorScreen({ lang, bootstrap }) {
 }
 
 // =============== INVENTORY ===============
-function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
+function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, sync }) {
   const ar = lang === "ar";
   const { showToast } = useToast();
   const liveOnly = isLiveOnlyPayload(bootstrap);
+  const sourceDriven = isSourceDrivenPayload(bootstrap);
+  const warehouseSetup = unwrapOdoo(sync?.warehouseSetup);
+  const centralWarehouse = warehouseSetup?.warehouses?.[0] || null;
+  const centralWarehouseName = centralWarehouse?.name || centralWarehouse?.code || (sourceDriven ? "" : DEFAULT_WAREHOUSE_NAME);
   const [busyTransfer, setBusyTransfer] = React.useState("");
   const [poBusy, setPoBusy] = React.useState(false);
   const inv = odooInventoryRows(bootstrap);
@@ -6526,24 +11886,31 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     unitCost: "",
     purchasePrice: "",
     consumptionMode: "finished",
+    targetQty: "",
+    reorderQty: "",
+    criticalQty: "",
   });
   const [poDraft, setPoDraft] = React.useState({
-    supplier: MOCK.suppliers[0]?.name || "",
-    warehouse: DEFAULT_WAREHOUSE_NAME,
+    supplier: sourceDriven ? "" : MOCK.suppliers[0]?.name || "",
+    warehouse: centralWarehouseName,
     scheduleDate: tomorrowIsoDate(),
     lines: [],
   });
   const [transferModalOpen, setTransferModalOpen] = React.useState(false);
-  const [transferDraft, setTransferDraft] = React.useState({ kiosk: "", item: "", qty: "" });
+  const [transferDraft, setTransferDraft] = React.useState({ kiosk: "", lines: [newTransferLine()] });
   React.useEffect(() => {
-    setDraftTransfers([]);
+    const engineTransferIds = new Set(odooTransferRows(bootstrap).map((transfer) => transfer.id));
+    setDraftTransfers((rows) => rows.filter((transfer) => !engineTransferIds.has(transfer.id)));
     setTransferStatusOverrides({});
     setPurchaseDrafts([]);
   }, [bootstrap]);
   React.useEffect(() => {
-    if (!liveOnly) return;
+    if (!sourceDriven) return;
     setPoDraft((draft) => draft.supplier ? { ...draft, supplier: "" } : draft);
-  }, [liveOnly]);
+  }, [sourceDriven]);
+  React.useEffect(() => {
+    setPoDraft((draft) => draft.warehouse === centralWarehouseName ? draft : { ...draft, warehouse: centralWarehouseName });
+  }, [centralWarehouseName]);
   const transfers = [...draftTransfers, ...baseTransfers].map((transfer) => ({
     ...transfer,
     status: transferStatusOverrides[transfer.id] || transfer.status,
@@ -6551,14 +11918,15 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const suggestions = odooTransferSuggestionRows(bootstrap);
   const kioskRows = odooKioskRows(bootstrap);
   const supplierOptions = Array.from(new Set([
-    ...(liveOnly ? [] : MOCK.suppliers.map((supplier) => supplier.name)),
+    ...(sourceDriven ? [] : MOCK.suppliers.map((supplier) => supplier.name)),
     poDraft.supplier,
   ].filter(Boolean)));
   React.useEffect(() => {
     setTransferDraft((draft) => ({
       kiosk: draft.kiosk || kioskRows[0]?.id || "",
-      item: draft.item || inv[0]?.item || "",
-      qty: draft.qty || "",
+      lines: draft.lines?.some((line) => line.item)
+        ? draft.lines
+        : [newTransferLine(inv[0]?.item || "", "", inv[0]?.unit || "")],
     }));
   }, [bootstrap]);
   const categoryOptions = React.useMemo(() => (
@@ -6571,6 +11939,9 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         .map(([key, label]) => ({ key, label })),
     ]
   ), [inv]);
+  const transferItemOptions = React.useMemo(() => (
+    Array.from(new Map(inv.map((item) => [item.item, item])).values())
+  ), [inv]);
   React.useEffect(() => {
     if (!categoryOptions.includes(categoryFilter)) setCategoryFilter("all");
   }, [categoryFilter, categoryOptions]);
@@ -6581,11 +11952,39 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     (categoryFilter === "all" || row.category === categoryFilter) &&
     (locationFilter === "all" || row.locationKey === locationFilter)
   )), [inv, categoryFilter, locationFilter]);
-  const filteredLowCount = filteredInv.filter((item) => item.status !== "ok").length;
-  const filteredStockValue = Math.round(filteredInv.reduce((sum, item) => sum + (Number(item.stock || 0) * estimatePurchaseRate(item.item)), 0));
-  const filteredAvgDays = filteredInv.length
-    ? (filteredInv.reduce((sum, item) => sum + Number(item.days || 0), 0) / filteredInv.length).toFixed(1)
-    : "0.0";
+  const filteredLowCount = filteredInv.filter(isInventoryActionable).length;
+  const valueRateFor = (item) => sourceDriven ? Number(item.unitCost || 0) : purchaseRateForInventory(item, true);
+  const filteredStockValue = Math.round(filteredInv.reduce((sum, item) => sum + (Number(item.stock || 0) * valueRateFor(item)), 0));
+  const dayValues = filteredInv
+    .map((item) => Number(item.days))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const filteredAvgDays = dayValues.length
+    ? (dayValues.reduce((sum, value) => sum + value, 0) / dayValues.length).toFixed(1)
+    : "-";
+  const unitForTransferItem = React.useCallback((itemName) => (
+    transferItemOptions.find((item) => item.item === itemName)?.unit || ""
+  ), [transferItemOptions]);
+  const updateTransferLine = React.useCallback((index, patch) => {
+    setTransferDraft((draft) => {
+      const lines = draft.lines?.length ? [...draft.lines] : [newTransferLine()];
+      const current = lines[index] || newTransferLine();
+      const next = { ...current, ...patch };
+      if (patch.item && !patch.unit) {
+        next.unit = unitForTransferItem(patch.item);
+      }
+      lines[index] = next;
+      return { ...draft, lines };
+    });
+  }, [unitForTransferItem]);
+  const addTransferLine = React.useCallback(() => {
+    setTransferDraft((draft) => ({ ...draft, lines: [...(draft.lines || []), newTransferLine(transferItemOptions[0]?.item || "", "", transferItemOptions[0]?.unit || "")] }));
+  }, [transferItemOptions]);
+  const removeTransferLine = React.useCallback((index) => {
+    setTransferDraft((draft) => {
+      const lines = (draft.lines || []).filter((_, lineIndex) => lineIndex !== index);
+      return { ...draft, lines: lines.length ? lines : [newTransferLine(transferItemOptions[0]?.item || "", "", transferItemOptions[0]?.unit || "")] };
+    });
+  }, [transferItemOptions]);
 
   const exportInventory = () => {
     const rows = [
@@ -6604,39 +12003,39 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       link.remove();
       URL.revokeObjectURL(href);
     }
-    showToast(ar ? "Inventory exported" : `Inventory exported as ${filename}`, "success");
+    showToast(ar ? `تم تصدير المخزون باسم ${filename}` : `Inventory exported as ${filename}`, "success");
   };
 
   const openPoModal = (lines, supplier = "") => {
     const cleanLines = (lines || []).filter((line) => line.item).map((line) => ({
       item: line.item,
-      qty: line.qty || 1,
+      qty: Number(line.qty || 0) > 0 ? line.qty : (sourceDriven ? "" : 1),
       unit: line.unit || "",
-      rate: line.rate || estimatePurchaseRate(line.item),
+      rate: Number(line.rate || 0) > 0 ? line.rate : purchaseRateForInventory(line, !sourceDriven),
     }));
-    const firstInventoryItem = inv.find((row) => row.status !== "ok") || inv[0];
+    const firstInventoryItem = inv.find(isInventoryActionable) || inv[0];
     setPoDraft({
-      supplier: supplier || firstInventoryItem?.supplier || (liveOnly ? "" : MOCK.suppliers[0]?.name || ""),
-      warehouse: DEFAULT_WAREHOUSE_NAME,
+      supplier: supplier || firstInventoryItem?.supplier || (sourceDriven ? "" : MOCK.suppliers[0]?.name || ""),
+      warehouse: centralWarehouseName,
       scheduleDate: tomorrowIsoDate(),
-      lines: cleanLines.length ? cleanLines : (firstInventoryItem ? [purchaseLineFromInventory(firstInventoryItem)] : []),
+      lines: cleanLines.length ? cleanLines : (firstInventoryItem ? [purchaseLineFromInventory(firstInventoryItem, !sourceDriven)] : []),
     });
     setPoModalOpen(true);
   };
 
-  const openReorderPo = (item = inv.find((row) => row.status !== "ok") || inv[0]) => {
+  const openReorderPo = (item = inv.find(isInventoryActionable) || inv[0]) => {
     if (!item) return;
-    openPoModal([purchaseLineFromInventory(item)], item.supplier || "");
+    openPoModal([purchaseLineFromInventory(item, !sourceDriven)], item.supplier || "");
   };
 
   const openSuggestedPo = () => {
-    const lowItems = inv.filter((row) => row.status !== "ok").slice(0, 4);
+    const lowItems = inv.filter(isInventoryActionable).slice(0, 4);
     if (!lowItems.length) {
-      showToast(ar ? "No reorder items" : "No reorder items", "info");
+      showToast(ar ? "لا توجد بنود لإعادة الطلب" : "No reorder items", "info");
       return;
     }
-    openPoModal(lowItems.map(purchaseLineFromInventory), lowItems[0]?.supplier || "");
-    showToast(ar ? "Review suggested PO before creating" : "Review suggested PO before creating", "info");
+    openPoModal(lowItems.map((item) => purchaseLineFromInventory(item, !sourceDriven)), lowItems[0]?.supplier || "");
+    showToast(ar ? "راجع طلب الشراء المقترح قبل الإنشاء" : "Review suggested PO before creating", "info");
   };
 
   const updatePoLine = (index, patch) => {
@@ -6649,7 +12048,7 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const addPoLine = () => {
     const item = inv[0];
     if (!item) return;
-    setPoDraft((draft) => ({ ...draft, lines: [...draft.lines, purchaseLineFromInventory(item)] }));
+    setPoDraft((draft) => ({ ...draft, lines: [...draft.lines, purchaseLineFromInventory(item, !sourceDriven)] }));
   };
 
   const removePoLine = (index) => {
@@ -6666,7 +12065,11 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         rate: Number(line.rate || 0),
       }));
     if (!poDraft.supplier || !lines.length || lines.some((line) => line.rate <= 0)) {
-      showToast(ar ? "PO needs supplier, item lines, quantities, and rates" : "PO needs supplier, item lines, quantities, and rates", "warn");
+      showToast(ar ? "طلب الشراء يحتاج مورداً وبنوداً وكميات وأسعاراً" : "PO needs supplier, item lines, quantities, and rates", "warn");
+      return;
+    }
+    if (sourceDriven && !sourceOfTruth?.enabled) {
+      showToast("Connect the source engine before creating source purchase orders", "warn");
       return;
     }
     setPoBusy(true);
@@ -6690,9 +12093,11 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         value: purchaseTotal(lines),
         status: created?.state || "created",
       };
-      setPurchaseDrafts((rows) => [draft, ...rows]);
+      if (!created?.simulation) {
+        setPurchaseDrafts((rows) => [draft, ...rows]);
+      }
       setPoModalOpen(false);
-      showToast(ar ? "Purchase order created" : `${sourceOfTruth?.enabled ? "Odoo PO" : "Demo PO"} created - ${draft.items}`, "success");
+      showToast(ar ? "تم إنشاء طلب الشراء" : `${sourceOfTruth?.enabled ? "Engine PO" : "Demo PO"} created - ${draft.items}`, "success");
     } catch (error) {
       showToast(error?.message || "Could not create purchase order", "warn");
     } finally {
@@ -6703,11 +12108,11 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const submitStockItem = async (event) => {
     event.preventDefault();
     if (!itemDraft.name.trim()) {
-      showToast(ar ? "Stock item needs a name" : "Stock item needs a name", "warn");
+      showToast(ar ? "بند المخزون يحتاج اسماً" : "Stock item needs a name", "warn");
       return;
     }
     if (!sourceOfTruth?.enabled) {
-      showToast(ar ? "Connect live backend first" : "Connect live backend first to create real stock items", "warn");
+      showToast(ar ? "اربط الخلفية المباشرة أولاً" : "Connect live backend first to create real stock items", "warn");
       return;
     }
     setItemBusy(true);
@@ -6722,6 +12127,9 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         purchasePrice: Number(itemDraft.purchasePrice || itemDraft.unitCost || 0),
         consumptionMode: itemDraft.consumptionMode,
         availableInPos: false,
+        targetQty: Number(itemDraft.targetQty || 0),
+        reorderQty: Number(itemDraft.reorderQty || 0),
+        criticalQty: Number(itemDraft.criticalQty || 0),
       }));
       await refreshOdoo?.();
       setItemModalOpen(false);
@@ -6734,8 +12142,11 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         unitCost: "",
         purchasePrice: "",
         consumptionMode: "finished",
+        targetQty: "",
+        reorderQty: "",
+        criticalQty: "",
       });
-      showToast(ar ? "Stock item created" : `Stock item created - ${created?.product?.default_code || created?.product?.name || itemDraft.name}`, "success");
+      showToast(ar ? "تم إنشاء بند المخزون" : `Stock item created - ${created?.product?.default_code || created?.product?.name || itemDraft.name}`, "success");
     } catch (error) {
       showToast(error?.message || "Could not create stock item", "warn");
     } finally {
@@ -6745,9 +12156,13 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
 
   const createManualTransfer = async (event) => {
     event.preventDefault();
-    const qty = Number(transferDraft.qty || 0);
-    if (!transferDraft.kiosk || !transferDraft.item || qty <= 0) {
-      showToast(ar ? "Transfer needs kiosk, item, and quantity" : "Transfer needs kiosk, item, and quantity", "warn");
+    const lines = cleanTransferLines(transferDraft.lines);
+    if (!transferDraft.kiosk || !lines.length) {
+      showToast(ar ? "التحويل يحتاج كشكاً وبنوداً وكميات" : "Transfer needs a kiosk and at least one item line", "warn");
+      return;
+    }
+    if (sourceDriven && !sourceOfTruth?.enabled) {
+      showToast("Connect the source engine before creating source stock transfers", "warn");
       return;
     }
     setBusyTransfer("manual");
@@ -6756,56 +12171,97 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       if (sourceOfTruth?.enabled) {
         created = await sourceOfTruth.submitStockTransfer({
           kioskId: transferDraft.kiosk,
-          itemId: transferDraft.item,
-          qty,
-          fromWarehouse: DEFAULT_WAREHOUSE_NAME,
+          items: lines.map((line) => ({ itemId: line.item, qty: line.qty, uom: line.unit })),
+          fromWarehouse: centralWarehouseName,
         });
         await refreshOdoo?.();
       }
       const kioskName = kioskRows.find((row) => row.id === transferDraft.kiosk || row.kiosk_code === transferDraft.kiosk)?.name || transferDraft.kiosk;
-      const draftId = created?.name || `DRAFT-${transferDraft.kiosk}-${slugify(transferDraft.item)}-${Date.now()}`;
-      setDraftTransfers((rows) => [
-        {
-          id: draftId,
-          from: "Main Warehouse",
-          to: kioskName,
-          items: `${transferDraft.item} ${qty}`,
-          eta: created?.state ? "engine" : "draft",
-          status: created?.state || "draft",
-        },
-        ...rows,
-      ]);
+      const draftStatus = created?.bayaan_state || created?.state || "draft";
+      const baseDraftId = `DRAFT-${transferDraft.kiosk}-${slugify(lines[0]?.item || "transfer")}`;
+      const matchingDraftCount = draftTransfers.filter((row) => String(row.id || "").startsWith(baseDraftId)).length;
+      const draftId = created?.name || (matchingDraftCount ? `${baseDraftId}-${matchingDraftCount + 1}` : baseDraftId);
+      if (!created?.simulation) {
+        setDraftTransfers((rows) => [
+          {
+            id: draftId,
+            from: centralWarehouseName,
+            to: kioskName,
+            items: purchaseLineSummary(lines),
+            lines: lines.map((line) => ({ product: line.item, qty: line.qty, uom: line.unit })),
+            eta: draftStatus,
+            status: draftStatus,
+          },
+          ...rows,
+        ]);
+      }
       setTransferModalOpen(false);
-      setTransferDraft((draft) => ({ ...draft, qty: "" }));
-      showToast(ar ? "Transfer drafted" : `Draft transfer prepared - ${transferDraft.item} to ${kioskName}`, "success");
+      setTransferDraft((draft) => ({ ...draft, lines: [newTransferLine(draft.lines?.[0]?.item || transferItemOptions[0]?.item || "", "", draft.lines?.[0]?.unit || transferItemOptions[0]?.unit || "")] }));
+      showToast(ar ? "تم إعداد مسودة التحويل" : `Draft transfer prepared - ${lines.length} item(s) to ${kioskName}`, "success");
     } catch (error) {
       showToast(error?.message || "Could not create transfer", "warn");
     } finally {
       setBusyTransfer("");
     }
   };
-  const createSuggestedTransfer = (suggestion) => {
+  const suggestionKioskId = (suggestion) => suggestion.kioskId || transferKioskId(suggestion.kiosk);
+  const suggestionTransferLine = (suggestion) => newTransferLine(
+    suggestion.itemId || suggestion.item,
+    suggestion.qtyValue || transferQtyValue(suggestion.qty),
+    suggestion.uom || transferQtyUnit(suggestion.qty),
+  );
+  const suggestedTransferLinesForKiosk = (kiosk) => suggestions
+    .filter((suggestion) => suggestionKioskId(suggestion) === kiosk)
+    .map(suggestionTransferLine);
+  const defaultTransferLine = (item = transferItemOptions[0]) => newTransferLine(item?.item || "", item ? 1 : "", item?.unit || "");
+  const openManualTransferModal = () => {
+    const targetKiosk = suggestionKioskId(suggestions[0] || {}) || transferDraft.kiosk || kioskRows[0]?.id || "";
+    const lines = suggestedTransferLinesForKiosk(targetKiosk);
     setTransferDraft({
-      kiosk: suggestion.kioskId || transferKioskId(suggestion.kiosk),
-      item: suggestion.itemId || suggestion.item,
-      qty: suggestion.qtyValue || transferQtyValue(suggestion.qty),
+      kiosk: targetKiosk,
+      lines: lines.length ? lines : [defaultTransferLine()],
     });
     setTransferModalOpen(true);
-    showToast(ar ? "Review suggested transfer before creating" : "Review suggested transfer before creating", "info");
+  };
+  const createSuggestedTransfer = (suggestion) => {
+    const targetKiosk = suggestionKioskId(suggestion);
+    const lines = suggestedTransferLinesForKiosk(targetKiosk);
+    setTransferDraft({
+      kiosk: targetKiosk,
+      lines: lines.length ? lines : [suggestionTransferLine(suggestion)],
+    });
+    setTransferModalOpen(true);
+    showToast(ar ? "راجع التحويل المقترح قبل الإنشاء" : "Review suggested transfer before creating", "info");
   };
 
   const openTransferForItem = (item) => {
     const target = suggestions.find((suggestion) => matchesItem(suggestion.itemId || suggestion.item, item.item));
+    const targetKiosk = suggestionKioskId(target || {}) || kioskRows[0]?.id || "";
+    const suggestedLines = suggestedTransferLinesForKiosk(targetKiosk);
+    const lines = suggestedLines.length
+      ? suggestedLines
+      : [newTransferLine(item.item, Math.max(Number(item.reorder || 0) - Number(item.stock || 0), 0) || "", item.unit || "")];
     setTransferDraft({
-      kiosk: target?.kioskId || transferKioskId(target?.kiosk) || kioskRows[0]?.id || "",
-      item: item.item,
-      qty: target?.qtyValue || Math.max(Number(item.reorder || 0) - Number(item.stock || 0), 1),
+      kiosk: targetKiosk,
+      lines,
     });
     setTransferModalOpen(true);
+  };
+  const fillNeededTransferLines = () => {
+    const lines = suggestedTransferLinesForKiosk(transferDraft.kiosk);
+    if (!lines.length) {
+      showToast(ar ? "لا توجد بنود مقترحة لهذا الكشك" : "No suggested items for this kiosk", "info");
+      return;
+    }
+    setTransferDraft((draft) => ({ ...draft, lines }));
   };
 
   const advanceTransferStatus = async (transfer, action) => {
     const nextStatus = action?.next || action;
+    if (sourceDriven && !sourceOfTruth?.enabled) {
+      showToast("Connect the source engine before updating source stock transfers", "warn");
+      return;
+    }
     if (sourceOfTruth?.enabled) {
       setTransferActionBusy(transfer.id);
       try {
@@ -6816,9 +12272,18 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         await refreshOdoo?.();
         const displayStatus = result?.bayaan_state || nextStatus || result?.state;
         setTransferStatusOverrides((rows) => ({ ...rows, [transfer.id]: displayStatus }));
-        showToast(`Odoo transfer ${transfer.id} moved to ${displayStatus}`, "success");
+        setDraftTransfers((rows) => rows.map((row) => (row.id === transfer.id
+          ? {
+              ...row,
+              status: displayStatus,
+              eta: ["approved", "picked", "dispatched", "received", "cancelled"].includes(String(displayStatus || "").toLowerCase())
+                ? displayStatus
+                : row.eta,
+            }
+          : row)));
+        showToast(`Engine transfer ${transfer.id} moved to ${displayStatus}`, "success");
       } catch (error) {
-        showToast(error?.message || "Could not update transfer in Odoo", "warn");
+        showToast(error?.message || "Could not update transfer in the source engine", "warn");
       } finally {
         setTransferActionBusy("");
       }
@@ -6826,154 +12291,34 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     }
     setTransferStatusOverrides((rows) => ({ ...rows, [transfer.id]: nextStatus }));
     setDraftTransfers((rows) => rows.map((row) => (row.id === transfer.id ? { ...row, status: nextStatus, eta: nextStatus === "received" ? "received" : row.eta } : row)));
-    showToast(ar ? "Transfer status updated" : `Transfer ${transfer.id} moved to ${nextStatus}`, "success");
+    showToast(ar ? "تم تحديث حالة التحويل" : `Transfer ${transfer.id} moved to ${nextStatus}`, "success");
   };
   return (
-    <div className="col" style={{ gap: 14, height: "calc(100vh - 204px)", minHeight: 560 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14, order: 2, flex: "1 1 auto", minHeight: 0, alignItems: "stretch" }}>
-        <div className="card" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <div className="between" style={{ padding: "14px 18px" }}>
-            <div>
-              <div className="t-h2">{ar ? "تحويلات قيد التنفيذ" : "Warehouse transfers"}</div>
-              <div className="t-small subtle">{ar ? "من المستودع إلى موقع مخزون الكشك" : "Admin creates, warehouse dispatches, kiosk receives"}</div>
-            </div>
-            <button className="btn btn-ghost" onClick={() => setTransferModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
-              <Icon name="truck" size={12}/>{ar ? "تحويل جديد" : "New transfer"}
-            </button>
-          </div>
-          <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-            <table className="tbl">
-              <tbody>
-                {transfers.map((transfer) => (
-                  <tr key={transfer.id}>
-                    <td>
-                      <div style={{ fontWeight: 500 }}>{transfer.to}</div>
-                      <div className="t-small faint">{transfer.from} - {transfer.id}</div>
-                    </td>
-                    <td className="muted">{transfer.items}</td>
-                    <td className="t-num muted">{transfer.eta}</td>
-                    <td style={{ textAlign: "end" }}>
-                      <span className={`badge ${transferStatusClass(transfer.status)}`}>{transfer.status}</span>
-                      {isDispatchedTransfer(transfer.status) && (
-                        <span className="t-small subtle" style={{ marginInlineStart: 6 }}>waiting kiosk</span>
-                      )}
-                      {nextTransferAction(transfer.status) && (
-                        <button className="btn btn-ghost" onClick={() => advanceTransferStatus(transfer, nextTransferAction(transfer.status))}
-                          disabled={transferActionBusy === transfer.id}
-                          style={{ height: 24, fontSize: 11, marginInlineStart: 6 }}>
-                          {transferActionBusy === transfer.id ? "Working" : nextTransferAction(transfer.status).label}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="card" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <div className="between" style={{ padding: "14px 18px" }}>
-            <div>
-              <div className="t-h2">{ar ? "احتياجات الأكشاك" : "Kiosk live stock needs"}</div>
-              <div className="t-small subtle">{ar ? "محسوبة من المبيعات والاستهلاك والحد الأدنى" : "Use this list to create warehouse-to-kiosk transfers"}</div>
-            </div>
-            <span className="badge badge-ai">AI reads verified data</span>
-          </div>
-          <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-            <table className="tbl">
-              <tbody>
-                {suggestions.map((s) => (
-                  <tr key={`${s.kiosk}-${s.item}`}>
-                    <td>
-                      <div style={{ fontWeight: 500 }}>{s.item}</div>
-                      <div className="t-small faint">{s.kiosk}</div>
-                    </td>
-                    <td className="t-num" style={{ textAlign: "end" }}>{s.qty}</td>
-                    <td className="muted">{s.cover}</td>
-                    <td className="muted">{s.reason}</td>
-                    <td style={{ textAlign: "end" }}>
-                      <button className="btn btn-ghost" onClick={() => createSuggestedTransfer(s)}
-                        disabled={busyTransfer === `${s.kiosk}-${s.item}`}
-                        style={{ height: 24, fontSize: 11 }}>
-                        <Icon name="truck" size={11}/>
-                        {busyTransfer === `${s.kiosk}-${s.item}` ? (ar ? "جارٍ التجهيز" : "Drafting") : (ar ? "إنشاء تحويل" : "Create transfer")}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <div className="card" style={{ order: 1, flex: "0 0 240px", minHeight: 0, display: "flex", flexDirection: "column" }}>
-        <div className="between" style={{ padding: "14px 18px" }}>
-          <div className="row" style={{ gap: 8 }}>
-            <select className="input" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 160 }}>
-              {categoryOptions.map((category) => <option key={category} value={category}>{category === "all" ? (ar ? "كل الفئات" : "All categories") : category}</option>)}
-            </select>
-            <select className="input" value={locationFilter} onChange={(event) => setLocationFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 160 }}>
-              {locationOptions.map((location) => <option key={location.key} value={location.key}>{location.key === "all" ? (ar ? "كل المواقع" : "All locations") : location.label}</option>)}
-            </select>
-          </div>
-          <div className="row" style={{ gap: 6 }}>
-            <button className="btn btn-ghost" onClick={exportInventory} style={{ height: 28, fontSize: 12 }}><Icon name="download" size={12}/>{ar ? "تصدير" : "Export"}</button>
-          </div>
-        </div>
-        <div className="scroll" style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">{ar ? "البند" : "Item"}</th>
-                <th scope="col">{ar ? "الفئة" : "Category"}</th>
-                <th scope="col">{ar ? "الموقع" : "Location"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "المخزون" : "Stock"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "نقطة الطلب" : "Reorder at"}</th>
-                <th scope="col" style={{ width: 140 }}>{ar ? "أيام التغطية" : "Days of cover"}</th>
-                <th scope="col">{ar ? "المورد" : "Supplier"}</th>
-                <th scope="col" style={{ textAlign: "end" }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredInv.map((it, i) => {
-                const pct = Math.min(it.days / 14, 1);
-                const tone = it.status === "crit" ? "crit" : it.status === "low" ? "warn" : "ok";
-                return (
-                  <tr key={i}>
-                    <td><span style={{ fontWeight: 500 }}>{it.item}</span></td>
-                    <td className="muted">{it.category}</td>
-                    <td className="muted">{it.location}</td>
-                    <td style={{ textAlign: "end" }} className="t-num">{it.stock} <span className="faint">{it.unit}</span></td>
-                    <td style={{ textAlign: "end" }} className="t-num muted">{it.reorder}</td>
-                    <td>
-                      <div className="row" style={{ gap: 8 }}>
-                        <div style={{ flex: 1, height: 6, background: "var(--surface-sunk)", borderRadius: 3 }}>
-                          <div style={{ height: "100%", width: `${pct*100}%`,
-                            background: tone === "crit" ? "var(--crit)" : tone === "warn" ? "var(--warn)" : "var(--ink-1)",
-                            borderRadius: 3 }}/>
-                        </div>
-                        <span className={"t-num " + (tone === "crit" ? "delta-neg" : tone === "warn" ? "" : "muted")}
-                          style={{ fontSize: 12, minWidth: 36, textAlign: "end", color: tone === "warn" ? "var(--warn)" : undefined }}>
-                          {it.days}d
-                        </span>
-                      </div>
-                    </td>
-                    <td className="muted">{it.supplier}</td>
-                    <td style={{ textAlign: "end" }}>
-                      {tone !== "ok"
-                        ? <button className="btn btn-ghost" onClick={() => openTransferForItem(it)} style={{ height: 24, fontSize: 11 }}>{ar ? "حوّل" : "Allocate"}</button>
-                        : <Icon name="dots" size={14} style={{ color: "var(--ink-3)" }}/>
-                      }
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+    <div className="col" style={{ gap: 14, minHeight: 860 }}>
+      <StudioInventoryWorkspace
+        ar={ar}
+        busyTransfer={busyTransfer}
+        categoryFilter={categoryFilter}
+        categoryOptions={categoryOptions}
+        filteredAvgDays={filteredAvgDays}
+        filteredInv={filteredInv}
+        filteredLowCount={filteredLowCount}
+        filteredStockValue={filteredStockValue}
+        getNextTransferAction={nextTransferAction}
+        isDispatchedTransfer={isDispatchedTransfer}
+        locationFilter={locationFilter}
+        locationOptions={locationOptions}
+        onAdvanceTransferStatus={advanceTransferStatus}
+        onCategoryChange={setCategoryFilter}
+        onCreateSuggestedTransfer={createSuggestedTransfer}
+        onExportInventory={exportInventory}
+        onLocationChange={setLocationFilter}
+        onOpenTransferForItem={openTransferForItem}
+        onOpenTransferModal={openManualTransferModal}
+        suggestions={suggestions}
+        transferActionBusy={transferActionBusy}
+        transfers={transfers}
+      />
 
       <Modal open={itemModalOpen} onClose={() => setItemModalOpen(false)}
         title={ar ? "بند مخزون جديد" : "New stock item"}
@@ -7001,32 +12346,51 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
               <option value="none">No stock consumption</option>
             </select>
           </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            <input className="input" type="number" min="0" step="0.01" value={itemDraft.targetQty} onChange={(event) => setItemDraft((draft) => ({ ...draft, targetQty: event.target.value }))} placeholder="100% target qty"/>
+            <input className="input" type="number" min="0" step="0.01" value={itemDraft.reorderQty} onChange={(event) => setItemDraft((draft) => ({ ...draft, reorderQty: event.target.value }))} placeholder="Reorder qty"/>
+            <input className="input" type="number" min="0" step="0.01" value={itemDraft.criticalQty} onChange={(event) => setItemDraft((draft) => ({ ...draft, criticalQty: event.target.value }))} placeholder="Critical qty"/>
+          </div>
           <div className="t-small subtle">For supplier ingredients, use Stock item. Sellable juices/coffee get their recipe on Products & Recipes after the ingredient exists.</div>
           <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setItemModalOpen(false)}>Cancel</button>
-            <button className="btn btn-primary" disabled={itemBusy || !itemDraft.name.trim()}>{itemBusy ? "Creating" : "Create item"}</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setItemModalOpen(false)}>{ui(ar, "cancel")}</button>
+            <button className="btn btn-primary" disabled={itemBusy || !itemDraft.name.trim()}>{itemBusy ? (ar ? "جار الإنشاء" : "Creating") : (ar ? "إنشاء البند" : "Create item")}</button>
           </div>
         </form>
       </Modal>
 
       <Modal open={transferModalOpen} onClose={() => setTransferModalOpen(false)}
-        title={ar ? "New stock transfer" : "New stock transfer"}
-        sub={ar ? "Warehouse to kiosk stock location" : "Warehouse to kiosk stock location"}>
+        title={ar ? "تحويل مخزون جديد" : "New stock transfer"}
+        sub={ar ? "من المستودع إلى موقع مخزون الكشك" : "Warehouse to kiosk stock location"}>
         <form onSubmit={createManualTransfer} className="col" style={{ gap: 10 }}>
-          <input className="input" value={DEFAULT_WAREHOUSE_NAME} readOnly aria-label="From warehouse"/>
+          <input className="input" value={centralWarehouseName} readOnly aria-label="From warehouse"/>
           <select className="input" value={transferDraft.kiosk} onChange={(event) => setTransferDraft((draft) => ({ ...draft, kiosk: event.target.value }))}>
             {kioskRows.map((kiosk) => (
               <option key={kiosk.id || kiosk.kiosk_code} value={kiosk.id || kiosk.kiosk_code}>{kiosk.id || kiosk.kiosk_code} - {kiosk.name}</option>
             ))}
           </select>
-          <select className="input" value={transferDraft.item} onChange={(event) => setTransferDraft((draft) => ({ ...draft, item: event.target.value }))}>
-            {inv.map((item) => <option key={item.item} value={item.item}>{item.item}</option>)}
-          </select>
-          <input className="input" value={transferDraft.qty} onChange={(event) => setTransferDraft((draft) => ({ ...draft, qty: event.target.value }))} placeholder="Quantity" inputMode="decimal"/>
+          <div className="between" style={{ gap: 8, alignItems: "center" }}>
+            <div className="t-small subtle">{ar ? "بنود التحويل" : "Transfer lines"}</div>
+            <div className="row" style={{ gap: 6 }}>
+              <button type="button" className="btn btn-ghost" style={{ height: 28, fontSize: 12 }} onClick={fillNeededTransferLines}>{ar ? "ملء الاحتياج" : "Fill needed"}</button>
+              <button type="button" className="btn btn-ghost" style={{ height: 28, fontSize: 12 }} onClick={addTransferLine}>{ar ? "إضافة بند" : "Add line"}</button>
+            </div>
+          </div>
+          <div className="col" style={{ gap: 8 }}>
+            {(transferDraft.lines || []).map((line, index) => (
+              <div key={`${line.item || "line"}-${index}`} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.5fr) minmax(86px, 0.7fr) 34px", gap: 8 }}>
+                <select className="input" value={line.item} onChange={(event) => updateTransferLine(index, { item: event.target.value })}>
+                  {transferItemOptions.map((item) => <option key={item.item} value={item.item}>{item.item}</option>)}
+                </select>
+                <input className="input" value={line.qty} onChange={(event) => updateTransferLine(index, { qty: event.target.value })} placeholder={ar ? "الكمية" : "Qty"} inputMode="decimal"/>
+                <button type="button" className="btn btn-ghost" style={{ height: 34, padding: 0 }} onClick={() => removeTransferLine(index)} aria-label="Remove transfer line">x</button>
+              </div>
+            ))}
+          </div>
           <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setTransferModalOpen(false)}>Cancel</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setTransferModalOpen(false)}>{ui(ar, "cancel")}</button>
             <button type="submit" className="btn btn-primary" disabled={busyTransfer === "manual"}>
-              {busyTransfer === "manual" ? "Drafting..." : "Create transfer"}
+              {busyTransfer === "manual" ? (ar ? "جار إعداد المسودة..." : "Drafting...") : (ar ? "إنشاء التحويل" : "Create transfer")}
             </button>
           </div>
         </form>
@@ -7038,99 +12402,41 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
 // =============== WASTE ===============
 function WasteScreen({ lang, bootstrap }) {
   const ar = lang === "ar";
+  const sourceDriven = isSourceDrivenPayload(bootstrap);
   const wasteRows = odooWasteRows(bootstrap);
   const lossToday = wasteRows.reduce((sum, row) => sum + row.cost, 0);
   const flaggedCount = wasteRows.filter((row) => row.flagged).length;
+  const dailyMetrics = odooReportMetrics(bootstrap, "Daily");
+  const weeklyMetrics = odooReportMetrics(bootstrap, "Weekly");
+  const wasteReasons = wasteReasonRowsFor(wasteRows);
+  const revenuePct = dailyMetrics.revenue ? `${((lossToday / dailyMetrics.revenue) * 100).toFixed(2)}%` : "0.00%";
+  const pattern = topWastePattern(wasteRows, wasteReasons, sourceDriven);
   return (
     <div className="col" style={{ gap: 14 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        <KPI label={ar ? "خسارة اليوم" : "Loss today"} value={fmtMoney(lossToday)} delta="32%" deltaDir="down" sparkData={[58,42,38,52,46,32,30]}/>
-        <KPI label={ar ? "خسارة ٧ أيام" : "Loss 7-day"} value={fmtMoney(2410)} delta="vs target 2,800" deltaDir="up"/>
-        <KPI label={ar ? "% من الإيرادات" : "% of revenue"} value="0.42%" delta="0.06 pts" deltaDir="up"/>
-        <KPI label={ar ? "حالات شاذة" : "Anomalies flagged"} value={String(flaggedCount)} footer={ar ? "بواسطة الذكاء" : "by AI"}/>
+        <KPI label={ar ? "خسارة اليوم" : "Loss today"} value={fmtMoney(lossToday)} delta={`${wasteRows.length} rows`} deltaDir="flat"/>
+        <KPI label={ar ? "خسارة ٧ أيام" : "Loss 7-day"} value={fmtMoney(weeklyMetrics.waste)} delta={`${weeklyMetrics.sourceCounts?.wasteRows || 0} rows`} deltaDir="flat"/>
+        <KPI label={ar ? "% من الإيرادات" : "% of revenue"} value={revenuePct} delta={dailyMetrics.revenue ? "verified" : "no revenue"} deltaDir="flat"/>
+        <KPI label={ar ? "حالات شاذة" : "Anomalies flagged"} value={String(flaggedCount)} footer={sourceDriven ? "source rules" : "demo rules"}/>
       </div>
 
-      <div className="card">
-        <div className="between" style={{ padding: "14px 18px" }}>
-          <div>
-            <div className="t-h2">{ar ? "أسباب الهدر" : "Waste reason control"}</div>
-            <div className="t-small subtle">{ar ? "تتحول إلى تحقيق عند ظهور فرق في الإغلاق" : "Turns into investigation when close variance appears"}</div>
-          </div>
-          <span className="badge badge-ai">variance inputs</span>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(120px, 1fr))", gap: 0, borderTop: "1px solid var(--line-soft)" }}>
-          {[
-            ["Spoiled fruit", 126_000, "Produce"],
-            ["Broken packaging", 18_200, "Packaging"],
-            ["Wrong orders", 42_600, "POS"],
-            ["Free samples", 28_000, "Marketing"],
-            ["Staff meals", 64_000, "Staff"],
-            ["Missing stock", 209_000, "Investigation"],
-            ["Unknown loss", 98_000, "Close variance"],
-          ].map(([reason, value, category], index) => (
-            <div key={reason} style={{ padding: 12, borderInlineEnd: index < 6 ? "1px solid var(--line-soft)" : 0 }}>
-              <div className="t-small" style={{ fontWeight: 500 }}>{reason}</div>
-              <div className="t-num" style={{ marginTop: 8, color: reason === "Missing stock" || reason === "Unknown loss" ? "var(--crit)" : "var(--ink)" }}>{fmtMoney(value)}</div>
-              <div className="t-small faint" style={{ marginTop: 2 }}>{category}</div>
-            </div>
-          ))}
-        </div>
-      </div>
+      <StudioWasteReasonControl ar={ar} reasons={wasteReasons} />
 
       <div className="card card-pad">
         <div className="row" style={{ marginBottom: 8 }}>
-          <AITag>{ar ? "نمط ملاحظ" : "Pattern detected"}</AITag>
+          <AITag>{sourceDriven ? (ar ? "مصدر متحقق" : "Verified source") : (ar ? "عرض تجريبي" : "Demo pattern")}</AITag>
         </div>
         <div className="ai-block">
           <div style={{ fontSize: 14, fontWeight: 500 }}>
-            {ar ? "الكرواسون يشكل ٤٢٪ من قيمة الهدر هذا الأسبوع" : "Croissants account for 42% of waste value this week"}
+            {pattern.title}
           </div>
           <div className="t-small muted" style={{ marginTop: 4, lineHeight: 1.55 }}>
-            {ar ? "كشكان (المنصور، البصرة تايمز) ينتجان أكثر من الطلب بنسبة ٣٥٪ في فترات ما بعد الظهر. خفض الإنتاج المسائي بـ ٢٥٪ يوفر ~٨٤٬٠٠٠ د.ع يومياً دون تأثير على المبيعات."
-                : "Two kiosks (Mansour, Basra Times) over-bake by 35% in afternoon windows. Trimming evening bake by 25% saves ~IQD 84,000/day with no measured sales impact."}
+            {pattern.body}
           </div>
         </div>
       </div>
 
-      <div className="card">
-        <div className="between" style={{ padding: "14px 18px" }}>
-          <div className="t-h2">{ar ? "إدخالات الهدر — اليوم" : "Waste entries — today"}</div>
-          <div className="row" style={{ gap: 6 }}>
-            <button className="btn btn-ghost" style={{ height: 28, fontSize: 12 }}>{ar ? "كل الأكشاك" : "All kiosks"} <Icon name="chevDown" size={11}/></button>
-            <button className="btn btn-ghost" style={{ height: 28, fontSize: 12 }}>{ar ? "السبب" : "Reason"} <Icon name="chevDown" size={11}/></button>
-          </div>
-        </div>
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th scope="col" style={{ width: 30 }}></th>
-              <th scope="col">{ar ? "الوقت" : "Time"}</th>
-              <th scope="col">{ar ? "الكشك" : "Kiosk"}</th>
-              <th scope="col">{ar ? "البند" : "Item"}</th>
-              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الكمية" : "Qty"}</th>
-              <th scope="col" style={{ textAlign: "end" }}>{ar ? "التكلفة" : "Cost"}</th>
-              <th scope="col">{ar ? "السبب" : "Reason"}</th>
-              <th scope="col"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {wasteRows.map(w => (
-              <tr key={w.id}>
-                <td>{w.flagged ? <span className="dot warn"></span> : <span className="dot" style={{ opacity: 0.3 }}></span>}</td>
-                <td className="t-num muted">{w.time}</td>
-                <td>{w.kiosk}</td>
-                <td>{w.item}</td>
-                <td style={{ textAlign: "end" }} className="t-num">×{w.qty}</td>
-                <td style={{ textAlign: "end" }} className="t-num">{fmtMoney(w.cost)}</td>
-                <td className="muted">{w.reason}</td>
-                <td style={{ textAlign: "end" }}>
-                  {w.flagged && <span className="badge badge-warn">{ar ? "شاذ" : "Flagged"}</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <StudioWasteEntriesTable ar={ar} wasteRows={wasteRows} />
 
     </div>
   );
@@ -7139,6 +12445,7 @@ function WasteScreen({ lang, bootstrap }) {
 function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const ar = lang === "ar";
   const { showToast } = useToast();
+  const sourceDriven = isSourceDrivenPayload(bootstrap);
   const engineRows = odooInventoryRows(bootstrap);
   const [localItems, setLocalItems] = React.useState([]);
   const [categoryFilter, setCategoryFilter] = React.useState("all");
@@ -7153,11 +12460,14 @@ function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     unitCost: "",
     purchasePrice: "",
     consumptionMode: "finished",
+    targetQty: "",
+    reorderQty: "",
+    criticalQty: "",
   });
 
   React.useEffect(() => { setLocalItems([]); }, [bootstrap]);
 
-  const rows = React.useMemo(() => [...localItems, ...engineRows], [localItems, engineRows]);
+  const rows = React.useMemo(() => [...(sourceDriven ? [] : localItems), ...engineRows], [sourceDriven, localItems, engineRows]);
   const categoryOptions = React.useMemo(() => (
     ["all", ...Array.from(new Set(rows.map((row) => row.category).filter(Boolean))).sort()]
   ), [rows]);
@@ -7174,7 +12484,11 @@ function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     setItemBusy(true);
     try {
       let created = null;
-      if (sourceOfTruth?.enabled) {
+      if (sourceDriven) {
+        if (!sourceOfTruth?.enabled) {
+          showToast("Connect the source engine before creating source stock items", "warn");
+          return;
+        }
         created = unwrapOdoo(await sourceOfTruth.createStockItem({
           name: itemDraft.name.trim(),
           code: itemDraft.code.trim() || undefined,
@@ -7185,6 +12499,25 @@ function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           purchasePrice: Number(itemDraft.purchasePrice || itemDraft.unitCost || 0),
           consumptionMode: itemDraft.consumptionMode,
           availableInPos: false,
+          targetQty: Number(itemDraft.targetQty || 0),
+          reorderQty: Number(itemDraft.reorderQty || 0),
+          criticalQty: Number(itemDraft.criticalQty || 0),
+        }));
+        await refreshOdoo?.();
+      } else if (sourceOfTruth?.enabled) {
+        created = unwrapOdoo(await sourceOfTruth.createStockItem({
+          name: itemDraft.name.trim(),
+          code: itemDraft.code.trim() || undefined,
+          category: itemDraft.category.trim() || undefined,
+          uom: itemDraft.uom,
+          supplier: itemDraft.supplier.trim() || undefined,
+          unitCost: Number(itemDraft.unitCost || itemDraft.purchasePrice || 0),
+          purchasePrice: Number(itemDraft.purchasePrice || itemDraft.unitCost || 0),
+          consumptionMode: itemDraft.consumptionMode,
+          availableInPos: false,
+          targetQty: Number(itemDraft.targetQty || 0),
+          reorderQty: Number(itemDraft.reorderQty || 0),
+          criticalQty: Number(itemDraft.criticalQty || 0),
         }));
         await refreshOdoo?.();
       } else {
@@ -7195,7 +12528,9 @@ function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           locationKey: "item-catalog",
           stock: 0,
           unit: itemDraft.uom,
-          reorder: 0,
+          reorder: Number(itemDraft.reorderQty || 0),
+          target: Number(itemDraft.targetQty || 0),
+          critical: Number(itemDraft.criticalQty || 0),
           days: 0,
           supplier: itemDraft.supplier.trim() || "Unassigned",
           status: "ok",
@@ -7212,8 +12547,11 @@ function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         unitCost: "",
         purchasePrice: "",
         consumptionMode: "finished",
+        targetQty: "",
+        reorderQty: "",
+        criticalQty: "",
       });
-      showToast(`Stock item created - ${created?.product?.default_code || created?.product?.name || itemDraft.name}`, "success");
+      showToast(ar ? "تم إنشاء بند المخزون" : `Stock item created - ${created?.product?.default_code || created?.product?.name || itemDraft.name}`, "success");
     } catch (error) {
       showToast(error?.message || "Could not create stock item", "warn");
     } finally {
@@ -7226,47 +12564,50 @@ function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       <div className="card">
         <div className="between" style={{ padding: "14px 18px" }}>
           <div>
-            <div className="t-h2">{ar ? "Stock items" : "Stock item catalog"}</div>
-            <div className="t-small subtle">{ar ? "Master purchasable items" : "Create purchasable items once, then link them to suppliers and recipes"}</div>
+            <div className="t-h2">{ar ? "كتالوج بنود المخزون" : "Stock item catalog"}</div>
+            <div className="t-small subtle">{ar ? "بنود قابلة للشراء تُنشأ مرة واحدة ثم تُربط بالموردين والوصفات" : "Create purchasable items once, then link them to suppliers and recipes"}</div>
           </div>
           <div className="row" style={{ gap: 6 }}>
             <select className="input" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 160 }}>
-              {categoryOptions.map((category) => <option key={category} value={category}>{category === "all" ? "All categories" : category}</option>)}
+              {categoryOptions.map((category) => <option key={category} value={category}>{category === "all" ? (ar ? "كل الفئات" : "All categories") : arTerm(lang, category)}</option>)}
             </select>
             <button className="btn btn-primary" onClick={() => setItemModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
-              <Icon name="plus" size={12}/>{ar ? "New item" : "New item"}
+              <Icon name="plus" size={12}/>{ar ? "بند جديد" : "New item"}
             </button>
           </div>
         </div>
         <table className="tbl">
           <thead>
             <tr>
-              <th scope="col">Item</th>
-              <th scope="col">Category</th>
-              <th scope="col">UoM</th>
-              <th scope="col">Default supplier</th>
-              <th scope="col" style={{ textAlign: "end" }}>Unit cost</th>
-              <th scope="col">Mode</th>
+              <th scope="col">{ar ? "البند" : "Item"}</th>
+              <th scope="col">{ar ? "الفئة" : "Category"}</th>
+              <th scope="col">{ar ? "الوحدة" : "UoM"}</th>
+              <th scope="col">{ar ? "المورد الافتراضي" : "Default supplier"}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "تكلفة الوحدة" : "Unit cost"}</th>
+              <th scope="col">{ar ? "النمط" : "Mode"}</th>
             </tr>
           </thead>
           <tbody>
-            {filteredRows.map((item, index) => (
-              <tr key={`${item.item}-${index}`}>
-                <td><span style={{ fontWeight: 500 }}>{item.item}</span></td>
-                <td className="muted">{item.category}</td>
-                <td className="muted">{item.unit}</td>
-                <td className="muted">{item.supplier || "Unassigned"}</td>
-                <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(estimatePurchaseRate(item.item))}</td>
-                <td><span className="badge">{item.mode || "stock"}</span></td>
-              </tr>
-            ))}
+            {filteredRows.map((item, index) => {
+              const unitCost = purchaseRateForInventory(item, !sourceDriven);
+              return (
+                <tr key={`${item.item}-${index}`}>
+                  <td><span style={{ fontWeight: 500 }}>{arTerm(lang, item.item)}</span></td>
+                  <td className="muted">{arTerm(lang, item.category)}</td>
+                  <td className="muted">{item.unit}</td>
+                  <td className="muted">{arTerm(lang, item.supplier || "Unassigned")}</td>
+                  <td className="t-num" style={{ textAlign: "end" }}>{unitCost > 0 ? fmtMoney(unitCost) : "-"}</td>
+                  <td><span className="badge">{item.mode || "stock"}</span></td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
 
       <Modal open={itemModalOpen} onClose={() => setItemModalOpen(false)}
-        title="New stock item"
-        sub="Creates a global purchasable stock item"
+        title={ar ? "بند مخزون جديد" : "New stock item"}
+        sub={ar ? "ينشئ بند مخزون عالمي قابل للشراء" : "Creates a global purchasable stock item"}
         width={640}>
         <form onSubmit={submitStockItem} className="col" style={{ gap: 10 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 8 }}>
@@ -7274,26 +12615,31 @@ function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
             <input className="input" value={itemDraft.code} onChange={(event) => setItemDraft((draft) => ({ ...draft, code: event.target.value }))} placeholder="MILK-WHOLE-1L"/>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 120px 1fr", gap: 8 }}>
-            <input className="input" value={itemDraft.category} onChange={(event) => setItemDraft((draft) => ({ ...draft, category: event.target.value }))} placeholder="Ingredients"/>
+            <input className="input" value={itemDraft.category} onChange={(event) => setItemDraft((draft) => ({ ...draft, category: event.target.value }))} placeholder={ar ? "المكونات" : "Ingredients"}/>
             <select className="input" value={itemDraft.uom} onChange={(event) => setItemDraft((draft) => ({ ...draft, uom: event.target.value }))}>
               {["Units", "kg", "g", "l", "ml"].map((uom) => <option key={uom} value={uom}>{uom}</option>)}
             </select>
-            <input className="input" value={itemDraft.supplier} onChange={(event) => setItemDraft((draft) => ({ ...draft, supplier: event.target.value }))} placeholder="Default supplier"/>
+            <input className="input" value={itemDraft.supplier} onChange={(event) => setItemDraft((draft) => ({ ...draft, supplier: event.target.value }))} placeholder={ar ? "المورد الافتراضي" : "Default supplier"}/>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 170px", gap: 8 }}>
-            <input className="input" type="number" min="0" step="0.01" value={itemDraft.unitCost} onChange={(event) => setItemDraft((draft) => ({ ...draft, unitCost: event.target.value }))} placeholder="Unit cost"/>
-            <input className="input" type="number" min="0" step="0.01" value={itemDraft.purchasePrice} onChange={(event) => setItemDraft((draft) => ({ ...draft, purchasePrice: event.target.value }))} placeholder="Purchase price"/>
+            <input className="input" type="number" min="0" step="0.01" value={itemDraft.unitCost} onChange={(event) => setItemDraft((draft) => ({ ...draft, unitCost: event.target.value }))} placeholder={ar ? "تكلفة الوحدة" : "Unit cost"}/>
+            <input className="input" type="number" min="0" step="0.01" value={itemDraft.purchasePrice} onChange={(event) => setItemDraft((draft) => ({ ...draft, purchasePrice: event.target.value }))} placeholder={ar ? "سعر الشراء" : "Purchase price"}/>
             <select className="input" value={itemDraft.consumptionMode} onChange={(event) => setItemDraft((draft) => ({ ...draft, consumptionMode: event.target.value }))}>
-              <option value="finished">Stock item</option>
-              <option value="recipe">Recipe component</option>
-              <option value="hybrid">Hybrid item</option>
-              <option value="none">No stock consumption</option>
+              <option value="finished">{ar ? "بند مخزون" : "Stock item"}</option>
+              <option value="recipe">{ar ? "مكون وصفة" : "Recipe component"}</option>
+              <option value="hybrid">{ar ? "بند مختلط" : "Hybrid item"}</option>
+              <option value="none">{ar ? "بدون استهلاك مخزون" : "No stock consumption"}</option>
             </select>
           </div>
-          <div className="t-small subtle">Stock items are global. Supplier pages link suppliers to these items; Stock & Allocation only moves existing stock.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            <input className="input" type="number" min="0" step="0.01" value={itemDraft.targetQty} onChange={(event) => setItemDraft((draft) => ({ ...draft, targetQty: event.target.value }))} placeholder={ar ? "هدف ١٠٠٪" : "100% target qty"}/>
+            <input className="input" type="number" min="0" step="0.01" value={itemDraft.reorderQty} onChange={(event) => setItemDraft((draft) => ({ ...draft, reorderQty: event.target.value }))} placeholder={ar ? "حد إعادة الطلب" : "Reorder qty"}/>
+            <input className="input" type="number" min="0" step="0.01" value={itemDraft.criticalQty} onChange={(event) => setItemDraft((draft) => ({ ...draft, criticalQty: event.target.value }))} placeholder={ar ? "حد حرج" : "Critical qty"}/>
+          </div>
+          <div className="t-small subtle">{ar ? "بنود المخزون عامة. صفحات الموردين تربط الموردين بهذه البنود؛ شاشة المخزون والتوزيع تنقل المخزون الموجود فقط." : "Stock items are global. Supplier pages link suppliers to these items; Stock & Allocation only moves existing stock."}</div>
           <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setItemModalOpen(false)}>Cancel</button>
-            <button className="btn btn-primary" disabled={itemBusy || !itemDraft.name.trim()}>{itemBusy ? "Creating" : "Create item"}</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setItemModalOpen(false)}>{ui(ar, "cancel")}</button>
+            <button className="btn btn-primary" disabled={itemBusy || !itemDraft.name.trim()}>{itemBusy ? (ar ? "جار الإنشاء" : "Creating") : (ar ? "إنشاء البند" : "Create item")}</button>
           </div>
         </form>
       </Modal>
@@ -7425,7 +12771,7 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
         <KPI label={ar ? "إغلاقات معتمدة" : "Approved closes"} value={String(totals.approved)}
           footer={ar ? "اليوم" : "today"}/>
         <KPI label={ar ? "فرق النقد" : "Cash variance"} value={fmtMoneyShort(totals.cashVar)}
-          delta={totals.cashVar < 0 ? "loss" : "ok"} deltaDir={totals.cashVar < 0 ? "down" : "up"}/>
+          delta={totals.cashVar < 0 ? (ar ? "خسارة" : "loss") : (ar ? "سليم" : "ok")} deltaDir={totals.cashVar < 0 ? "down" : "up"}/>
         <KPI label={ar ? "فرق المخزون (قيمة)" : "Stock variance value"} value={fmtMoneyShort(totals.stockVarValue)}
           footer={ar ? "متوقع مقابل الفعلي" : "expected vs counted"}/>
       </div>
@@ -7500,15 +12846,15 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
                     tabIndex={0}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId(expanded ? null : c.id); } }}
                     aria-expanded={expanded}
-                    aria-label={`${c.kioskName} shift close, ${c.cashier}, expand for review`}
+                    aria-label={`${arTerm(lang, c.kioskName)} shift close, ${arTerm(lang, c.cashier)}, expand for review`}
                     data-motion={flashId === c.id ? "approving" : undefined}
                   >
                     <td>{dotClass ? <span className={`dot ${dotClass}`}></span> : <span className="dot" style={{ opacity: 0.3 }}></span>}</td>
                     <td>
-                      <div style={{ fontWeight: 500 }}>{c.kioskName}</div>
-                      <div className="t-small muted">{c.kioskId} - {c.city}</div>
+                      <div style={{ fontWeight: 500 }}>{arTerm(lang, c.kioskName)}</div>
+                      <div className="t-small muted">{c.kioskId} - {arTerm(lang, c.city)}</div>
                     </td>
-                    <td className="muted">{c.cashier}</td>
+                    <td className="muted">{arTerm(lang, c.cashier)}</td>
                     <td style={{ textAlign: "end" }} className="t-num">{fmtMoneyShort(c.sales)}</td>
                     <td style={{ textAlign: "end" }} className="t-num muted">{fmtMoneyShort(c.expectedCash)}</td>
                     <td style={{ textAlign: "end" }} className="t-num">{cashKnown ? fmtMoneyShort(c.countedCash) : "-"}</td>
@@ -7697,7 +13043,7 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
 //
 // Operator-facing catalog editor. Reads/writes the CatalogProvider, which persists
 // to localStorage. When a real backend engine is wired in, the provider's loader
-// switches from localStorage to /bayaan/api/products without changing this UI.
+// switches from localStorage to /bayaan/api/product_catalog without changing this UI.
 
 const RECIPE_INGREDIENTS_AR = {
   "Milk (whole) 1L": "حليب كامل ١ لتر",
@@ -7719,6 +13065,7 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const catalog = useCatalog();
   const { showToast } = useToast();
   const liveOnly = isLiveOnlyPayload(bootstrap);
+  const sourceDriven = isSourceDrivenPayload(bootstrap);
   const [filter, setFilter] = React.useState("all");
   const [search, setSearch] = React.useState("");
   const [editingId, setEditingId] = React.useState(null);
@@ -7752,8 +13099,8 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const totals = {
     total: products.length,
     withRecipe: products.filter(productHasRecipe).length,
-    withImage: products.filter((p) => catalog.state.imagesBySlug[p.image] || p.image).length,
-    customImages: Object.keys(catalog.state.imagesBySlug).length,
+    withImage: products.filter((p) => p.image || (!sourceDriven && catalog.state.imagesBySlug[p.image])).length,
+    customImages: sourceDriven ? 0 : Object.keys(catalog.state.imagesBySlug).length,
   };
 
   const startNew = () => {
@@ -7780,6 +13127,10 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     }
     if (!(createDraft.price >= 0)) {
       setCreateError(ar ? "السعر يجب أن يكون رقماً موجباً" : "Price must be a non-negative number");
+      return;
+    }
+    if (sourceDriven && !sourceOfTruth?.enabled) {
+      setCreateError(ar ? "Ø§Ø±Ø¨Ø· Ù…Ø­Ø±Ùƒ Ø§Ù„Ù…ØµØ¯Ø± Ø£ÙˆÙ„Ø§Ù‹" : "Connect the source engine before creating live catalog rows");
       return;
     }
     const slug = (createDraft.image || slugify(trimmedName)) + (createDraft.image ? "" : "-" + createDraft.id);
@@ -7859,9 +13210,9 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         <KPI label={ar ? "بوصفة محددة" : "With recipe"} value={String(totals.withRecipe)}
           footer={`${Math.round((totals.withRecipe / Math.max(1, totals.total)) * 100)}% ${ar ? "تغطية" : "coverage"}`}/>
         <KPI label={ar ? "صور مخصصة" : "Custom images"} value={String(totals.customImages)}
-          footer={ar ? "محملة محلياً" : "uploaded locally"}/>
+          footer={sourceDriven ? "hidden in source mode" : (ar ? "محملة محلياً" : "uploaded locally")}/>
         <KPI label={ar ? "بدون وصفة" : "Missing recipes"} value={String(totals.total - totals.withRecipe)}
-          delta={totals.total - totals.withRecipe > 0 ? "needs attention" : "all set"}
+          delta={totals.total - totals.withRecipe > 0 ? (ar ? "يحتاج اهتمام" : "needs attention") : (ar ? "كلها جاهزة" : "all set")}
           deltaDir={totals.total - totals.withRecipe > 0 ? "down" : "up"}/>
       </div>
 
@@ -7871,7 +13222,7 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
             <div className="t-h2">{ar ? "تكلفة الوصفة والهامش" : "Recipe cost and margin control"}</div>
             <div className="t-small subtle">{ar ? "الإصدار الفعال يحكم استهلاك المكونات وقت البيع" : "Effective recipe version controls ingredient consumption at sale time"}</div>
           </div>
-          <span className="badge badge-ai">versioned recipes</span>
+          <span className="badge badge-ai">{ar ? "وصفات بإصدارات" : "versioned recipes"}</span>
         </div>
         <table className="tbl">
           <thead>
@@ -7887,9 +13238,9 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           <tbody>
             {recipeRows.map((row) => (
               <tr key={`${row.product}-${row.version}`}>
-                <td style={{ fontWeight: 500 }}>{row.product}</td>
+                <td style={{ fontWeight: 500 }}>{arTerm(lang, row.product)}</td>
                 <td><span className={`badge ${row.status === "watch" ? "badge-warn" : "badge-pos"}`}>{row.version}</span></td>
-                <td className="muted">{row.ingredients}</td>
+                <td className="muted">{arTerm(lang, row.ingredients)}</td>
                 <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(row.price)}</td>
                 <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(row.cost)}</td>
                 <td className="t-num" style={{ textAlign: "end", color: String(row.margin).startsWith("4") || String(row.margin).startsWith("3") ? "var(--warn)" : "var(--pos)" }}>{row.margin}</td>
@@ -7901,16 +13252,22 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
 
       <div className="card card-pad">
         <div className="row" style={{ marginBottom: 8 }}>
-          <AITag>{ar ? "وضع تجريبي" : "Demo persistence"}</AITag>
+          <AITag>{sourceDriven ? (ar ? "مصدر متحقق" : "Source-backed catalog") : (ar ? "وضع تجريبي" : "Demo persistence")}</AITag>
         </div>
         <div className="ai-block">
           <div style={{ fontSize: 14, fontWeight: 500 }}>
-            {ar ? "التغييرات تُحفظ محلياً في المتصفح" : "Changes save to this browser"}
+            {sourceDriven
+              ? (sourceOfTruth?.enabled
+                ? (ar ? "التغييرات تُحفظ في محرك المصدر" : "Changes save to the source engine")
+                : (ar ? "في انتظار محرك المصدر" : "Waiting for the source engine"))
+              : (ar ? "التغييرات تُحفظ محلياً في المتصفح" : "Changes save to this browser")}
           </div>
           <div className="t-small muted" style={{ marginTop: 4, lineHeight: 1.55 }}>
-            {ar
-              ? "أسماء المنتجات والأسعار والوصفات والصور المرفوعة تبقى بعد التحديث في هذا المتصفح فقط. عند توصيل محرك البيانات الفعلي، نفس الواجهة تكتب إلى /bayaan/api/products و /bayaan/api/recipe_version."
-              : "Product names, prices, recipes, and uploaded images persist across reloads in this browser only. When the backend engine is connected, the same UI writes to /bayaan/api/products and /bayaan/api/recipe_version."}
+            {sourceDriven
+              ? (sourceOfTruth?.enabled
+                ? "Product names and prices write to /bayaan/api/product_catalog. Recipe versions write to /bayaan/api/recipe_version. Browser image overrides stay hidden in source mode."
+                : "Live-only mode hides browser catalog rows until the source engine is connected.")
+              : "Product names, prices, recipes, and uploaded images persist across reloads in this browser only. Demo data does not become official Bayaan catalog data."}
           </div>
         </div>
       </div>
@@ -7927,7 +13284,7 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
               return (
                 <button key={c} className={"btn " + (filter === c ? "btn-primary" : "btn-ghost")}
                   onClick={() => setFilter(c)} style={{ height: 28, fontSize: 12 }}>
-                  {c} <span className="muted" style={{ marginInlineStart: 6 }}>{count}</span>
+                  {arTerm(lang, c)} <span className="muted" style={{ marginInlineStart: 6 }}>{count}</span>
                 </button>
               );
             })}
@@ -7970,12 +13327,12 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                     boxShadow: "inset 3px 0 0 var(--accent, #B88A2C)",
                     transition: "background 600ms",
                   } : undefined}>
-                    <td><ProductImage slug={p.image} name={p.name} size={40} radius={6}/></td>
+                    <td><ProductImage slug={p.image} name={p.name} size={40} radius={6} useOverride={!sourceDriven}/></td>
                     <td>
-                      <div style={{ fontWeight: 500 }}>{p.name}</div>
-                      <div className="t-small muted">{p.image}</div>
+                      <div style={{ fontWeight: 500 }}>{arTerm(lang, p.name)}</div>
+                      <div className="t-small muted">{ar ? arTerm(lang, p.image) : p.image}</div>
                     </td>
-                    <td className="muted">{p.category}</td>
+                    <td className="muted">{arTerm(lang, p.category)}</td>
                     <td style={{ textAlign: "end" }} className="t-num">{fmtMoney(p.price)}</td>
                     <td className="muted">{p.sizes.join(" · ")}</td>
                     <td>
@@ -7995,7 +13352,7 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                   {isEditing && (
                     <tr>
                       <td colSpan={7} style={{ background: "var(--surface-sunk)", padding: "16px 18px" }}>
-                        <ProductEditor product={p} ar={ar} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} ingredientOptions={ingredientOptions} liveOnly={liveOnly} onClose={() => setEditingId(null)}/>
+                        <ProductEditor product={p} ar={ar} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} ingredientOptions={ingredientOptions} liveOnly={liveOnly} sourceDriven={sourceDriven} onClose={() => setEditingId(null)}/>
                       </td>
                     </tr>
                   )}
@@ -8081,7 +13438,7 @@ function ProductCreateDialog({ ar, open, draft, setDraft, lines, setLines, savin
               onChange={(e) => setDraft({ ...draft, category: e.target.value })}
               style={editorInput}
             >
-              {CATEGORY_ORDER.map((c) => <option key={c} value={c}>{c}</option>)}
+              {CATEGORY_ORDER.map((c) => <option key={c} value={c}>{ar ? arTerm("ar", c) : c}</option>)}
             </select>
           </div>
         </div>
@@ -8178,14 +13535,14 @@ function ProductCreateDialog({ ar, open, draft, setDraft, lines, setLines, savin
   );
 }
 
-function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOptions = [], liveOnly, onClose }) {
+function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOptions = [], liveOnly, sourceDriven = liveOnly, onClose }) {
   const catalog = useCatalog();
   const { showToast } = useToast();
   const [draft, setDraft] = React.useState(product);
   const [uploading, setUploading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState("");
-  const recipeLines = liveOnly
+  const recipeLines = sourceDriven
     ? []
     : catalog.state.recipes[product.id]?.lines ?? [];
   const [lines, setLines] = React.useState(recipeLines);
@@ -8195,6 +13552,11 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
   const onPickFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (sourceDriven) {
+      setError("Browser image uploads are demo-only until a source media endpoint is wired.");
+      e.target.value = "";
+      return;
+    }
     setUploading(true);
     setError("");
     try {
@@ -8212,6 +13574,9 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
     const trimmed = { ...draft, name: draft.name.trim() || "Untitled", price: Math.max(0, Number(draft.price) || 0) };
     if (!trimmed.image) trimmed.image = slugify(trimmed.name) + "-" + trimmed.id;
     const validLines = lines.filter((l) => l.ingredient && l.qty > 0);
+    if (sourceDriven && !sourceOfTruth?.enabled) {
+      throw new Error("Connect the source engine before editing live catalog rows");
+    }
     if (sourceOfTruth?.enabled) {
       const saved = unwrapOdoo(await sourceOfTruth.upsertProductCatalog({
         id: trimmed.odooId || trimmed.code || trimmed.id,
@@ -8237,7 +13602,7 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
         });
       }
       await refreshOdoo?.();
-      showToast(ar ? "Product saved to engine" : "Product saved to engine", "success");
+      showToast(ar ? "تم حفظ المنتج في المحرك" : "Product saved to engine", "success");
       return;
     }
     catalog.upsertProduct(trimmed);
@@ -8275,6 +13640,10 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
   };
 
   const remove = () => {
+    if (sourceDriven) {
+      setError("Delete is not available for source-backed catalog rows yet.");
+      return;
+    }
     if (!window.confirm(ar ? "حذف هذا المنتج؟" : "Delete this product?")) return;
     catalog.deleteProduct(product.id);
     onClose();
@@ -8299,15 +13668,15 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
       <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 18, alignItems: "start" }}>
         <div className="col" style={{ gap: 10 }}>
           <div style={{ width: 180, height: 180, borderRadius: 10, overflow: "hidden", background: "var(--surface-sunk)" }}>
-            <ProductImage slug={draft.image} name={draft.name} fill radius={0}/>
+            <ProductImage slug={draft.image} name={draft.name} fill radius={0} useOverride={!sourceDriven}/>
           </div>
           <label className="btn btn-ghost" style={{ height: 30, fontSize: 12, cursor: "pointer" }}>
             <Icon name="download" size={12} style={{ transform: "rotate(180deg)" }}/>
-            {uploading ? (ar ? "جارٍ الرفع…" : "Uploading…") : (ar ? "رفع صورة" : "Upload image")}
-            <input type="file" accept="image/*" onChange={onPickFile} disabled={uploading}
+            {sourceDriven ? "Demo-only image upload" : uploading ? (ar ? "جارٍ الرفع…" : "Uploading…") : (ar ? "رفع صورة" : "Upload image")}
+            <input type="file" accept="image/*" onChange={onPickFile} disabled={uploading || sourceDriven}
               style={{ display: "none" }}/>
           </label>
-          {catalog.state.imagesBySlug[draft.image] && (
+          {!sourceDriven && catalog.state.imagesBySlug[draft.image] && (
             <button className="btn btn-quiet" style={{ height: 26, fontSize: 11 }}
               onClick={() => catalog.clearImage(draft.image)}>
               {ar ? "إعادة للصورة الأصلية" : "Revert to default"}
@@ -8429,14 +13798,30 @@ const editorInput = {
 };
 
 // =============== SUPPLIERS ===============
-function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
+function SuppliersScreen({ lang, bootstrap, sync, sourceOfTruth, refreshOdoo }) {
   const ar = lang === "ar";
   const { showToast } = useToast();
   const liveOnly = isLiveOnlyPayload(bootstrap);
+  const sourceDriven = isSourceDrivenPayload(bootstrap);
+  const warehouseSetup = unwrapOdoo(sync?.warehouseSetup);
+  const warehouseOptions = React.useMemo(() => {
+    const central = (warehouseSetup?.warehouses || [])
+      .map((warehouse) => warehouse.name || warehouse.code)
+      .filter(Boolean);
+    return central.length ? central : (sourceDriven ? [] : [DEFAULT_WAREHOUSE_NAME, "Baghdad Area Warehouse"]);
+  }, [warehouseSetup, sourceDriven]);
+  const centralWarehouseName = warehouseOptions[0] || (sourceDriven ? "" : DEFAULT_WAREHOUSE_NAME);
   const enginePurchaseOrders = odooPurchaseOrderRows(bootstrap);
   const engineSuppliers = odooSupplierRows(bootstrap);
   const engineRecurringPurchases = odooRecurringPurchaseRows(bootstrap);
   const inv = odooInventoryRows(bootstrap);
+  const purchaseItemOptions = React.useMemo(() => {
+    const byItem = new Map();
+    inv.forEach((item) => {
+      if (!byItem.has(item.item)) byItem.set(item.item, item);
+    });
+    return Array.from(byItem.values());
+  }, [inv]);
   const [purchaseOrders, setPurchaseOrders] = useState(enginePurchaseOrders);
   const [supplierRows, setSupplierRows] = useState(engineSuppliers);
   const [recurringRows, setRecurringRows] = useState(engineRecurringPurchases);
@@ -8449,14 +13834,14 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const [recurringBusy, setRecurringBusy] = useState(false);
   const [poActionBusy, setPoActionBusy] = useState("");
   const [poDraft, setPoDraft] = useState({
-    supplier: MOCK.suppliers[0]?.name || "",
-    warehouse: DEFAULT_WAREHOUSE_NAME,
+    supplier: sourceDriven ? "" : MOCK.suppliers[0]?.name || "",
+    warehouse: centralWarehouseName,
     scheduleDate: tomorrowIsoDate(),
     invoiceRef: "",
     invoiceName: "",
     invoiceFileBase64: "",
     invoiceMimeType: "",
-    lines: [purchaseLineFromInventory(MOCK.inventory[0])],
+    lines: [],
   });
   const [supplierDraft, setSupplierDraft] = useState({
     name: "",
@@ -8464,17 +13849,32 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     deliveryCategory: "Same day",
     category: "Produce",
   });
-  const [recurringDraft, setRecurringDraft] = useState({
-    name: "Weekly fresh milk",
+  const makeRecurringDraft = () => ({
+    name: sourceDriven ? "" : "Weekly fresh milk",
     supplier: "",
-    warehouse: DEFAULT_WAREHOUSE_NAME,
-    frequency: "weekly",
-    weekday: "0",
-    nextDate: tomorrowIsoDate(),
+    warehouse: centralWarehouseName,
+    frequency: sourceDriven ? "" : "weekly",
+    weekday: sourceDriven ? "" : "0",
+    nextDate: sourceDriven ? "" : tomorrowIsoDate(),
     lines: [],
   });
+  const [recurringDraft, setRecurringDraft] = useState(() => makeRecurringDraft());
   React.useEffect(() => { setPurchaseOrders(enginePurchaseOrders); }, [bootstrap]);
   React.useEffect(() => { setRecurringRows(engineRecurringPurchases); }, [bootstrap]);
+  React.useEffect(() => {
+    setPoDraft((draft) => draft.warehouse === centralWarehouseName ? draft : { ...draft, warehouse: centralWarehouseName });
+    setRecurringDraft((draft) => draft.warehouse === centralWarehouseName ? draft : { ...draft, warehouse: centralWarehouseName });
+  }, [centralWarehouseName]);
+  React.useEffect(() => {
+    if (!sourceDriven) return;
+    setRecurringDraft((draft) => ({
+      ...draft,
+      name: draft.name === "Weekly fresh milk" ? "" : draft.name,
+      frequency: draft.frequency === "weekly" ? "" : draft.frequency,
+      weekday: draft.weekday === "0" ? "" : draft.weekday,
+      nextDate: draft.nextDate === tomorrowIsoDate() ? "" : draft.nextDate,
+    }));
+  }, [sourceDriven]);
   React.useEffect(() => {
     if (engineSuppliers.length) {
       setSupplierRows(engineSuppliers);
@@ -8498,13 +13898,19 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     });
     setSupplierRows(Array.from(bySupplier.values()));
     setPoDraft((draft) => draft.supplier || draft.lines?.length ? { ...draft, supplier: "", lines: [] } : draft);
-  }, [bootstrap, engineSuppliers.length, liveOnly]);
+  }, [bootstrap, engineSuppliers.length, sourceDriven]);
   const openPurchaseOrders = purchaseOrders.filter((po) => !["done", "received", "cancel", "cancelled"].includes(String(po.status).toLowerCase()));
+  const receivedPurchaseOrders = purchaseOrders.filter((po) => ["done", "received"].includes(String(po.status).toLowerCase()));
+  const supplierSpend30 = supplierRows.reduce((sum, supplier) => sum + Number(supplier.spend30 || 0), 0);
+  const supplierReceiptEvidence = sourceDriven
+    ? (receivedPurchaseOrders.length ? `${receivedPurchaseOrders.length} received` : "No verified receipts")
+    : "93%";
+  const supplierReceiptDelta = sourceDriven ? `${purchaseOrders.length} source POs` : "2 pts";
   const supplierCategories = ["all", ...Array.from(new Set(supplierRows.map((supplier) => supplier.category)))];
   const filteredSuppliers = categoryFilter === "all"
     ? supplierRows
     : supplierRows.filter((supplier) => supplier.category === categoryFilter);
-  const priceChangeRows = liveOnly ? [] : [
+  const priceChangeRows = sourceDriven ? [] : [
     ["Milk (whole) 1L", "L", "Baghdad Dairy", "Same day"],
     ["Oranges", "kg", "Najaf Fresh", "Next morning"],
     ["Pistachio paste", "kg", "Mesopotamia Foods", "2-3 days"],
@@ -8514,24 +13920,24 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     setPoDraft((draft) => ({
       ...draft,
       supplier: supplier?.name || draft.supplier,
-      warehouse: draft.warehouse || DEFAULT_WAREHOUSE_NAME,
+      warehouse: draft.warehouse || centralWarehouseName,
       scheduleDate: draft.scheduleDate || tomorrowIsoDate(),
       invoiceRef: draft.invoiceRef || "",
       invoiceName: draft.invoiceName || "",
       invoiceFileBase64: draft.invoiceFileBase64 || "",
       invoiceMimeType: draft.invoiceMimeType || "",
-      lines: draft.lines?.length ? draft.lines : [purchaseLineFromInventory(inv[0] || (liveOnly ? null : MOCK.inventory[0]))].filter((line) => line.item),
+      lines: draft.lines?.length ? draft.lines : [purchaseLineFromInventory(purchaseItemOptions[0] || (sourceDriven ? null : MOCK.inventory[0]), !sourceDriven)].filter((line) => line.item),
     }));
     setPoModalOpen(true);
   };
   const openRecurringModal = () => {
-    const firstItem = inv[0] || (liveOnly ? null : MOCK.inventory[0]);
+    const firstItem = purchaseItemOptions[0] || (sourceDriven ? null : MOCK.inventory[0]);
     setRecurringDraft((draft) => ({
       ...draft,
       supplier: draft.supplier || supplierRows[0]?.name || "",
-      warehouse: draft.warehouse || DEFAULT_WAREHOUSE_NAME,
+      warehouse: draft.warehouse || centralWarehouseName,
       nextDate: draft.nextDate || tomorrowIsoDate(),
-      lines: draft.lines?.length ? draft.lines : [purchaseLineFromInventory(firstItem)].filter((line) => line.item),
+      lines: draft.lines?.length ? draft.lines : [purchaseLineFromInventory(firstItem, !sourceDriven)].filter((line) => line.item),
     }));
     setRecurringModalOpen(true);
   };
@@ -8542,12 +13948,12 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     }));
   };
   const addPoLine = () => {
-    const item = inv[0] || (liveOnly ? null : MOCK.inventory[0]);
+    const item = inv[0] || (sourceDriven ? null : MOCK.inventory[0]);
     if (!item) {
-      showToast("No live inventory items loaded for PO lines", "warn");
+      showToast("No source inventory items loaded for PO lines", "warn");
       return;
     }
-    setPoDraft((draft) => ({ ...draft, lines: [...draft.lines, purchaseLineFromInventory(item)] }));
+    setPoDraft((draft) => ({ ...draft, lines: [...draft.lines, purchaseLineFromInventory(item, !sourceDriven)] }));
   };
   const removePoLine = (index) => {
     setPoDraft((draft) => ({ ...draft, lines: draft.lines.filter((_, i) => i !== index) }));
@@ -8559,12 +13965,12 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     }));
   };
   const addRecurringLine = () => {
-    const item = inv[0] || (liveOnly ? null : MOCK.inventory[0]);
+    const item = inv[0] || (sourceDriven ? null : MOCK.inventory[0]);
     if (!item) {
-      showToast("No live inventory items loaded for recurring purchases", "warn");
+      showToast("No source inventory items loaded for recurring purchases", "warn");
       return;
     }
-    setRecurringDraft((draft) => ({ ...draft, lines: [...draft.lines, purchaseLineFromInventory(item)] }));
+    setRecurringDraft((draft) => ({ ...draft, lines: [...draft.lines, purchaseLineFromInventory(item, !sourceDriven)] }));
   };
   const removeRecurringLine = (index) => {
     setRecurringDraft((draft) => ({ ...draft, lines: draft.lines.filter((_, i) => i !== index) }));
@@ -8579,8 +13985,13 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         unit: line.unit || inv.find((item) => item.item === line.item)?.unit || "",
         rate: Number(line.rate || 0),
       }));
-    if (!recurringDraft.name.trim() || !recurringDraft.supplier || !lines.length || lines.some((line) => line.rate <= 0)) {
-      showToast("Recurring purchase needs a name, supplier, item lines, quantities, and rates", "warn");
+    const sourceScheduleMissing = sourceDriven && (!recurringDraft.frequency || !recurringDraft.nextDate || (recurringDraft.frequency === "weekly" && recurringDraft.weekday === ""));
+    if (!recurringDraft.name.trim() || !recurringDraft.supplier || sourceScheduleMissing || !lines.length || lines.some((line) => line.rate <= 0)) {
+      showToast(sourceDriven ? "Recurring purchase needs a name, supplier, schedule, item lines, quantities, and rates" : "Recurring purchase needs a name, supplier, item lines, quantities, and rates", "warn");
+      return;
+    }
+    if (sourceDriven && !sourceOfTruth?.enabled) {
+      showToast("Connect the source engine before saving source recurring purchases", "warn");
       return;
     }
     setRecurringBusy(true);
@@ -8628,8 +14039,8 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       };
       setRecurringRows((rows) => [plan, ...rows.filter((row) => row.id !== plan.id)]);
       setRecurringModalOpen(false);
-      setRecurringDraft((draft) => ({ ...draft, name: "", lines: [] }));
-      showToast(sourceOfTruth?.enabled ? "Recurring purchase saved to Odoo" : "Recurring purchase saved", "success");
+      setRecurringDraft({ ...makeRecurringDraft(), supplier: recurringDraft.supplier, warehouse: recurringDraft.warehouse });
+      showToast(sourceOfTruth?.enabled ? "Recurring purchase saved to the source engine" : "Recurring purchase saved", "success");
     } catch (error) {
       showToast(error?.message || "Could not save recurring purchase", "warn");
     } finally {
@@ -8638,7 +14049,7 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   };
   const runRecurringPurchase = async (plan) => {
     if (!sourceOfTruth?.enabled) {
-      showToast("Recurring run is available when the Odoo engine is connected", "warn");
+      showToast("Recurring run is available when the source engine is connected", "warn");
       return;
     }
     setRecurringBusy(true);
@@ -8663,7 +14074,11 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         rate: Number(line.rate || 0),
       }));
     if (!poDraft.supplier || !lines.length || lines.some((line) => line.rate <= 0)) {
-      showToast(ar ? "PO needs supplier, item lines, quantities, and rates" : "PO needs supplier, item lines, quantities, and rates", "warn");
+      showToast(ar ? "طلب الشراء يحتاج مورداً وبنوداً وكميات وأسعاراً" : "PO needs supplier, item lines, quantities, and rates", "warn");
+      return;
+    }
+    if (sourceDriven && !sourceOfTruth?.enabled) {
+      showToast("Connect the source engine before creating source purchase orders", "warn");
       return;
     }
     setPoBusy(true);
@@ -8689,15 +14104,16 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         warehouse: poDraft.warehouse,
         invoice: poDraft.invoiceRef || poDraft.invoiceName || "-",
         delivery: poDraft.scheduleDate,
-        items: purchaseLineSummary(lines),
+        items: sourceDriven ? purchaseReceiptLineSummary(lines, created?.receipt_state) : purchaseLineSummary(lines),
         value: purchaseTotal(lines),
-        status: "created",
+        status: created?.state || (submit ? "purchase" : "created"),
+        receiptState: created?.receipt_state || "none",
         lines,
       };
-      setPurchaseOrders((rows) => [next, ...rows]);
+      setPurchaseOrders((rows) => [next, ...rows.filter((row) => row.po !== next.po)]);
       setPoDraft((draft) => ({ ...draft, invoiceRef: "", invoiceName: "", invoiceFileBase64: "", invoiceMimeType: "", lines: [] }));
       setPoModalOpen(false);
-      showToast(ar ? "Purchase order created" : `${sourceOfTruth?.enabled ? "Odoo PO" : "Demo PO"} created - ${next.supplier}`, "success");
+      showToast(ar ? "تم إنشاء طلب الشراء" : `${sourceOfTruth?.enabled ? "Engine PO" : "Demo PO"} created - ${next.supplier}`, "success");
     } catch (error) {
       showToast(error?.message || "Could not create purchase order", "warn");
     } finally {
@@ -8706,6 +14122,10 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   };
   const advancePoStatus = async (po, action) => {
     const nextStatus = action?.next || action;
+    if (sourceDriven && !sourceOfTruth?.enabled) {
+      showToast("Connect the source engine before updating source purchase orders", "warn");
+      return;
+    }
     if (sourceOfTruth?.enabled) {
       setPoActionBusy(po.po);
       try {
@@ -8716,9 +14136,9 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         await refreshOdoo?.();
         const nextEngineStatus = result?.receipt_state === "done" ? "received" : result?.state || nextStatus;
         setPurchaseOrders((rows) => rows.map((row) => (row.po === po.po ? { ...row, status: nextEngineStatus } : row)));
-        showToast(`Odoo PO ${po.po} moved to ${nextEngineStatus}`, "success");
+        showToast(`Engine PO ${po.po} moved to ${nextEngineStatus}`, "success");
       } catch (error) {
-        showToast(error?.message || "Could not update purchase order in Odoo", "warn");
+        showToast(error?.message || "Could not update purchase order in the source engine", "warn");
       } finally {
         setPoActionBusy("");
       }
@@ -8749,7 +14169,7 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const submitSupplier = async (event) => {
     event.preventDefault();
     if (!supplierDraft.name.trim()) {
-      showToast(ar ? "Supplier name is required" : "Supplier name is required", "warn");
+      showToast(ar ? "اسم المورد مطلوب" : "Supplier name is required", "warn");
       return;
     }
     const next = {
@@ -8761,6 +14181,10 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       lastOrder: "New",
       status: "good",
     };
+    if (sourceDriven && !sourceOfTruth?.enabled) {
+      showToast("Connect the source engine before creating source suppliers", "warn");
+      return;
+    }
     setSupplierBusy(true);
     try {
       let created = null;
@@ -8776,7 +14200,7 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       setSupplierRows((rows) => [created?.supplier || next, ...rows.filter((row) => row.name !== next.name)]);
       setSupplierDraft({ name: "", address: "", deliveryCategory: "Same day", category: "Produce" });
       setSupplierModalOpen(false);
-      showToast(ar ? "Supplier added" : `Supplier added - ${next.name}`, "success");
+      showToast(ar ? "تمت إضافة المورد" : `Supplier added - ${next.name}`, "success");
     } catch (error) {
       showToast(error?.message || "Could not add supplier", "warn");
     } finally {
@@ -8787,8 +14211,8 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     <div className="col" style={{ gap: 14 }}>
       <div style={{ display: "none", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
         <KPI label={ar ? "موردون نشطون" : "Active suppliers"} value={String(supplierRows.length)}/>
-        <KPI label={ar ? "إنفاق ٣٠ يوم" : "30-day spend"} value={fmtMoney(supplierRows.reduce((sum, supplier) => sum + Number(supplier.spend30 || 0), 0))} delta={liveOnly ? undefined : "4.2%"} deltaDir="up"/>
-        <KPI label={ar ? "وصول في الموعد" : "On-time delivery"} value={liveOnly ? "0%" : "93%"} delta={liveOnly ? undefined : "2 pts"} deltaDir="down"/>
+        <KPI label={ar ? "إنفاق ٣٠ يوم" : "30-day spend"} value={fmtMoney(supplierSpend30)} delta={sourceDriven ? `${supplierRows.length} suppliers` : "4.2%"} deltaDir={sourceDriven ? "flat" : "up"}/>
+        <KPI label={ar ? "دليل الاستلام" : "Receipt evidence"} value={supplierReceiptEvidence} delta={supplierReceiptDelta} deltaDir="flat"/>
         <KPI label={ar ? "طلبات مفتوحة" : "Open POs"} value={String(openPurchaseOrders.length)} footer={ar ? "بيانات الشراء" : "purchase.order"}/>
       </div>
 
@@ -8819,18 +14243,18 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
               {purchaseOrders.map((po) => (
                 <tr key={po.po}>
                   <td className="t-num">{po.po}</td>
-                  <td>{po.supplier}</td>
+                  <td>{arTerm(lang, po.supplier)}</td>
                   <td className="muted">{po.invoice || "-"}</td>
-                  <td className="muted">{po.warehouse || DEFAULT_WAREHOUSE_NAME}</td>
-                  <td className="muted">{po.items}</td>
+                  <td className="muted">{arTerm(lang, po.warehouse || DEFAULT_WAREHOUSE_NAME)}</td>
+                  <td className="muted">{arTerm(lang, po.items)}</td>
                   <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(po.value)}</td>
                   <td style={{ textAlign: "end" }}>
-                    <span className={`badge ${purchaseStatusClass(po.status)}`}>{po.status}</span>
+                    <span className={`badge ${purchaseStatusClass(po.status)}`}>{arTerm(lang, po.status)}</span>
                     {nextPurchaseAction(po.status) && (
                       <button className="btn btn-ghost" onClick={() => advancePoStatus(po, nextPurchaseAction(po.status))}
                         disabled={poActionBusy === po.po}
                         style={{ height: 24, fontSize: 11, marginInlineStart: 6 }}>
-                        {poActionBusy === po.po ? "Working" : nextPurchaseAction(po.status).label}
+                        {poActionBusy === po.po ? (ar ? "جار العمل" : "Working") : arTerm(lang, nextPurchaseAction(po.status).label)}
                       </button>
                     )}
                   </td>
@@ -8846,20 +14270,20 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
               <div className="t-h2">{ar ? "تغيرات سعر المكونات" : "Supplier item catalog"}</div>
               <div className="t-small subtle">{ar ? "الأثر على هامش المنتجات" : "Items must exist before invoice lines can be matched"}</div>
             </div>
-            <span className="badge badge-ai">margin watch</span>
+            <span className="badge badge-ai">{arTerm(lang, "margin watch")}</span>
           </div>
           <table className="tbl">
             <tbody>
               {priceChangeRows.length ? priceChangeRows.map(([item, unit, supplier, delivery]) => (
                 <tr key={item}>
-                  <td style={{ fontWeight: 500 }}>{item}</td>
+                  <td style={{ fontWeight: 500 }}>{arTerm(lang, item)}</td>
                   <td className="muted">{unit}</td>
-                  <td className="muted">{supplier}</td>
-                  <td className="t-num" style={{ textAlign: "end" }}>{delivery}</td>
+                  <td className="muted">{arTerm(lang, supplier)}</td>
+                  <td className="t-num" style={{ textAlign: "end" }}>{arTerm(lang, delivery)}</td>
                 </tr>
               )) : (
                 <tr>
-                  <td colSpan={4} className="muted">No verified supplier price changes loaded from the engine.</td>
+                  <td colSpan={4} className="muted">{arTerm(lang, "No verified supplier price changes loaded from the engine.")}</td>
                 </tr>
               )}
             </tbody>
@@ -8870,41 +14294,41 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       <div className="card">
         <div className="between" style={{ padding: "14px 18px" }}>
           <div>
-            <div className="t-h2">{ar ? "Recurring purchases" : "Recurring purchases"}</div>
-            <div className="t-small subtle">{ar ? "Plans create purchase orders; receiving stays human-confirmed" : "Plans create purchase orders; receiving stays human-confirmed"}</div>
+            <div className="t-h2">{ar ? "المشتريات المتكررة" : "Recurring purchases"}</div>
+            <div className="t-small subtle">{ar ? "الخطط تنشئ طلبات شراء، والاستلام يبقى بتأكيد بشري" : "Plans create purchase orders; receiving stays human-confirmed"}</div>
           </div>
           <button className="btn btn-ghost" onClick={openRecurringModal} style={{ height: 28, fontSize: 12 }}>
-            <Icon name="plus" size={12}/>{ar ? "Schedule" : "Schedule"}
+            <Icon name="plus" size={12}/>{ar ? "جدولة" : "Schedule"}
           </button>
         </div>
         <table className="tbl">
           <thead>
             <tr>
-              <th scope="col">{ar ? "Plan" : "Plan"}</th>
-              <th scope="col">{ar ? "Supplier" : "Supplier"}</th>
-              <th scope="col">{ar ? "Warehouse" : "Warehouse"}</th>
-              <th scope="col">{ar ? "Schedule" : "Schedule"}</th>
-              <th scope="col">{ar ? "Items" : "Items"}</th>
+              <th scope="col">{ar ? "الخطة" : "Plan"}</th>
+              <th scope="col">{ar ? "المورد" : "Supplier"}</th>
+              <th scope="col">{ar ? "المستودع" : "Warehouse"}</th>
+              <th scope="col">{ar ? "الجدولة" : "Schedule"}</th>
+              <th scope="col">{ar ? "البنود" : "Items"}</th>
               <th scope="col" style={{ textAlign: "end" }}></th>
             </tr>
           </thead>
           <tbody>
             {recurringRows.map((plan) => (
               <tr key={plan.id || plan.name}>
-                <td style={{ fontWeight: 500 }}>{plan.name}</td>
-                <td className="muted">{plan.supplier}</td>
-                <td className="muted">{plan.warehouse}</td>
-                <td><span className="badge">{plan.frequency} {plan.weekday || ""} - {plan.nextDate || "-"}</span></td>
-                <td className="muted">{plan.items}</td>
+                <td style={{ fontWeight: 500 }}>{arTerm(lang, plan.name)}</td>
+                <td className="muted">{arTerm(lang, plan.supplier)}</td>
+                <td className="muted">{arTerm(lang, plan.warehouse)}</td>
+                <td><span className="badge">{arTerm(lang, plan.frequency)} {arTerm(lang, plan.weekday || "")} - {plan.nextDate || "-"}</span></td>
+                <td className="muted">{arTerm(lang, plan.items)}</td>
                 <td style={{ textAlign: "end" }}>
                   <button className="btn btn-ghost" onClick={() => runRecurringPurchase(plan)} disabled={recurringBusy || !sourceOfTruth?.enabled} style={{ height: 24, fontSize: 11 }}>
-                    {ar ? "Create PO" : "Create PO"}
+                    {ar ? "إنشاء طلب شراء" : "Create PO"}
                   </button>
                 </td>
               </tr>
             ))}
             {!recurringRows.length && (
-              <tr><td colSpan={6} className="muted" style={{ textAlign: "center", padding: 20 }}>No recurring purchase plans yet.</td></tr>
+              <tr><td colSpan={6} className="muted" style={{ textAlign: "center", padding: 20 }}>{arTerm(lang, "No recurring purchase plans yet.")}</td></tr>
             )}
           </tbody>
         </table>
@@ -8915,7 +14339,7 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           <div className="t-h2">{ar ? "الموردون" : "Suppliers"}</div>
           <div className="row" style={{ gap: 6 }}>
             <select className="input" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 150 }}>
-              {supplierCategories.map((category) => <option key={category} value={category}>{category === "all" ? "All categories" : category}</option>)}
+              {supplierCategories.map((category) => <option key={category} value={category}>{category === "all" ? arTerm(lang, "All categories") : arTerm(lang, category)}</option>)}
             </select>
             <button className="btn btn-primary" onClick={() => setSupplierModalOpen(true)} style={{ height: 28, fontSize: 12 }}><Icon name="plus" size={12}/>{ar ? "مورد جديد" : "Add supplier"}</button>
           </div>
@@ -8940,13 +14364,13 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                       display: "grid", placeItems: "center", fontSize: 12, fontWeight: 600 }}>
                       {s.name[0]}
                     </div>
-                    <span style={{ fontWeight: 500 }}>{s.name}</span>
+                    <span style={{ fontWeight: 500 }}>{arTerm(lang, s.name)}</span>
                   </div>
                 </td>
-                <td className="muted">{s.category}</td>
-                <td className="muted">{s.address || "Address not set"}</td>
-                <td><span className="badge">{s.deliveryCategory || "Review"}</span></td>
-                <td className="muted">{s.lastOrder}</td>
+                <td className="muted">{arTerm(lang, s.category)}</td>
+                <td className="muted">{arTerm(lang, s.address || "Address not set")}</td>
+                <td><span className="badge">{arTerm(lang, s.deliveryCategory || "Review")}</span></td>
+                <td className="muted">{arTerm(lang, s.lastOrder)}</td>
                 <td style={{ textAlign: "end" }}>
                   <button className="btn btn-ghost" onClick={() => openPoModal(s)} style={{ height: 24, fontSize: 11 }}>{ar ? "طلب جديد" : "Upload invoice"}</button>
                 </td>
@@ -8957,8 +14381,8 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       </div>
 
       <Modal open={poModalOpen} onClose={() => setPoModalOpen(false)}
-        title={ar ? "New purchase order" : "Upload invoice"}
-        sub={ar ? "Supplier to warehouse receiving" : "Invoice first, then match items and assign receiving warehouse"}
+        title={ar ? "طلب شراء جديد" : "Upload invoice"}
+        sub={ar ? "من المورد إلى استلام المستودع" : "Invoice first, then match items and assign receiving warehouse"}
         width={700}>
         <form onSubmit={(event) => submitPo(event, false)} className="col" style={{ gap: 10 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 8 }}>
@@ -8967,27 +14391,28 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 150px", gap: 8 }}>
           <select className="input" value={poDraft.supplier} onChange={(event) => setPoDraft((draft) => ({ ...draft, supplier: event.target.value }))}>
-            {supplierRows.length ? supplierRows.map((supplier) => <option key={supplier.name} value={supplier.name}>{supplier.name}</option>) : <option value="">No live suppliers loaded</option>}
+            {supplierRows.length ? supplierRows.map((supplier) => <option key={supplier.name} value={supplier.name}>{arTerm(lang, supplier.name)}</option>) : <option value="">{arTerm(lang, "No source suppliers loaded")}</option>}
           </select>
             <select className="input" value={poDraft.warehouse} onChange={(event) => setPoDraft((draft) => ({ ...draft, warehouse: event.target.value }))}>
-              <option value={DEFAULT_WAREHOUSE_NAME}>{DEFAULT_WAREHOUSE_NAME}</option>
-              <option value="Baghdad Area Warehouse">Baghdad Area Warehouse</option>
+              {warehouseOptions.length
+                ? warehouseOptions.map((warehouse) => <option key={warehouse} value={warehouse}>{arTerm(lang, warehouse)}</option>)
+                : <option value="">{ui(ar, "noSourceWarehousesLoaded")}</option>}
             </select>
             <input className="input" type="date" value={poDraft.scheduleDate} onChange={(event) => setPoDraft((draft) => ({ ...draft, scheduleDate: event.target.value }))}/>
           </div>
-          <div className="t-small subtle">Creating the PO means the purchase has been made. Warehouse stock increases only when a human confirms receipt.</div>
+          <div className="t-small subtle">{ar ? "إنشاء طلب الشراء يعني أن الشراء تم. يزداد مخزون المستودع فقط عند تأكيد الاستلام من شخص." : "Creating the PO means the purchase has been made. Warehouse stock increases only when a human confirms receipt."}</div>
           <div className="col" style={{ gap: 8 }}>
             {poDraft.lines.map((line, index) => (
               <div key={index} className="row" style={{ gap: 8 }}>
                 <select className="input" value={line.item} onChange={(event) => {
-                  const picked = inv.find((item) => item.item === event.target.value);
+                  const picked = purchaseItemOptions.find((item) => item.item === event.target.value);
                   updatePoLine(index, {
                     item: event.target.value,
                     unit: picked?.unit || line.unit,
-                    rate: estimatePurchaseRate(picked || event.target.value),
+                    rate: purchaseRateForInventory(picked || { item: event.target.value }, !sourceDriven),
                   });
                 }} style={{ flex: 1.6 }}>
-                  {inv.map((item) => <option key={item.item} value={item.item}>{item.item}</option>)}
+                  {purchaseItemOptions.map((item) => <option key={item.item} value={item.item}>{arTerm(lang, item.item)}</option>)}
                 </select>
                 <input className="input" value={line.qty} onChange={(event) => updatePoLine(index, { qty: event.target.value })} placeholder="Qty" inputMode="decimal" style={{ flex: 0.55 }}/>
                 <input className="input" value={line.unit} onChange={(event) => updatePoLine(index, { unit: event.target.value })} placeholder="Unit" style={{ flex: 0.5 }}/>
@@ -9001,59 +14426,63 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           </div>
           <div className="between" style={{ paddingTop: 4 }}>
             <button type="button" className="btn btn-ghost" onClick={addPoLine} style={{ height: 30, fontSize: 12 }}>
-              <Icon name="plus" size={12}/>Add line
+              <Icon name="plus" size={12}/>{ar ? "إضافة بند" : "Add line"}
             </button>
-            <div className="t-num" style={{ fontSize: 14 }}>Total {fmtMoney(purchaseTotal(poDraft.lines))}</div>
+            <div className="t-num" style={{ fontSize: 14 }}>{ar ? "الإجمالي" : "Total"} {fmtMoney(purchaseTotal(poDraft.lines))}</div>
           </div>
           <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setPoModalOpen(false)}>Cancel</button>
-            <button type="submit" className="btn btn-primary" disabled={poBusy}>{poBusy ? "Creating..." : "Create purchase order"}</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setPoModalOpen(false)}>{ui(ar, "cancel")}</button>
+            <button type="submit" className="btn btn-primary" disabled={poBusy}>{poBusy ? (ar ? "جار الإنشاء..." : "Creating...") : (ar ? "إنشاء طلب الشراء" : "Create purchase order")}</button>
           </div>
         </form>
       </Modal>
 
       <Modal open={supplierModalOpen} onClose={() => setSupplierModalOpen(false)}
-        title={ar ? "Add supplier" : "Add supplier"}
-        sub={ar ? "Supplier setup" : "Supplier setup"}>
+        title={ar ? "إضافة مورد" : "Add supplier"}
+        sub={ar ? "إعداد المورد" : "Supplier setup"}>
         <form onSubmit={submitSupplier} className="col" style={{ gap: 10 }}>
-          <input className="input" value={supplierDraft.name} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="Supplier name"/>
-          <input className="input" value={supplierDraft.address} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, address: event.target.value }))} placeholder="Address"/>
+          <input className="input" value={supplierDraft.name} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder={ar ? "اسم المورد" : "Supplier name"}/>
+          <input className="input" value={supplierDraft.address} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, address: event.target.value }))} placeholder={ar ? "العنوان" : "Address"}/>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <input className="input" value={supplierDraft.category} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, category: event.target.value }))} placeholder="Category"/>
+            <input className="input" value={supplierDraft.category} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, category: event.target.value }))} placeholder={ar ? "الفئة" : "Category"}/>
             <select className="input" value={supplierDraft.deliveryCategory} onChange={(event) => setSupplierDraft((draft) => ({ ...draft, deliveryCategory: event.target.value }))}>
-              {["Same day", "Next morning", "2-3 days", "Weekly"].map((category) => <option key={category} value={category}>{category}</option>)}
+              {["Same day", "Next morning", "2-3 days", "Weekly"].map((category) => <option key={category} value={category}>{arTerm(lang, category)}</option>)}
             </select>
           </div>
           <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setSupplierModalOpen(false)}>Cancel</button>
-            <button type="submit" className="btn btn-primary" disabled={supplierBusy}>{supplierBusy ? "Adding..." : "Add supplier"}</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setSupplierModalOpen(false)}>{ui(ar, "cancel")}</button>
+            <button type="submit" className="btn btn-primary" disabled={supplierBusy}>{supplierBusy ? (ar ? "جار الإضافة..." : "Adding...") : (ar ? "إضافة المورد" : "Add supplier")}</button>
           </div>
         </form>
       </Modal>
 
       <Modal open={recurringModalOpen} onClose={() => setRecurringModalOpen(false)}
-        title={ar ? "Recurring purchase" : "Recurring purchase"}
-        sub={ar ? "Create PO plans; receipt remains manual" : "Create PO plans; receipt remains manual"}
+        title={ar ? "شراء متكرر" : "Recurring purchase"}
+        sub={ar ? "إنشاء خطط طلب شراء؛ الاستلام يبقى يدوياً" : "Create PO plans; receipt remains manual"}
         width={700}>
         <form onSubmit={submitRecurring} className="col" style={{ gap: 10 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 120px", gap: 8 }}>
-            <input className="input" value={recurringDraft.name} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="Plan name"/>
+            <input className="input" value={recurringDraft.name} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder={ar ? "اسم الخطة" : "Plan name"}/>
             <select className="input" value={recurringDraft.supplier} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, supplier: event.target.value }))}>
-              {supplierRows.length ? supplierRows.map((supplier) => <option key={supplier.name} value={supplier.name}>{supplier.name}</option>) : <option value="">No live suppliers loaded</option>}
+              {sourceDriven && <option value="">Select source supplier</option>}
+              {supplierRows.length ? supplierRows.map((supplier) => <option key={supplier.name} value={supplier.name}>{arTerm(lang, supplier.name)}</option>) : <option value="">{arTerm(lang, "No source suppliers loaded")}</option>}
             </select>
             <select className="input" value={recurringDraft.frequency} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, frequency: event.target.value }))}>
-              <option value="weekly">Weekly</option>
-              <option value="daily">Daily</option>
-              <option value="monthly">Monthly</option>
+              {sourceDriven && <option value="">Select source recurring cadence</option>}
+              <option value="weekly">{ar ? "أسبوعي" : "Weekly"}</option>
+              <option value="daily">{ar ? "يومي" : "Daily"}</option>
+              <option value="monthly">{ar ? "شهري" : "Monthly"}</option>
             </select>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 160px 160px", gap: 8 }}>
             <select className="input" value={recurringDraft.warehouse} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, warehouse: event.target.value }))}>
-              <option value={DEFAULT_WAREHOUSE_NAME}>{DEFAULT_WAREHOUSE_NAME}</option>
-              <option value="Baghdad Area Warehouse">Baghdad Area Warehouse</option>
+              {warehouseOptions.length
+                ? warehouseOptions.map((warehouse) => <option key={warehouse} value={warehouse}>{arTerm(lang, warehouse)}</option>)
+                : <option value="">{ui(ar, "noSourceWarehousesLoaded")}</option>}
             </select>
             <select className="input" value={recurringDraft.weekday} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, weekday: event.target.value }))}>
-              {WEEKDAY_LABELS.map((day, index) => <option key={day} value={String(index)}>{day}</option>)}
+              {sourceDriven && <option value="">Select source recurring weekday</option>}
+              {(ar ? WEEKDAY_LABELS_AR : WEEKDAY_LABELS).map((day, index) => <option key={day} value={String(index)}>{day}</option>)}
             </select>
             <input className="input" type="date" value={recurringDraft.nextDate} onChange={(event) => setRecurringDraft((draft) => ({ ...draft, nextDate: event.target.value }))}/>
           </div>
@@ -9061,18 +14490,18 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
             {recurringDraft.lines.map((line, index) => (
               <div key={index} className="row" style={{ gap: 8 }}>
                 <select className="input" value={line.item} onChange={(event) => {
-                  const picked = inv.find((item) => item.item === event.target.value);
+                    const picked = purchaseItemOptions.find((item) => item.item === event.target.value);
                   updateRecurringLine(index, {
                     item: event.target.value,
                     unit: picked?.unit || line.unit,
-                    rate: estimatePurchaseRate(picked || event.target.value),
+                    rate: purchaseRateForInventory(picked || { item: event.target.value }, !sourceDriven),
                   });
                 }} style={{ flex: 1.6 }}>
-                  {inv.map((item) => <option key={item.item} value={item.item}>{item.item}</option>)}
+                  {purchaseItemOptions.map((item) => <option key={item.item} value={item.item}>{arTerm(lang, item.item)}</option>)}
                 </select>
-                <input className="input" value={line.qty} onChange={(event) => updateRecurringLine(index, { qty: event.target.value })} placeholder="Qty" inputMode="decimal" style={{ flex: 0.55 }}/>
-                <input className="input" value={line.unit} onChange={(event) => updateRecurringLine(index, { unit: event.target.value })} placeholder="Unit" style={{ flex: 0.5 }}/>
-                <input className="input" value={line.rate} onChange={(event) => updateRecurringLine(index, { rate: event.target.value })} placeholder="Unit cost" inputMode="numeric" style={{ flex: 0.8 }}/>
+                <input className="input" value={line.qty} onChange={(event) => updateRecurringLine(index, { qty: event.target.value })} placeholder={ar ? "الكمية" : "Qty"} inputMode="decimal" style={{ flex: 0.55 }}/>
+                <input className="input" value={line.unit} onChange={(event) => updateRecurringLine(index, { unit: event.target.value })} placeholder={ar ? "الوحدة" : "Unit"} style={{ flex: 0.5 }}/>
+                <input className="input" value={line.rate} onChange={(event) => updateRecurringLine(index, { rate: event.target.value })} placeholder={ar ? "تكلفة الوحدة" : "Unit cost"} inputMode="numeric" style={{ flex: 0.8 }}/>
                 <button type="button" className="btn btn-ghost" onClick={() => removeRecurringLine(index)} style={{ width: 30, height: 30, padding: 0, justifyContent: "center" }}>
                   <Icon name="x" size={12}/>
                 </button>
@@ -9081,13 +14510,13 @@ function SuppliersScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           </div>
           <div className="between" style={{ paddingTop: 4 }}>
             <button type="button" className="btn btn-ghost" onClick={addRecurringLine} style={{ height: 30, fontSize: 12 }}>
-              <Icon name="plus" size={12}/>Add line
+              <Icon name="plus" size={12}/>{ar ? "إضافة سطر" : "Add line"}
             </button>
-            <div className="t-num" style={{ fontSize: 14 }}>Planned total {fmtMoney(purchaseTotal(recurringDraft.lines))}</div>
+            <div className="t-num" style={{ fontSize: 14 }}>{ar ? "الإجمالي المخطط" : "Planned total"} {fmtMoney(purchaseTotal(recurringDraft.lines))}</div>
           </div>
           <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setRecurringModalOpen(false)}>Cancel</button>
-            <button type="submit" className="btn btn-primary" disabled={recurringBusy}>{recurringBusy ? "Saving..." : "Save plan"}</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setRecurringModalOpen(false)}>{ui(ar, "cancel")}</button>
+            <button type="submit" className="btn btn-primary" disabled={recurringBusy}>{recurringBusy ? (ar ? "جار الحفظ..." : "Saving...") : (ar ? "حفظ الخطة" : "Save plan")}</button>
           </div>
         </form>
       </Modal>
@@ -9223,21 +14652,45 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const ar = lang === "ar";
   const { showToast } = useToast();
   const liveOnly = isLiveOnlyPayload(bootstrap);
+  const simulationDriven = isSimulationPayload(bootstrap);
+  const sourceDriven = liveOnly || simulationDriven;
   const chainHrSnapshot = odooHrSnapshot(bootstrap);
+  const simulationCurrentDate = simulationDriven ? String(unwrapOdoo(bootstrap)?.meta?.simulation?.current || "").slice(0, 10) : "";
+  const defaultWeekStart = startOfWeekIso(simulationCurrentDate || todayIsoDate());
   const [payrollSnapshot, setPayrollSnapshot] = useState(null);
+  const [scheduleSnapshot, setScheduleSnapshot] = useState(null);
+  const [selectedWeekStart, setSelectedWeekStart] = useState(() => defaultWeekStart);
+  const [rosterKiosk, setRosterKiosk] = useState("all");
+  const selectedWeekEnd = addDaysIso(selectedWeekStart, 6);
+  useEffect(() => {
+    if (simulationDriven) setSelectedWeekStart(defaultWeekStart);
+  }, [simulationDriven, defaultWeekStart]);
   const hrSnapshot = useMemo(() => {
-    if (!payrollSnapshot) return chainHrSnapshot;
-    return {
+    const merged = !payrollSnapshot ? chainHrSnapshot : {
       ...chainHrSnapshot,
       employees: payrollSnapshot.employees?.length ? payrollSnapshot.employees : chainHrSnapshot.employees,
       attendance: payrollSnapshot.attendance?.length ? payrollSnapshot.attendance : chainHrSnapshot.attendance,
       adjustments: payrollSnapshot.adjustments || chainHrSnapshot.adjustments || [],
       payrollRuns: payrollSnapshot.payrollRuns || chainHrSnapshot.payrollRuns || [],
+      coverageRules: Array.isArray(payrollSnapshot.coverageRules) ? payrollSnapshot.coverageRules : chainHrSnapshot.coverageRules || [],
+      shifts: Array.isArray(payrollSnapshot.shifts) ? payrollSnapshot.shifts : chainHrSnapshot.shifts || [],
+      coverageGaps: Array.isArray(payrollSnapshot.coverageGaps) ? payrollSnapshot.coverageGaps : chainHrSnapshot.coverageGaps || [],
+      summary: { ...(chainHrSnapshot.summary || {}), ...(payrollSnapshot.summary || {}) },
     };
-  }, [chainHrSnapshot, payrollSnapshot]);
+    if (!scheduleSnapshot) return merged;
+    return {
+      ...merged,
+      employees: scheduleSnapshot.employees?.length ? scheduleSnapshot.employees : merged.employees,
+      attendance: merged.attendance,
+      coverageRules: Array.isArray(scheduleSnapshot.coverageRules) ? scheduleSnapshot.coverageRules : merged.coverageRules || [],
+      shifts: Array.isArray(scheduleSnapshot.shifts) ? scheduleSnapshot.shifts : merged.shifts || [],
+      coverageGaps: Array.isArray(scheduleSnapshot.coverageGaps) ? scheduleSnapshot.coverageGaps : merged.coverageGaps || [],
+      summary: { ...(merged.summary || {}), ...(scheduleSnapshot.summary || {}) },
+    };
+  }, [chainHrSnapshot, payrollSnapshot, scheduleSnapshot]);
   const liveStaffRows = useMemo(() => staffRowsFromHrEmployees(hrSnapshot.employees || []), [hrSnapshot]);
   useEffect(() => {
-    if (!liveOnly || !sourceOfTruth?.enabled) return undefined;
+    if (!sourceDriven || !sourceOfTruth?.enabled) return undefined;
     let active = true;
     sourceOfTruth.getHrSnapshot()
       .then((result) => {
@@ -9247,15 +14700,36 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         if (active) showToast(compactError(error) || "Could not refresh HR payroll snapshot", "warn");
       });
     return () => { active = false; };
-  }, [liveOnly, sourceOfTruth, bootstrap]);
+  }, [sourceDriven, sourceOfTruth, bootstrap]);
+  useEffect(() => {
+    if (!sourceDriven || !sourceOfTruth?.enabled) return undefined;
+    let active = true;
+    sourceOfTruth.getHrSchedule({
+      dateFrom: selectedWeekStart,
+      dateTo: selectedWeekEnd,
+      kiosk: rosterKiosk === "all" ? undefined : rosterKiosk,
+    })
+      .then((result) => {
+        if (active) setScheduleSnapshot(unwrapOdoo(result));
+      })
+      .catch((error) => {
+        if (active) showToast(compactError(error) || "Could not refresh weekly roster", "warn");
+      });
+    return () => { active = false; };
+  }, [sourceDriven, sourceOfTruth, selectedWeekStart, selectedWeekEnd, rosterKiosk, bootstrap]);
   const kioskOptions = useMemo(() => {
     const rows = odooKioskRows(bootstrap).map((kiosk) => ({
       id: kiosk.id || kiosk.kiosk_code,
       label: `${kiosk.id || kiosk.kiosk_code} ${kiosk.name || ""}`.trim(),
     })).filter((kiosk) => kiosk.id);
-    if (rows.length || liveOnly) return rows;
+    if (rows.length || sourceDriven) return rows;
     return MOCK.kiosks.map((kiosk) => ({ id: kiosk.id, label: `${kiosk.id} ${kiosk.name}` }));
-  }, [bootstrap, liveOnly]);
+  }, [bootstrap, sourceDriven]);
+  useEffect(() => {
+    if (rosterKiosk !== "all" && !kioskOptions.some((kiosk) => String(kiosk.id) === String(rosterKiosk))) {
+      setRosterKiosk("all");
+    }
+  }, [kioskOptions, rosterKiosk]);
   const defaultKioskId = kioskOptions[0]?.id || "";
   const cashierRows = odooCashierPerformanceRows(bootstrap);
   const underReview = cashierRows.filter((row) => row.shortage < 0).length;
@@ -9264,48 +14738,77 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const [payrollStatus, setPayrollStatus] = useState("draft");
   const [expenseModalOpen, setExpenseModalOpen] = useState(false);
   const [adjustmentModalOpen, setAdjustmentModalOpen] = useState(false);
+  const [attendanceModalOpen, setAttendanceModalOpen] = useState(false);
   const [shiftModalOpen, setShiftModalOpen] = useState(false);
   const [coverageModalOpen, setCoverageModalOpen] = useState(false);
-  const [expenseDraft, setExpenseDraft] = useState({ name: "", category: "Operations", amount: "" });
-  const [adjustmentDraft, setAdjustmentDraft] = useState({
-    staff: liveOnly ? "" : MOCK.staff[2]?.name || "",
-    type: "deduction",
+  const makeExpenseDraft = () => ({ name: "", category: sourceDriven ? "" : "Operations", amount: "" });
+  const [expenseDraft, setExpenseDraft] = useState(() => makeExpenseDraft());
+  const makeAdjustmentDraft = (staff = sourceDriven ? "" : MOCK.staff[2]?.name || "") => ({
+    staff,
+    type: sourceDriven ? "" : "deduction",
     amount: "",
     reason: "",
   });
-  const [expenseRows, setExpenseRows] = useState(liveOnly ? [] : [
+  const [adjustmentDraft, setAdjustmentDraft] = useState(() => makeAdjustmentDraft());
+  const makeAttendanceDraft = (staff = "") => ({
+    staff,
+    date: todayIsoDate(),
+    checkIn: sourceDriven ? "" : "17:00",
+    checkOut: sourceDriven ? "" : "21:00",
+    manualHours: "",
+    note: "",
+  });
+  const [attendanceDraft, setAttendanceDraft] = useState(() => makeAttendanceDraft());
+  const [expenseRows, setExpenseRows] = useState(sourceDriven ? [] : [
     { name: "Cleaning supplies", category: "Operations", amount: 118_000 },
     { name: "Generator fuel", category: "Utilities", amount: 242_000 },
     { name: "Staff meal allowance", category: "Staff", amount: 96_000 },
     { name: "Kiosk repair", category: "Maintenance", amount: 175_000 },
   ]);
+  const sourceExpenseRows = useMemo(() => (
+    (hrSnapshot.expenses || []).map((row) => ({
+      id: row.id,
+      name: row.name,
+      category: row.category || "Operations",
+      amount: Number(row.amount || 0),
+      date: row.date || "",
+      note: row.note || "",
+    }))
+  ), [hrSnapshot.expenses]);
+  const activeExpenseRows = sourceDriven ? sourceExpenseRows : expenseRows;
   const [localStaff, setLocalStaff] = useState([]);
+  const [localShifts, setLocalShifts] = useState(() => sourceDriven ? [] : makeDemoWeekShifts(startOfWeekIso(todayIsoDate())));
+  const [editingShiftId, setEditingShiftId] = useState(null);
   const [staffModalOpen, setStaffModalOpen] = useState(false);
-  const [staffDraft, setStaffDraft] = useState({
+  const makeStaffDraft = (kiosk = defaultKioskId) => ({
     name: "",
     role: "Cashier",
-    kiosk: liveOnly ? defaultKioskId : MOCK.kiosks[0]?.id || "K-01",
-    salary: "1500000",
-    hours: "168",
+    kiosk: sourceDriven ? kiosk : kiosk || MOCK.kiosks[0]?.id || "K-01",
+    salary: sourceDriven ? "" : "1500000",
+    hours: sourceDriven ? "" : "168",
   });
-  const [shiftDraft, setShiftDraft] = useState({
-    employee: "",
-    kiosk: defaultKioskId,
-    date: todayIsoDate(),
-    role: "Cashier",
-    start: "08:00",
-    end: "16:00",
+  const [staffDraft, setStaffDraft] = useState(() => makeStaffDraft());
+  const makeShiftDraft = (employee = "", kiosk = defaultKioskId, date = selectedWeekStart) => ({
+    employee,
+    kiosk,
+    date,
+    role: sourceDriven ? "" : "Cashier",
+    start: sourceDriven ? "" : "08:00",
+    end: sourceDriven ? "" : "16:00",
+    state: "planned",
     note: "",
   });
-  const [coverageDraft, setCoverageDraft] = useState({
-    kiosk: defaultKioskId,
+  const [shiftDraft, setShiftDraft] = useState(() => makeShiftDraft());
+  const makeCoverageDraft = (kiosk = defaultKioskId) => ({
+    kiosk,
     dayOfWeek: "0",
-    role: "cashier",
-    start: "08:00",
-    end: "16:00",
-    requiredCount: "2",
+    role: sourceDriven ? "" : "cashier",
+    start: sourceDriven ? "" : "08:00",
+    end: sourceDriven ? "" : "16:00",
+    requiredCount: sourceDriven ? "" : "2",
   });
-  const [adjustments, setAdjustments] = useState(liveOnly ? [] : [
+  const [coverageDraft, setCoverageDraft] = useState(() => makeCoverageDraft());
+  const [adjustments, setAdjustments] = useState(sourceDriven ? [] : [
     { staff: "Karim Fahmy", type: "deduction", amount: 32_000, reason: "Cash shortage pending review", status: "hold" },
     { staff: "Yusuf Saleh", type: "advance", amount: 150_000, reason: "Salary advance", status: "approved" },
     { staff: "Sara Younis", type: "deduction", amount: 110_000, reason: "Unpaid leave", status: "approved" },
@@ -9321,7 +14824,13 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       status: row.state === "approved" ? "approved" : row.state === "rejected" ? "rejected" : "hold",
     }))
   ), [hrSnapshot]);
-  const activeAdjustments = liveOnly ? liveAdjustmentRows : adjustments;
+  const activeAdjustments = sourceDriven ? liveAdjustmentRows : adjustments;
+  const recentAdjustments = activeAdjustments.slice(0, 8);
+  const payrollAdjustmentImpact = (row) => {
+    if (row.status !== "approved") return 0;
+    const amount = Number(row.amount || 0);
+    return row.type === "bonus" ? amount : -amount;
+  };
   const liveCoverageGaps = hrSnapshot.coverageGaps || [];
   const liveShiftRows = (hrSnapshot.shifts || []).map((shift) => ({
     ...shift,
@@ -9329,15 +14838,16 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     time: `${hourToTime(shift.startHour)}-${hourToTime(shift.endHour)}`,
     staff: shift.employee,
   }));
-  const demoShiftRows = [
-    { id: "demo-1", employee: "Maya Ahmed", kiosk: "K-01", kioskName: "Karrada Center", date: todayIsoDate(), roleLabel: "Cashier", time: "08:00-16:00", plannedHours: 8, state: "planned" },
-    { id: "demo-2", employee: "Yusuf Saleh", kiosk: "K-02", kioskName: "Mansour District", date: todayIsoDate(), roleLabel: "Barista", time: "10:00-18:00", plannedHours: 8, state: "planned" },
-  ];
-  const scheduleRows = liveOnly ? liveShiftRows : demoShiftRows;
-  const coverageGaps = liveOnly ? liveCoverageGaps : [
+  useEffect(() => {
+    if (sourceDriven) setLocalShifts([]);
+  }, [sourceDriven]);
+  const scheduleRows = sourceDriven
+    ? liveShiftRows
+    : localShifts;
+  const coverageGaps = sourceDriven ? liveCoverageGaps : [
     { ruleId: "demo-gap", date: todayIsoDate(), kiosk: "K-04", kioskName: "Zayouna Plaza", role: "cashier", startHour: 8, endHour: 16, requiredCount: 2, assignedCount: 1, missingCount: 1, severity: "warning" },
   ];
-  const attendanceRows = liveOnly ? [
+  const attendanceRows = sourceDriven ? [
     ...coverageGaps.slice(0, 6).map((gap) => ({
       staff: "Unassigned",
       kiosk: gap.kiosk,
@@ -9346,10 +14856,10 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       impact: 0,
       status: "hold",
     })),
-    ...(hrSnapshot.attendance || []).slice(0, 6).map((row) => ({
+    ...(hrSnapshot.attendance || []).slice().reverse().slice(0, 6).map((row) => ({
       staff: row.employee,
       kiosk: row.kiosk,
-      issue: row.checkOut ? "Attendance logged" : "Open attendance",
+      issue: row.note ? `${row.note} - ${row.checkOut ? "Attendance logged" : "Open attendance"}` : row.checkOut ? "Attendance logged" : "Open attendance",
       hours: Math.round(Number(row.workedHours || 0)),
       impact: 0,
       status: row.checkOut ? "approved" : "ready",
@@ -9361,24 +14871,74 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     { staff: "Maya Ahmed", kiosk: "K-01", issue: "Normal shift", hours: 162, impact: 0, status: "ready" },
   ];
   useEffect(() => {
-    if (!liveOnly) return;
+    if (!sourceDriven) return;
     setExpenseRows([]);
     setAdjustments([]);
     setLocalStaff([]);
+    setLocalShifts([]);
     setAdjustmentDraft((draft) => draft.staff ? { ...draft, staff: "" } : draft);
-  }, [liveOnly]);
-  const allStaff = useMemo(() => [...(liveOnly ? liveStaffRows : MOCK.staff), ...localStaff], [liveOnly, liveStaffRows, localStaff]);
+    setAttendanceDraft((draft) => ({
+      ...draft,
+      checkIn: draft.checkIn === "17:00" ? "" : draft.checkIn,
+      checkOut: draft.checkOut === "21:00" ? "" : draft.checkOut,
+    }));
+    setExpenseDraft((draft) => ({ ...draft, category: draft.category === "Operations" ? "" : draft.category }));
+    setAdjustmentDraft((draft) => ({
+      ...draft,
+      staff: draft.staff === MOCK.staff[2]?.name ? "" : draft.staff,
+      type: draft.type === "deduction" ? "" : draft.type,
+    }));
+    setShiftDraft((draft) => ({
+      ...draft,
+      role: draft.role === "Cashier" ? "" : draft.role,
+      start: draft.start === "08:00" ? "" : draft.start,
+      end: draft.end === "16:00" ? "" : draft.end,
+    }));
+    setCoverageDraft((draft) => ({
+      ...draft,
+      role: draft.role === "cashier" ? "" : draft.role,
+      start: draft.start === "08:00" ? "" : draft.start,
+      end: draft.end === "16:00" ? "" : draft.end,
+      requiredCount: draft.requiredCount === "2" ? "" : draft.requiredCount,
+    }));
+  }, [sourceDriven]);
+  const allStaff = useMemo(() => [...(sourceDriven ? liveStaffRows : MOCK.staff), ...localStaff], [sourceDriven, liveStaffRows, localStaff]);
   useEffect(() => {
-    if (!liveOnly) return;
+    if (!sourceDriven) return;
     const staffId = allStaff[0]?.id || "";
     setStaffDraft((draft) => ({ ...draft, kiosk: draft.kiosk || defaultKioskId }));
+    setAttendanceDraft((draft) => ({ ...draft, staff: draft.staff || staffId }));
     setShiftDraft((draft) => ({
       ...draft,
       employee: draft.employee || staffId,
       kiosk: draft.kiosk || defaultKioskId,
     }));
     setCoverageDraft((draft) => ({ ...draft, kiosk: draft.kiosk || defaultKioskId }));
-  }, [allStaff, defaultKioskId, liveOnly]);
+  }, [allStaff, defaultKioskId, sourceDriven]);
+  const rosterWeekDays = useMemo(() => weekDaysFromStartLang(selectedWeekStart, lang), [selectedWeekStart, lang]);
+  const weekScheduleRows = useMemo(() => (
+    scheduleRows
+      .filter((shift) => (
+        shift.date >= selectedWeekStart
+        && shift.date <= selectedWeekEnd
+        && (rosterKiosk === "all" || String(shift.kiosk) === String(rosterKiosk))
+      ))
+      .sort((left, right) => (
+        String(left.date || "").localeCompare(String(right.date || ""))
+        || Number(left.startHour || 0) - Number(right.startHour || 0)
+        || String(left.kiosk || "").localeCompare(String(right.kiosk || ""))
+      ))
+  ), [scheduleRows, selectedWeekStart, selectedWeekEnd, rosterKiosk]);
+  const weekCoverageGaps = useMemo(() => (
+    coverageGaps.filter((gap) => (
+      (!gap.date || (gap.date >= selectedWeekStart && gap.date <= selectedWeekEnd))
+      && (rosterKiosk === "all" || String(gap.kiosk) === String(rosterKiosk))
+    ))
+  ), [coverageGaps, selectedWeekStart, selectedWeekEnd, rosterKiosk]);
+  const rosterKioskLabel = rosterKiosk === "all" ? ui(ar, "allKiosks") : arTerm(lang, kioskNameForRoster(rosterKiosk, kioskOptions));
+  const rosterStaffCount = new Set(weekScheduleRows.map((shift) => shift.staff || shift.employee).filter(Boolean)).size;
+  const rosterGapCount = weekCoverageGaps.reduce((sum, gap) => sum + Number(gap.missingCount || 0), 0);
+  const rosterPlannedHours = Math.round(weekScheduleRows.reduce((sum, shift) => sum + Number(shift.plannedHours || 0), 0));
   const roles = ["all", ...Array.from(new Set(allStaff.map((person) => person.role)))];
   const kiosks = ["all", ...Array.from(new Set([
     ...kioskOptions.map((kiosk) => kiosk.id),
@@ -9386,16 +14946,17 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   ].filter(Boolean)))];
   const payrollRows = useMemo(() => allStaff.map((person) => {
     const personAdjustments = activeAdjustments.filter((item) => item.staff === person.name);
+    const approvedAdjustments = personAdjustments.filter((item) => item.status === "approved");
     const hourlyRate = person.salary / Math.max(person.hours, 1);
     const overtimeHours = Math.max(0, person.hours - 168);
     const overtimePay = Math.round(overtimeHours * hourlyRate * 1.25);
-    const advance = personAdjustments
+    const advance = approvedAdjustments
       .filter((item) => item.type === "advance")
       .reduce((sum, item) => sum + Number(item.amount || 0), 0);
-    const deduction = personAdjustments
-      .filter((item) => item.type === "deduction")
+    const deduction = approvedAdjustments
+      .filter((item) => item.type === "deduction" || item.type === "cash_shortage")
       .reduce((sum, item) => sum + Number(item.amount || 0), 0);
-    const bonus = personAdjustments
+    const bonus = approvedAdjustments
       .filter((item) => item.type === "bonus")
       .reduce((sum, item) => sum + Number(item.amount || 0), 0);
     const hold = person.status === "review" || personAdjustments.some((item) => item.status === "hold");
@@ -9417,34 +14978,60 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const activeStaff = allStaff.filter((person) => person.status !== "leave").length;
   const grossPayroll = payrollRows.reduce((sum, person) => sum + person.salary, 0);
   const netPayroll = payrollRows.reduce((sum, person) => sum + person.netPay, 0);
+  const payrollKpiValue = sourceDriven ? Number(hrSnapshot.summary?.payrollAccrued || netPayroll) : netPayroll;
+  const payrollKpiLabel = sourceDriven ? (ar ? "الرواتب المستحقة" : "Accrued payroll") : ui(ar, "monthlyPayroll");
+  const payrollKpiFooter = sourceDriven ? ui(ar, "reportPayroll") : (ar ? "التشغيل التالي بعد ٦ أيام" : "next run in 6d");
+  const activeStaffFooter = sourceDriven ? (ar ? "سجل HR" : "HR roster") : ui(ar, "roster");
   const adjustmentTotal = payrollRows.reduce((sum, person) => sum + person.bonus + person.overtimePay - person.advance - person.deduction, 0);
   const payrollReviewCount = payrollRows.filter((person) => person.payrollStatus === "review").length;
   const avgWeeklyHours = Math.round(allStaff.reduce((sum, person) => sum + person.hours, 0) / Math.max(allStaff.length, 1) / 4);
-  const missingPeople = coverageGaps.reduce((sum, gap) => sum + Number(gap.missingCount || 0), 0);
-  const plannedWeeklyHours = Math.round(scheduleRows.reduce((sum, shift) => sum + Number(shift.plannedHours || 0), 0));
-  const livePayrollRuns = liveOnly ? (hrSnapshot.payrollRuns || []) : [];
+  const missingPeople = rosterGapCount;
+  const plannedWeeklyHours = rosterPlannedHours;
+  const livePayrollRuns = sourceDriven ? (hrSnapshot.payrollRuns || []) : [];
   const latestPayrollRun = livePayrollRuns[0] || null;
+  const payrollPeriodLocked = ["approved", "paid"].includes(String(latestPayrollRun?.state || payrollStatus).toLowerCase());
   useEffect(() => {
-    if (!liveOnly) return;
+    if (!sourceDriven) return;
     setPayrollStatus(latestPayrollRun?.state || "draft");
-  }, [latestPayrollRun?.id, latestPayrollRun?.state, liveOnly]);
-  const payrollStatusLabel = payrollStatus === "approved" ? "Approved" : payrollStatus === "reviewed" ? "Reviewed" : "Draft";
-  const payrollStatusBadge = payrollStatus === "approved" ? "badge-pos" : payrollStatus === "reviewed" ? "badge-warn" : "";
+  }, [latestPayrollRun?.id, latestPayrollRun?.state, sourceDriven]);
+  const payrollStatusLabel = payrollStatus === "paid" ? "Paid" : payrollStatus === "approved" ? "Approved" : payrollStatus === "reviewed" ? "Reviewed" : "Draft";
+  const payrollStatusBadge = payrollStatus === "paid" || payrollStatus === "approved" ? "badge-pos" : payrollStatus === "reviewed" ? "badge-warn" : "";
 
-  const submitExpense = (event) => {
+  const submitExpense = async (event) => {
     event.preventDefault();
     const amount = Number(expenseDraft.amount || 0);
-    if (!expenseDraft.name.trim() || amount <= 0) {
-      showToast("Expense needs name and amount", "warn");
+    if (!expenseDraft.name.trim() || !expenseDraft.category || amount <= 0) {
+      showToast(sourceDriven ? "Expense needs name, source category, and amount" : ui(ar, "expenseNeedsName"), "warn");
+      return;
+    }
+    if (sourceDriven) {
+      if (!sourceOfTruth?.enabled) {
+        showToast("Connect the source engine before recording source expenses", "warn");
+        return;
+      }
+      try {
+        await sourceOfTruth.submitOperatingExpense({
+          name: expenseDraft.name.trim(),
+          category: expenseDraft.category,
+          amount,
+          date: todayIsoDate(),
+        });
+        await refreshHrPayrollSnapshot();
+        setExpenseDraft(makeExpenseDraft());
+        setExpenseModalOpen(false);
+        showToast("Source expense recorded", "success");
+      } catch (error) {
+        showToast(compactError(error) || "Could not record source expense", "warn");
+      }
       return;
     }
     setExpenseRows((rows) => [
       { name: expenseDraft.name.trim(), category: expenseDraft.category, amount },
       ...rows,
     ]);
-    setExpenseDraft({ name: "", category: "Operations", amount: "" });
+    setExpenseDraft(makeExpenseDraft());
     setExpenseModalOpen(false);
-    showToast("Expense recorded", "success");
+    showToast(ui(ar, "expenseRecorded"), "success");
   };
 
   const submitStaff = async (event) => {
@@ -9453,14 +15040,18 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     const salary = Number(staffDraft.salary || 0);
     const hours = Number(staffDraft.hours || 0);
     if (!name || salary <= 0 || hours <= 0) {
-      showToast(ar ? "الاسم والراتب والساعات مطلوبة" : "Name, salary, and hours are required", "warn");
+      showToast(ui(ar, "nameSalaryHoursRequired"), "warn");
       return;
     }
-    if (liveOnly && !staffDraft.kiosk) {
-      showToast("Pick a live kiosk before adding staff", "warn");
+    if (sourceDriven && !staffDraft.kiosk) {
+      showToast("Pick a source kiosk before adding staff", "warn");
       return;
     }
-    if (liveOnly && sourceOfTruth?.enabled) {
+    if (sourceDriven) {
+      if (!sourceOfTruth?.enabled) {
+        showToast("Connect the source engine before adding source staff", "warn");
+        return;
+      }
       try {
         await sourceOfTruth.createHrEmployee({
           name,
@@ -9470,11 +15061,11 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           expectedMonthlyHours: hours,
         });
         await refreshOdoo?.();
-        setStaffDraft({ name: "", role: "Cashier", kiosk: staffDraft.kiosk || defaultKioskId, salary: "1500000", hours: "168" });
+        setStaffDraft(makeStaffDraft(staffDraft.kiosk || defaultKioskId));
         setStaffModalOpen(false);
-        showToast(`Added ${name} to live HR`, "success");
+        showToast(`Added ${name} to source HR`, "success");
       } catch (error) {
-        showToast(compactError(error) || "Could not add live staff", "warn");
+        showToast(compactError(error) || "Could not add source staff", "warn");
       }
       return;
     }
@@ -9489,21 +15080,53 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         status: "ready",
       },
     ]);
-    setStaffDraft({
-      name: "",
-      role: "Cashier",
-      kiosk: liveOnly ? defaultKioskId : MOCK.kiosks[0]?.id || "K-01",
-      salary: "1500000",
-      hours: "168",
-    });
+    setStaffDraft(makeStaffDraft());
     setStaffModalOpen(false);
     showToast(ar ? `تمت إضافة ${name}` : `Added ${name}`, "success");
   };
 
+  const refreshRosterSchedule = async () => {
+    if (sourceDriven && sourceOfTruth?.enabled) {
+      const schedule = unwrapOdoo(await sourceOfTruth.getHrSchedule({
+        dateFrom: selectedWeekStart,
+        dateTo: selectedWeekEnd,
+        kiosk: rosterKiosk === "all" ? undefined : rosterKiosk,
+      }));
+      setScheduleSnapshot(schedule);
+    }
+    await refreshOdoo?.();
+  };
+
+  const openShiftEditor = (shift = null, date = selectedWeekStart) => {
+    const firstStaff = allStaff[0];
+    const defaultEmployee = firstStaff?.id || firstStaff?.name || "";
+    const defaultKiosk = rosterKiosk === "all" ? defaultKioskId : rosterKiosk;
+    if (shift) {
+      setEditingShiftId(shift.id || null);
+      setShiftDraft({
+        employee: shift.employeeId || shift.employee || shift.staff || defaultEmployee,
+        kiosk: shift.kiosk || defaultKiosk,
+        date: shift.date || date,
+        role: hrRoleLabel(shift.role || shift.roleLabel),
+        start: hourToTime(shift.startHour ?? timeToHour(String(shift.time || "08:00-16:00").split("-")[0])),
+        end: hourToTime(shift.endHour ?? timeToHour(String(shift.time || "08:00-16:00").split("-")[1] || "16:00")),
+        state: shift.state || "planned",
+        note: shift.note || "",
+      });
+      setShiftModalOpen(true);
+      return;
+    }
+    setEditingShiftId(null);
+    setShiftDraft(makeShiftDraft(defaultEmployee, defaultKiosk, date));
+    setShiftModalOpen(true);
+  };
+
   const submitShift = async (event) => {
     event.preventDefault();
-    if (!shiftDraft.employee || !shiftDraft.kiosk || !shiftDraft.date) {
-      showToast("Shift needs staff, kiosk, and date", "warn");
+    const formData = new FormData(event.currentTarget);
+    const submittedState = String(formData.get("shiftState") || shiftDraft.state || "planned");
+    if (!shiftDraft.employee || !shiftDraft.kiosk || !shiftDraft.date || !shiftDraft.role || !shiftDraft.start || !shiftDraft.end) {
+      showToast("Shift needs staff, kiosk, date, role, and times", "warn");
       return;
     }
     const startHour = timeToHour(shiftDraft.start);
@@ -9512,43 +15135,90 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       showToast("Shift end time must be after start time", "warn");
       return;
     }
-    if (liveOnly && sourceOfTruth?.enabled) {
+    if (sourceDriven) {
+      if (!sourceOfTruth?.enabled) {
+        showToast("Connect the source engine before saving source shifts", "warn");
+        return;
+      }
       try {
-        await sourceOfTruth.createHrShift({
+        const payload = {
           employee: shiftDraft.employee,
           kiosk: shiftDraft.kiosk,
           date: shiftDraft.date,
           role: normalizeHrRole(shiftDraft.role),
           startHour,
           endHour,
+          state: submittedState,
           note: shiftDraft.note,
-        });
-        await refreshOdoo?.();
+        };
+        if (editingShiftId) {
+          await sourceOfTruth.updateHrShift({
+            id: editingShiftId,
+            ...payload,
+          });
+        } else {
+          await sourceOfTruth.createHrShift(payload);
+        }
+        await refreshRosterSchedule();
         setShiftModalOpen(false);
-        showToast("Shift added to live work week", "success");
+        setEditingShiftId(null);
+        showToast(editingShiftId ? "Shift updated in source work week" : "Shift added to source work week", "success");
       } catch (error) {
-        showToast(compactError(error) || "Could not add shift", "warn");
+        showToast(compactError(error) || "Could not save shift", "warn");
       }
       return;
     }
+    const selectedStaff = allStaff.find((person) => String(person.id || person.name) === String(shiftDraft.employee));
+    const employeeName = selectedStaff?.name || shiftDraft.employee;
+    const nextShift = {
+      id: editingShiftId || `demo-shift-${Date.now()}`,
+      employee: employeeName,
+      staff: employeeName,
+      employeeId: selectedStaff?.id || employeeName,
+      kiosk: shiftDraft.kiosk,
+      kioskName: kioskNameForRoster(shiftDraft.kiosk, kioskOptions),
+      date: shiftDraft.date,
+      role: normalizeHrRole(shiftDraft.role),
+      roleLabel: hrRoleLabel(shiftDraft.role),
+      startHour,
+      endHour,
+      time: `${hourToTime(startHour)}-${hourToTime(endHour)}`,
+      plannedHours: endHour - startHour,
+      state: submittedState,
+      note: shiftDraft.note,
+    };
+    setLocalShifts((rows) => (
+      editingShiftId
+        ? rows.map((row) => String(row.id) === String(editingShiftId) ? nextShift : row)
+        : [nextShift, ...rows]
+    ));
     setShiftModalOpen(false);
-    showToast("Demo shift prepared", "success");
+    setEditingShiftId(null);
+    showToast(editingShiftId ? "Demo shift updated" : "Demo shift prepared", "success");
   };
 
   const submitCoverageRule = async (event) => {
     event.preventDefault();
     if (!coverageDraft.kiosk) {
-      showToast("Coverage rule needs a kiosk", "warn");
+      showToast(ui(ar, "coverageNeedsKiosk"), "warn");
+      return;
+    }
+    if (!coverageDraft.role || !coverageDraft.start || !coverageDraft.end) {
+      showToast(ui(ar, "coverageNeedsValidTime"), "warn");
       return;
     }
     const startHour = timeToHour(coverageDraft.start);
     const endHour = timeToHour(coverageDraft.end);
     const requiredCount = Number(coverageDraft.requiredCount || 0);
     if (endHour <= startHour || requiredCount <= 0) {
-      showToast("Coverage needs valid time and headcount", "warn");
+      showToast(ui(ar, "coverageNeedsValidTime"), "warn");
       return;
     }
-    if (liveOnly && sourceOfTruth?.enabled) {
+    if (sourceDriven) {
+      if (!sourceOfTruth?.enabled) {
+        showToast("Connect the source engine before saving coverage rules", "warn");
+        return;
+      }
       try {
         await sourceOfTruth.createHrCoverageRule({
           kiosk: coverageDraft.kiosk,
@@ -9560,7 +15230,7 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         });
         await refreshOdoo?.();
         setCoverageModalOpen(false);
-        showToast("Coverage rule added", "success");
+        showToast(ui(ar, "coverageRuleAdded"), "success");
       } catch (error) {
         showToast(compactError(error) || "Could not add coverage rule", "warn");
       }
@@ -9573,23 +15243,33 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const submitAdjustment = async (event) => {
     event.preventDefault();
     const amount = Number(adjustmentDraft.amount || 0);
-    if (!adjustmentDraft.staff || amount <= 0) {
-      showToast("Adjustment needs staff and amount", "warn");
+    if (!adjustmentDraft.staff || !adjustmentDraft.type || amount <= 0) {
+      showToast("Adjustment needs staff, type, and amount", "warn");
       return;
     }
-    if (liveOnly && sourceOfTruth?.enabled) {
+    if (sourceDriven && payrollPeriodLocked) {
+      showToast(ui(ar, "payrollPeriodLocked"), "warn");
+      return;
+    }
+    if (sourceDriven) {
+      if (!sourceOfTruth?.enabled) {
+        showToast("Connect the source engine before adding source payroll adjustments", "warn");
+        return;
+      }
       try {
         await sourceOfTruth.submitPayrollAdjustment({
           employee: adjustmentDraft.staff,
           type: adjustmentDraft.type,
           amount,
           reason: adjustmentDraft.reason || "Payroll adjustment",
+          date: todayIsoDate(),
+          approve: !["deduction", "cash_shortage"].includes(adjustmentDraft.type),
         });
         await refreshOdoo?.();
         setPayrollStatus("draft");
-        setAdjustmentDraft({ staff: allStaff[0]?.name || "", type: "deduction", amount: "", reason: "" });
+        setAdjustmentDraft(makeAdjustmentDraft(allStaff[0]?.name || ""));
         setAdjustmentModalOpen(false);
-        showToast("Live payroll adjustment added", "success");
+        showToast("Source payroll adjustment added", "success");
       } catch (error) {
         showToast(compactError(error) || "Could not add adjustment", "warn");
       }
@@ -9601,14 +15281,94 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         type: adjustmentDraft.type,
         amount,
         reason: adjustmentDraft.reason || "Payroll adjustment",
-        status: adjustmentDraft.type === "deduction" ? "hold" : "approved",
+        status: ["deduction", "cash_shortage"].includes(adjustmentDraft.type) ? "hold" : "approved",
       },
       ...rows,
     ]);
     setPayrollStatus("draft");
-    setAdjustmentDraft({ staff: liveOnly ? "" : MOCK.staff[2]?.name || "", type: "deduction", amount: "", reason: "" });
+    setAdjustmentDraft(makeAdjustmentDraft());
     setAdjustmentModalOpen(false);
-    showToast("Payroll adjustment added", "success");
+    showToast(ui(ar, "payrollAdjustmentAdded"), "success");
+  };
+
+  const resolvePayrollAdjustment = async (row, action) => {
+    const nextStatus = action === "approve" ? "approved" : "rejected";
+    if (sourceDriven) {
+      if (!sourceOfTruth?.enabled) {
+        showToast("Connect the source engine before reviewing source adjustments", "warn");
+        return;
+      }
+      if (payrollPeriodLocked) {
+        showToast(ui(ar, "payrollPeriodLocked"), "warn");
+        return;
+      }
+      if (!row.id) {
+        showToast("Source adjustment is missing its audit id", "warn");
+        return;
+      }
+      try {
+        await sourceOfTruth.payrollAdjustmentAction({ id: row.id, action });
+        await refreshHrPayrollSnapshot();
+        setPayrollStatus("draft");
+        showToast(`Adjustment ${nextStatus}`, "success");
+      } catch (error) {
+        showToast(compactError(error) || `Could not ${action} adjustment`, "warn");
+      }
+      return;
+    }
+    setAdjustments((rows) => rows.map((item) => {
+      const sameRow = row.id
+        ? String(item.id) === String(row.id)
+        : item.staff === row.staff && item.type === row.type && item.reason === row.reason && Number(item.amount || 0) === Number(row.amount || 0);
+      return sameRow ? { ...item, status: nextStatus } : item;
+    }));
+    setPayrollStatus("draft");
+    showToast(`Adjustment ${nextStatus}`, "success");
+  };
+
+  const submitAttendance = async (event) => {
+    event.preventDefault();
+    const manualHours = Number(attendanceDraft.manualHours || 0);
+    if (!attendanceDraft.staff) {
+      showToast(ui(ar, "attendanceNeedsStaff"), "warn");
+      return;
+    }
+    if (manualHours < 0) {
+      showToast(ar ? "ساعات الحضور لا يمكن أن تكون سالبة" : "Attendance hours cannot be negative", "warn");
+      return;
+    }
+    const checkIn = attendanceDraft.checkIn ? `${attendanceDraft.date}T${attendanceDraft.checkIn}:00` : undefined;
+    const checkOut = attendanceDraft.checkOut ? `${attendanceDraft.date}T${attendanceDraft.checkOut}:00` : undefined;
+    if (!checkIn && !checkOut && manualHours <= 0) {
+      showToast(ui(ar, "attendanceNeedsTime"), "warn");
+      return;
+    }
+    if (sourceDriven) {
+      if (!sourceOfTruth?.enabled) {
+        showToast("Connect the source engine before recording source attendance", "warn");
+        return;
+      }
+      try {
+        await sourceOfTruth.submitHrAttendance({
+          employee: attendanceDraft.staff,
+          checkIn,
+          checkOut,
+          manualHours: manualHours > 0 ? manualHours : undefined,
+          note: attendanceDraft.note || "Attendance logged",
+        });
+        await refreshHrPayrollSnapshot();
+        await refreshRosterSchedule();
+        setAttendanceDraft((draft) => sourceDriven
+          ? { ...draft, checkIn: "", checkOut: "", note: "", manualHours: "" }
+          : { ...draft, note: "", manualHours: "" });
+        setAttendanceModalOpen(false);
+        showToast("Source attendance recorded", "success");
+      } catch (error) {
+        showToast(compactError(error) || "Could not record attendance", "warn");
+      }
+      return;
+    }
+    showToast(ui(ar, "attendanceRecordedSourceBacked"), "info");
   };
 
   const refreshHrPayrollSnapshot = async () => {
@@ -9620,7 +15380,11 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   };
 
   const reviewPayroll = async () => {
-    if (liveOnly && sourceOfTruth?.enabled) {
+    if (sourceDriven) {
+      if (!sourceOfTruth?.enabled) {
+        showToast("Connect the source engine before reviewing source payroll", "warn");
+        return;
+      }
       try {
         const today = todayIsoDate();
         const dateFrom = `${today.slice(0, 8)}01`;
@@ -9632,14 +15396,14 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         }));
         await refreshHrPayrollSnapshot();
         setPayrollStatus(run?.state || "reviewed");
-        showToast("Live payroll run computed", "success");
+        showToast("Source payroll run computed", "success");
       } catch (error) {
-        showToast(compactError(error) || "Could not compute live payroll", "warn");
+        showToast(compactError(error) || "Could not compute source payroll", "warn");
       }
       return;
     }
     setPayrollStatus("reviewed");
-    showToast("Payroll marked reviewed", "success");
+    showToast(ui(ar, "payrollMarkedReviewed"), "success");
   };
 
   const approvePayroll = async () => {
@@ -9647,9 +15411,17 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       showToast("Resolve held payroll rows first", "warn");
       return;
     }
-    if (liveOnly && sourceOfTruth?.enabled) {
+    if (latestPayrollRun?.state === "paid" || payrollStatus === "paid") {
+      showToast(ui(ar, "payrollAlreadyPaid"), "info");
+      return;
+    }
+    if (sourceDriven) {
+      if (!sourceOfTruth?.enabled) {
+        showToast("Connect the source engine before approving source payroll", "warn");
+        return;
+      }
       if (!latestPayrollRun?.id) {
-        showToast("Review payroll first to create a live payroll run", "warn");
+        showToast("Review payroll first to create a source payroll run", "warn");
         return;
       }
       try {
@@ -9659,14 +15431,53 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         }));
         await refreshHrPayrollSnapshot();
         setPayrollStatus(run?.state || "approved");
-        showToast("Live payroll approved", "success");
+        showToast("Source payroll approved", "success");
       } catch (error) {
-        showToast(compactError(error) || "Could not approve live payroll", "warn");
+        showToast(compactError(error) || "Could not approve source payroll", "warn");
       }
       return;
     }
     setPayrollStatus("approved");
-    showToast("Payroll approved", "success");
+    showToast(ui(ar, "payrollApproved"), "success");
+  };
+
+  const markPayrollPaid = async () => {
+    if (payrollReviewCount > 0) {
+      showToast("Resolve held payroll rows first", "warn");
+      return;
+    }
+    if (sourceDriven) {
+      if (!sourceOfTruth?.enabled) {
+        showToast("Connect the source engine before marking source payroll paid", "warn");
+        return;
+      }
+      if (!latestPayrollRun?.id) {
+        showToast("Review payroll first to create a source payroll run", "warn");
+        return;
+      }
+      if (!["approved", "paid"].includes(String(latestPayrollRun.state || "").toLowerCase())) {
+        showToast("Approve payroll before marking paid", "warn");
+        return;
+      }
+      try {
+        const run = unwrapOdoo(await sourceOfTruth.payrollRunAction({
+          id: latestPayrollRun.id,
+          action: "paid",
+        }));
+        await refreshHrPayrollSnapshot();
+        setPayrollStatus(run?.state || "paid");
+        showToast("Source payroll marked paid", "success");
+      } catch (error) {
+        showToast(compactError(error) || "Could not mark source payroll paid", "warn");
+      }
+      return;
+    }
+    if (!["approved", "paid"].includes(payrollStatus)) {
+      showToast("Approve payroll before marking paid", "warn");
+      return;
+    }
+    setPayrollStatus("paid");
+    showToast(ui(ar, "payrollMarkedPaid"), "success");
   };
 
   const exportPayroll = () => {
@@ -9685,6 +15496,51 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         person.netPay,
         person.payrollStatus,
       ]),
+      [],
+      ["Attendance", "Staff", "Kiosk", "Issue", "Hours", "Status"],
+      ...attendanceRows.map((row) => [
+        "Attendance",
+        row.staff,
+        row.kiosk,
+        row.issue,
+        row.hours,
+        row.status,
+      ]),
+      [],
+      ["Adjustment", "Staff", "Type", "Amount", "Signed payroll impact", "Reason", "Status"],
+      ...activeAdjustments.map((row) => [
+        "Adjustment",
+        row.staff,
+        row.type,
+        Number(row.amount || 0),
+        payrollAdjustmentImpact(row),
+        row.reason,
+        row.status,
+      ]),
+      [],
+      ["Expense", "Name", "Category", "Amount", "Date", "Note"],
+      ...activeExpenseRows.map((row) => [
+        "Expense",
+        row.name,
+        row.category,
+        row.amount,
+        row.date || "",
+        row.note || "",
+      ]),
+      ...(latestPayrollRun ? [
+        [],
+        ["Payroll run", "Name", "Date from", "Date to", "State", "Gross", "Adjustments", "Net pay"],
+        [
+          "Payroll run",
+          latestPayrollRun.name || latestPayrollRun.id,
+          latestPayrollRun.dateFrom || "",
+          latestPayrollRun.dateTo || "",
+          latestPayrollRun.state || payrollStatus,
+          Number(latestPayrollRun.gross || grossPayroll),
+          Number(latestPayrollRun.adjustments || adjustmentTotal),
+          Number(latestPayrollRun.net || payrollKpiValue),
+        ],
+      ] : []),
     ];
     const filename = `bayaan-payroll-run-${new Date().toISOString().slice(0, 10)}.csv`;
     if (typeof document !== "undefined" && typeof Blob !== "undefined" && typeof URL !== "undefined") {
@@ -9698,127 +15554,212 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       link.remove();
       URL.revokeObjectURL(href);
     }
-    showToast(`Payroll exported as ${filename}`, "success");
+    showToast(ui(ar, "payrollExported", { filename }), "success");
   };
 
   return (
     <div className="col" style={{ gap: 14 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
-        <KPI label={ar ? "Active staff" : "Active staff"} value={String(activeStaff)} footer={ar ? "HR roster" : "HR roster"}/>
-        <KPI label={ar ? "Monthly payroll" : "Monthly payroll"} value={fmtMoney(netPayroll)} footer={ar ? "next run in 6d" : "next run in 6d"}/>
-        <KPI label={ar ? "Avg weekly hrs" : "Avg weekly hrs"} value={String(avgWeeklyHours)} footer={`${plannedWeeklyHours} planned`}/>
-        <KPI label={ar ? "Coverage gaps" : "Coverage gaps"} value={String(missingPeople)} footer={ar ? "missing staff" : "missing staff"}/>
+        <KPI label={ui(ar, "activeStaff")} value={String(activeStaff)} footer={activeStaffFooter}/>
+        <KPI label={payrollKpiLabel} value={fmtMoney(payrollKpiValue)} footer={payrollKpiFooter}/>
+        <KPI label={ui(ar, "avgWeeklyHours")} value={String(avgWeeklyHours)} footer={ar ? `${plannedWeeklyHours} مخططة` : `${plannedWeeklyHours} planned`}/>
+        <KPI label={ui(ar, "coverageGaps")} value={String(missingPeople)} footer={ui(ar, "missingStaff")}/>
       </div>
 
       <div className="card card-pad">
         <div className="between" style={{ gap: 14, alignItems: "flex-start" }}>
           <div>
             <div className="row" style={{ gap: 8, marginBottom: 6 }}>
-              <AITag>{ar ? "HR & Payroll" : "HR & Payroll"}</AITag>
-              <span className={`badge ${payrollStatusBadge}`}>{payrollStatusLabel}</span>
+              <AITag>{ui(ar, "hrPayroll")}</AITag>
+              <span className={`badge ${payrollStatusBadge}`}>{arTerm(lang, payrollStatusLabel)}</span>
             </div>
             <div className="ai-block" style={{ fontSize: 14.5, lineHeight: 1.55, maxWidth: 840 }}>
-              Payroll is tracked as an operating cost, with advances, deductions, overtime, attendance exceptions, and cashier shortages separated before approval.
+              {ar
+                ? "تُتبع الرواتب كتكلفة تشغيلية، مع فصل السلف والاستقطاعات والإضافي واستثناءات الحضور وعجز الكاشير قبل الاعتماد."
+                : "Payroll is tracked as an operating cost, with advances, deductions, overtime, attendance exceptions, and cashier shortages separated before approval."}
             </div>
           </div>
           <div className="row" style={{ gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
             <button className="btn btn-ghost" onClick={() => setAdjustmentModalOpen(true)} style={{ height: 30, fontSize: 12 }}>
-              <Icon name="plus" size={12}/>Adjustment
+              <Icon name="plus" size={12}/>{ui(ar, "adjustment")}
             </button>
             <button className="btn btn-ghost" onClick={reviewPayroll} style={{ height: 30, fontSize: 12 }}>
-              <Icon name="check" size={12}/>Review payroll
+              <Icon name="check" size={12}/>{ar ? "مراجعة الرواتب" : "Review payroll"}
             </button>
             <button className="btn btn-primary" onClick={approvePayroll} style={{ height: 30, fontSize: 12 }}>
-              <Icon name="check" size={12}/>Approve payroll
+              <Icon name="check" size={12}/>{ar ? "اعتماد الرواتب" : "Approve payroll"}
+            </button>
+            <button className="btn btn-ghost" onClick={markPayrollPaid} style={{ height: 30, fontSize: 12 }}>
+              <Icon name="cash" size={12}/>{ar ? "تعليم كمدفوع" : "Mark paid"}
             </button>
             <button className="btn btn-ghost" onClick={exportPayroll} style={{ height: 30, fontSize: 12 }}>
-              <Icon name="download" size={12}/>Export payroll
+              <Icon name="download" size={12}/>{ui(ar, "exportPayroll")}
             </button>
           </div>
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.15fr", gap: 14 }}>
+      <div className="staff-roster-layout">
         <div className="card">
           <div className="between" style={{ padding: "14px 18px" }}>
             <div>
-              <div className="t-h2">{ar ? "Kiosk coverage" : "Kiosk coverage"}</div>
-              <div className="t-small subtle">{ar ? "Required slots and missing staff" : "Required slots and missing staff"}</div>
+              <div className="t-h2">{ui(ar, "kioskCoverage")}</div>
+              <div className="t-small subtle">{ar ? ui(ar, "kioskCoverageSub") : ui(ar, "requiredSlotsForWeek", { week: weekRangeLabelLang(selectedWeekStart, lang) })}</div>
             </div>
             <button className="btn btn-ghost" onClick={() => setCoverageModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
-              <Icon name="plus" size={12}/>{ar ? "Slot" : "Slot"}
+              <Icon name="plus" size={12}/>{ui(ar, "slot")}
             </button>
           </div>
           <table className="tbl">
             <thead>
               <tr>
-                <th scope="col">{ar ? "Day" : "Day"}</th>
-                <th scope="col">{ar ? "Kiosk" : "Kiosk"}</th>
-                <th scope="col">{ar ? "Slot" : "Slot"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Need" : "Need"}</th>
+                <th scope="col">{ui(ar, "day")}</th>
+                <th scope="col">{ui(ar, "kiosk")}</th>
+                <th scope="col">{ui(ar, "slot")}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "need")}</th>
               </tr>
             </thead>
             <tbody>
-              {coverageGaps.length ? coverageGaps.map((gap) => (
+              {weekCoverageGaps.length ? weekCoverageGaps.map((gap) => (
                 <tr key={`${gap.ruleId || gap.kiosk}-${gap.date}-${gap.role}-${gap.startHour}`} className="row-click">
-                  <td style={{ fontWeight: 500 }}>{gap.date || WEEKDAY_LABELS[Number(gap.dayOfWeek || 0)]}</td>
+                  <td style={{ fontWeight: 500 }}>{gap.date ? (ar ? rosterDateFormatterAr.format(dateFromIso(gap.date)) : rosterDateFormatter.format(dateFromIso(gap.date))) : (ar ? WEEKDAY_LABELS_AR[Number(gap.dayOfWeek || 0)] : WEEKDAY_LABELS[Number(gap.dayOfWeek || 0)])}</td>
                   <td>
                     <div style={{ fontWeight: 500 }}>{gap.kiosk}</div>
-                    <div className="t-small muted">{gap.kioskName || gap.kiosk}</div>
+                    <div className="t-small muted">{arTerm(lang, gap.kioskName || gap.kiosk)}</div>
                   </td>
-                  <td className="muted">{hourToTime(gap.startHour)}-{hourToTime(gap.endHour)} / {hrRoleLabel(gap.role)}</td>
+                  <td className="muted">{hourToTime(gap.startHour)}-{hourToTime(gap.endHour)} / {hrRoleLabel(gap.role, lang)}</td>
                   <td style={{ textAlign: "end" }}>
-                    <span className="badge badge-warn">{gap.assignedCount || 0}/{gap.requiredCount || 0} staffed</span>
+                    <span className="badge badge-warn">{ar ? `${gap.assignedCount || 0}/${gap.requiredCount || 0} مغطى` : `${gap.assignedCount || 0}/${gap.requiredCount || 0} staffed`}</span>
                   </td>
                 </tr>
               )) : (
                 <tr>
-                  <td colSpan={4} className="muted">{ar ? "All planned slots covered" : "All planned slots covered"}</td>
+                  <td colSpan={4} className="muted">{ui(ar, "allPlannedSlotsCovered")}</td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
 
-        <div className="card">
-          <div className="between" style={{ padding: "14px 18px" }}>
+        <div className="card card-pad staff-roster-summary-card">
+          <div className="between" style={{ gap: 12, alignItems: "flex-start" }}>
             <div>
-              <div className="t-h2">{ar ? "Work week" : "Work week"}</div>
-              <div className="t-small subtle">{ar ? "Dated shifts connected to kiosks" : "Dated shifts connected to kiosks"}</div>
+              <div className="t-h2">{ui(ar, "workWeek")}</div>
+              <div className="t-small subtle">{ar ? "ورديات مؤرخة مرتبطة بالأكشاك" : "Weekly plan by kiosk, day, and role"}</div>
             </div>
-            <button className="btn btn-primary" onClick={() => setShiftModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
-              <Icon name="plus" size={12}/>{ar ? "Assign shift" : "Assign shift"}
+            <button className="btn btn-primary" onClick={() => openShiftEditor(null, selectedWeekStart)} style={{ height: 28, fontSize: 12 }}>
+              <Icon name="plus" size={12}/>{ui(ar, "assignShift")}
             </button>
           </div>
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th scope="col">{ar ? "Staff" : "Staff"}</th>
-                <th scope="col">{ar ? "Kiosk" : "Kiosk"}</th>
-                <th scope="col">{ar ? "Date" : "Date"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Hours" : "Hours"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "State" : "State"}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {scheduleRows.length ? scheduleRows.slice(0, 12).map((shift) => (
-                <tr key={shift.id || `${shift.employee}-${shift.date}-${shift.startHour}`}>
-                  <td>
-                    <div style={{ fontWeight: 500 }}>{shift.staff || shift.employee}</div>
-                    <div className="t-small muted">{shift.roleLabel || hrRoleLabel(shift.role)}</div>
-                  </td>
-                  <td className="muted">{shift.kioskName || shift.kiosk}</td>
-                  <td className="muted">{shift.date} / {shift.time}</td>
-                  <td className="t-num" style={{ textAlign: "end" }}>{Number(shift.plannedHours || 0).toFixed(1)}h</td>
-                  <td style={{ textAlign: "end" }}><span className="badge">{shift.state || "planned"}</span></td>
-                </tr>
-              )) : (
-                <tr>
-                  <td colSpan={5} className="muted">{ar ? "No shifts planned yet" : "No shifts planned yet"}</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+          <div className="staff-roster-summary-grid">
+            <div className="staff-roster-summary-item">
+              <span className="t-micro">{ui(ar, "week")}</span>
+              <strong>{weekRangeLabelLang(selectedWeekStart, lang)}</strong>
+            </div>
+            <div className="staff-roster-summary-item">
+              <span className="t-micro">{ui(ar, "kiosk")}</span>
+              <strong>{rosterKioskLabel}</strong>
+            </div>
+            <div className="staff-roster-summary-item">
+              <span className="t-micro">{ar ? "الورديات" : "Shifts"}</span>
+              <strong>{ar ? `${weekScheduleRows.length} / ${rosterPlannedHours}س` : `${weekScheduleRows.length} / ${rosterPlannedHours}h`}</strong>
+            </div>
+            <div className="staff-roster-summary-item">
+              <span className="t-micro">{ui(ar, "people")}</span>
+              <strong>{ar ? `${rosterStaffCount} مجدول` : `${rosterStaffCount} scheduled`}</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card staff-week-card">
+        <div className="staff-week-header">
+          <div>
+            <div className="row" style={{ gap: 8, marginBottom: 6 }}>
+              <AITag>{ui(ar, "roster")}</AITag>
+              <span className={`badge ${rosterGapCount > 0 ? "badge-warn" : "badge-pos"}`}>{rosterGapCount > 0 ? (ar ? `${rosterGapCount} فجوة` : `${rosterGapCount} gap`) : arTerm(lang, "Covered")}</span>
+            </div>
+            <div className="t-h2">{ui(ar, "weeklyShiftRoster")}</div>
+            <div className="t-small subtle">{ar ? ui(ar, "planEveryKioskDay") : "Dated assignments synced with kiosk staffing rules."}</div>
+          </div>
+          <div className="staff-week-toolbar">
+            <button className="btn btn-ghost" onClick={() => setSelectedWeekStart((week) => addDaysIso(week, -7))} style={{ height: 30, fontSize: 12 }}>
+              <Icon name="chevLeft" size={12}/>{ui(ar, "prev")}
+            </button>
+            <button className="btn btn-ghost" onClick={() => setSelectedWeekStart(startOfWeekIso(todayIsoDate()))} style={{ height: 30, fontSize: 12 }}>
+              {ui(ar, "today")}
+            </button>
+            <button className="btn btn-ghost" onClick={() => setSelectedWeekStart((week) => addDaysIso(week, 7))} style={{ height: 30, fontSize: 12 }}>
+              {ui(ar, "next")}<Icon name="chevRight" size={12}/>
+            </button>
+            <select className="input staff-week-select" value={rosterKiosk} onChange={(event) => setRosterKiosk(event.target.value)}>
+              <option value="all">{ui(ar, "allKiosks")}</option>
+              {kioskOptions.map((kiosk) => <option key={kiosk.id} value={kiosk.id}>{arTerm(lang, kiosk.label)}</option>)}
+            </select>
+            <button className="btn btn-primary" onClick={() => openShiftEditor(null, selectedWeekStart)} style={{ height: 30, fontSize: 12 }}>
+              <Icon name="plus" size={12}/>{ui(ar, "assignShift")}
+            </button>
+          </div>
+        </div>
+        <div className="staff-week-grid">
+          {rosterWeekDays.map((day, dayIndex) => {
+            const dayShifts = weekScheduleRows.filter((shift) => shift.date === day.date);
+            const dayGaps = weekCoverageGaps.filter((gap) => (
+              gap.date ? gap.date === day.date : Number(gap.dayOfWeek || gap.dayofweek || 0) === dayIndex
+            ));
+            return (
+              <div className="staff-day-card" key={day.date}>
+                <div className="staff-day-head">
+                  <div>
+                    <div className="t-micro">{day.label}</div>
+                    <div className="staff-day-date">{day.shortDate}</div>
+                  </div>
+                  <button className="btn btn-quiet staff-day-add" onClick={() => openShiftEditor(null, day.date)} aria-label={ar ? `إضافة وردية ليوم ${day.label}` : `Add shift for ${day.label}`}>
+                    <Icon name="plus" size={12}/>
+                  </button>
+                </div>
+                {dayGaps.map((gap) => (
+                  <div className="staff-gap-row" key={`${gap.ruleId || gap.kiosk}-${gap.date || day.date}-${gap.role}-${gap.startHour}`}>
+                    <span className="dot warn"/>
+                    <span>{ar ? `${gap.missingCount || 0} ناقص ${hrRoleLabel(gap.role, lang)}` : `${gap.missingCount || 0} missing ${hrRoleLabel(gap.role)}`}</span>
+                  </div>
+                ))}
+                <div className="staff-day-shifts">
+                  {dayShifts.length ? dayShifts.map((shift) => {
+                    const state = String(shift.state || "planned").toLowerCase();
+                    const stateBadge = state === "confirmed" ? "badge-pos" : state === "cancelled" ? "badge-crit" : "";
+                    const stripeClass = state === "confirmed" ? "is-confirmed" : state === "cancelled" ? "is-cancelled" : "";
+                    return (
+                      <div className="staff-shift-row" role="button" tabIndex={0}
+                        key={shift.id || `${shift.employee}-${shift.date}-${shift.startHour}`}
+                        onClick={() => openShiftEditor(shift)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            openShiftEditor(shift);
+                          }
+                        }}>
+                        <span className={`staff-shift-stripe ${stripeClass}`}/>
+                        <div className="staff-shift-time">
+                          <strong>{shift.time || `${hourToTime(shift.startHour)}-${hourToTime(shift.endHour)}`}</strong>
+                          <span>{Number(shift.plannedHours || 0).toFixed(1)}{ar ? "س" : "h"}</span>
+                        </div>
+                        <div className="staff-shift-main">
+                          <strong>{arTerm(lang, shift.staff || shift.employee)}</strong>
+                          <span>{arTerm(lang, shift.kioskName || shift.kiosk)} / {hrRoleLabel(shift.role || shift.roleLabel, lang)}</span>
+                        </div>
+                        <span className={`badge ${stateBadge}`}>{arTerm(lang, shift.state || "planned")}</span>
+                      </div>
+                    );
+                  }) : (
+                    <button className="staff-empty-shift" onClick={() => openShiftEditor(null, day.date)}>
+                      <Icon name="plusCircle" size={14}/>{ui(ar, "addShift")}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -9826,29 +15767,29 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         <div className="card">
           <div className="between" style={{ padding: "14px 18px" }}>
             <div>
-              <div className="t-h2">{ar ? "Cashier performance" : "Cashier performance"}</div>
-              <div className="t-small subtle">{ar ? "Cash shortages, voids, refunds, and throughput" : "Cash shortages, voids, refunds, and throughput"}</div>
+              <div className="t-h2">{ui(ar, "cashierPerformance")}</div>
+              <div className="t-small subtle">{ui(ar, "cashierPerformanceSub")}</div>
             </div>
-            <span className="badge badge-warn">{underReview} review</span>
+            <span className="badge badge-warn">{ar ? `${underReview} مراجعة` : `${underReview} review`}</span>
           </div>
           <table className="tbl">
             <thead>
               <tr>
-                <th scope="col">{ar ? "Cashier" : "Cashier"}</th>
-                <th scope="col">{ar ? "Kiosk" : "Kiosk"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Sales" : "Sales"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Cash shortage" : "Cash shortage"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Void/refund" : "Void/refund"}</th>
+                <th scope="col">{ui(ar, "cashier")}</th>
+                <th scope="col">{ui(ar, "kiosk")}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "المبيعات" : "Sales"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "cashShortage")}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "voidRefund")}</th>
               </tr>
             </thead>
             <tbody>
               {cashierRows.map((row) => (
                 <tr key={row.name}>
-                  <td style={{ fontWeight: 500 }}>{row.name}</td>
+                  <td style={{ fontWeight: 500 }}>{arTerm(lang, row.name)}</td>
                   <td className="t-num muted">{row.kiosk}</td>
                   <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(row.sales)}</td>
                   <td className="t-num" style={{ textAlign: "end", color: row.shortage < 0 ? "var(--crit)" : "var(--ink-3)" }}>
-                    {row.shortage == null ? "pending close" : row.shortage === 0 ? "-" : fmtMoney(row.shortage)}
+                    {row.shortage == null ? (ar ? "بانتظار الإغلاق" : "pending close") : row.shortage === 0 ? "-" : fmtMoney(row.shortage)}
                   </td>
                   <td className="t-num" style={{ textAlign: "end" }}>{row.voidRefund}</td>
                 </tr>
@@ -9860,19 +15801,19 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         <div className="card">
           <div className="between" style={{ padding: "14px 18px" }}>
             <div>
-              <div className="t-h2">{ar ? "Expenses" : "Expenses"}</div>
-              <div className="t-small subtle">{ar ? "Non-stock and payroll-adjacent costs" : "Non-stock and payroll-adjacent costs"}</div>
+              <div className="t-h2">{ui(ar, "expenses")}</div>
+              <div className="t-small subtle">{ui(ar, "expensesSub")}</div>
             </div>
             <button className="btn btn-ghost" onClick={() => setExpenseModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
-              <Icon name="plus" size={12}/>{ar ? "Add expense" : "Add expense"}
+              <Icon name="plus" size={12}/>{ui(ar, "addExpense")}
             </button>
           </div>
           <table className="tbl">
             <tbody>
-              {expenseRows.map(({ name, category, amount }) => (
-                <tr key={name}>
-                  <td style={{ fontWeight: 500 }}>{name}</td>
-                  <td className="muted">{category}</td>
+              {activeExpenseRows.map(({ id, name, category, amount }) => (
+                <tr key={id || name}>
+                  <td style={{ fontWeight: 500 }}>{arTerm(lang, name)}</td>
+                  <td className="muted">{arTerm(lang, category)}</td>
                   <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(amount)}</td>
                 </tr>
               ))}
@@ -9885,19 +15826,19 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         <div className="card">
           <div className="between" style={{ padding: "14px 18px" }}>
             <div>
-              <div className="t-h2">{ar ? "Payroll run" : "Payroll run"}</div>
-              <div className="t-small subtle">{ar ? "Base salary, overtime, advances, deductions, and net pay" : "Base salary, overtime, advances, deductions, and net pay"}</div>
+              <div className="t-h2">{ui(ar, "payrollRun")}</div>
+              <div className="t-small subtle">{ui(ar, "payrollRunSub")}</div>
             </div>
-            <span className="badge">{fmtMoney(grossPayroll)} gross</span>
+            <span className="badge">{fmtMoney(grossPayroll)} {ar ? "إجمالي" : "gross"}</span>
           </div>
           <table className="tbl">
             <thead>
               <tr>
-                <th scope="col">{ar ? "Staff" : "Staff"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Base" : "Base"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Adj." : "Adj."}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Net pay" : "Net pay"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Status" : "Status"}</th>
+                <th scope="col">{ui(ar, "staff")}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "base")}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "تعديل" : "Adj."}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "netPay")}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "status")}</th>
               </tr>
             </thead>
             <tbody>
@@ -9905,16 +15846,16 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                 const rowAdj = person.bonus + person.overtimePay - person.advance - person.deduction;
                 return (
                   <tr key={person.name}>
-                    <td style={{ fontWeight: 500 }}>{person.name}</td>
+                    <td style={{ fontWeight: 500 }}>{arTerm(lang, person.name)}</td>
                     <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(person.salary)}</td>
                     <td className="t-num" style={{ textAlign: "end", color: rowAdj < 0 ? "var(--crit)" : rowAdj > 0 ? "var(--pos)" : "var(--ink-3)" }}>
                       {rowAdj === 0 ? "-" : fmtMoney(rowAdj)}
                     </td>
                     <td className="t-num" style={{ textAlign: "end", fontWeight: 600 }}>{fmtMoney(person.netPay)}</td>
                     <td style={{ textAlign: "end" }}>
-                      {person.payrollStatus === "ready" && <span className="badge badge-pos">Ready</span>}
-                      {person.payrollStatus === "review" && <span className="badge badge-warn">Hold</span>}
-                      {person.payrollStatus === "leave-adjusted" && <span className="badge">Leave adjusted</span>}
+                      {person.payrollStatus === "ready" && <span className="badge badge-pos">{ar ? "جاهز" : "Ready"}</span>}
+                      {person.payrollStatus === "review" && <span className="badge badge-warn">{ar ? "معلق" : "Hold"}</span>}
+                      {person.payrollStatus === "leave-adjusted" && <span className="badge">{ar ? "معدل للإجازة" : "Leave adjusted"}</span>}
                     </td>
                   </tr>
                 );
@@ -9926,33 +15867,38 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         <div className="card">
           <div className="between" style={{ padding: "14px 18px" }}>
             <div>
-              <div className="t-h2">{ar ? "Attendance exceptions" : "Attendance exceptions"}</div>
-              <div className="t-small subtle">{ar ? "Leave, overtime, shortages, and payroll impact" : "Leave, overtime, shortages, and payroll impact"}</div>
+              <div className="t-h2">{ui(ar, "attendanceExceptions")}</div>
+              <div className="t-small subtle">{ar ? "الإجازات والإضافي والعجز وأثر الرواتب" : "Leave, overtime, shortages, and payroll impact"}</div>
             </div>
-            <span className="badge">{fmtMoney(adjustmentTotal)} net adj.</span>
+            <div className="row" style={{ gap: 6 }}>
+              <span className="badge">{fmtMoney(adjustmentTotal)} {ar ? "تعديل صافي" : "net adj."}</span>
+              <button className="btn btn-ghost" onClick={() => setAttendanceModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
+                <Icon name="clock" size={12}/>{ui(ar, "recordAttendance")}
+              </button>
+            </div>
           </div>
           <table className="tbl">
             <thead>
               <tr>
-                <th scope="col">{ar ? "Staff" : "Staff"}</th>
-                <th scope="col">{ar ? "Issue" : "Issue"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Impact" : "Impact"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "Status" : "Status"}</th>
+                <th scope="col">{ui(ar, "staff")}</th>
+                <th scope="col">{ui(ar, "issue")}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "impact")}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "status")}</th>
               </tr>
             </thead>
             <tbody>
               {attendanceRows.map((row) => (
                 <tr key={`${row.staff}-${row.issue}`}>
                   <td>
-                    <div style={{ fontWeight: 500 }}>{row.staff}</div>
-                    <div className="t-small muted">{row.kiosk} - {row.hours}h</div>
+                    <div style={{ fontWeight: 500 }}>{arTerm(lang, row.staff)}</div>
+                    <div className="t-small muted">{arTerm(lang, row.kiosk)} - {row.hours}{ar ? "س" : "h"}</div>
                   </td>
-                  <td className="muted">{row.issue}</td>
+                  <td className="muted">{arTerm(lang, row.issue)}</td>
                   <td className="t-num" style={{ textAlign: "end", color: row.impact < 0 ? "var(--crit)" : row.impact > 0 ? "var(--pos)" : "var(--ink-3)" }}>
                     {row.impact === 0 ? "-" : fmtMoney(row.impact)}
                   </td>
                   <td style={{ textAlign: "end" }}>
-                    <span className={`badge ${row.status === "hold" ? "badge-warn" : row.status === "approved" ? "badge-pos" : ""}`}>{row.status}</span>
+                    <span className={`badge ${row.status === "hold" ? "badge-warn" : row.status === "approved" ? "badge-pos" : ""}`}>{arTerm(lang, row.status)}</span>
                   </td>
                 </tr>
               ))}
@@ -9963,13 +15909,72 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
 
       <div className="card">
         <div className="between" style={{ padding: "14px 18px" }}>
-          <div className="t-h2">{ar ? "Roster" : "Roster"}</div>
+          <div>
+            <div className="t-h2">{ui(ar, "payrollAdjustments")}</div>
+            <div className="t-small subtle">{ui(ar, "payrollAdjustmentsSub")}</div>
+          </div>
+          <button className="btn btn-ghost" onClick={() => setAdjustmentModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
+            <Icon name="plus" size={12}/>{ui(ar, "adjustment")}
+          </button>
+        </div>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th scope="col">{ui(ar, "staff")}</th>
+              <th scope="col">{ui(ar, "adjustment")}</th>
+              <th scope="col">{ui(ar, "reason")}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "status")}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الإجراء" : "Action"}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recentAdjustments.map((row, index) => {
+              const signedAmount = row.type === "bonus" ? Number(row.amount || 0) : -Number(row.amount || 0);
+              return (
+                <tr key={row.id || `${row.staff}-${row.type}-${row.reason}-${index}`}>
+                  <td style={{ fontWeight: 500 }}>{arTerm(lang, row.staff)}</td>
+                  <td className="t-num" style={{ color: signedAmount < 0 ? "var(--crit)" : "var(--pos)" }}>
+                    {arTerm(lang, row.type)} {fmtMoney(Math.abs(Number(row.amount || 0)))}
+                  </td>
+                  <td className="muted">{arTerm(lang, row.reason)}</td>
+                  <td style={{ textAlign: "end" }}>
+                    <span className={`badge ${row.status === "hold" ? "badge-warn" : row.status === "approved" ? "badge-pos" : ""}`}>{arTerm(lang, row.status)}</span>
+                  </td>
+                  <td style={{ textAlign: "end" }}>
+                    {row.status === "hold" ? (
+                      <div className="row" style={{ justifyContent: "flex-end", gap: 6 }}>
+                        <button className="btn btn-ghost" onClick={() => resolvePayrollAdjustment(row, "reject")} style={{ height: 26, fontSize: 11 }}>
+                          {ar ? "رفض التعديل" : "Reject adjustment"}
+                        </button>
+                        <button className="btn btn-primary" onClick={() => resolvePayrollAdjustment(row, "approve")} style={{ height: 26, fontSize: 11 }}>
+                          {ar ? "اعتماد التعديل" : "Approve adjustment"}
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="muted">-</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {!recentAdjustments.length && (
+              <tr>
+                <td className="muted" colSpan={5}>{ar ? "لا توجد تعديلات رواتب مسجلة" : "No payroll adjustments recorded"}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="card">
+        <div className="between" style={{ padding: "14px 18px" }}>
+          <div className="t-h2">{ui(ar, "roster")}</div>
           <div className="row" style={{ gap: 6 }}>
             <select className="input" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 126 }}>
-              {roles.map((role) => <option key={role} value={role}>{role === "all" ? "All roles" : role}</option>)}
+              {roles.map((role) => <option key={role} value={role}>{role === "all" ? (ar ? "كل الأدوار" : "All roles") : hrRoleLabel(role, lang)}</option>)}
             </select>
             <select className="input" value={kioskFilter} onChange={(event) => setKioskFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 132 }}>
-              {kiosks.map((kiosk) => <option key={kiosk} value={kiosk}>{kiosk === "all" ? "All kiosks" : kiosk}</option>)}
+              {kiosks.map((kiosk) => <option key={kiosk} value={kiosk}>{kiosk === "all" ? ui(ar, "allKiosks") : arTerm(lang, kiosk)}</option>)}
             </select>
             <button className="btn btn-primary" onClick={() => setStaffModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
               <Icon name="plus" size={12}/> {ar ? "موظف جديد" : "Add staff"}
@@ -9979,12 +15984,12 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         <table className="tbl">
           <thead>
             <tr>
-              <th scope="col">{ar ? "Staff member" : "Staff member"}</th>
-              <th scope="col">{ar ? "Role" : "Role"}</th>
-              <th scope="col">{ar ? "Kiosk" : "Kiosk"}</th>
-              <th scope="col" style={{ textAlign: "end" }}>{ar ? "Hours (mo)" : "Hours (mo)"}</th>
-              <th scope="col" style={{ textAlign: "end" }}>{ar ? "Net payroll" : "Net payroll"}</th>
-              <th scope="col" style={{ textAlign: "end" }}>{ar ? "Status" : "Status"}</th>
+              <th scope="col">{ui(ar, "staffMember")}</th>
+              <th scope="col">{ui(ar, "role")}</th>
+              <th scope="col">{ui(ar, "kiosk")}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "hoursMonthly")}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "netPayroll")}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "status")}</th>
             </tr>
           </thead>
           <tbody>
@@ -9993,17 +15998,17 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                 <td>
                   <div className="row" style={{ gap: 10 }}>
                     <Avatar name={person.name} size={28}/>
-                    <span style={{ fontWeight: 500 }}>{person.name}</span>
+                    <span style={{ fontWeight: 500 }}>{arTerm(lang, person.name)}</span>
                   </div>
                 </td>
-                <td className="muted">{person.role}</td>
-                <td className="t-num muted">{person.kiosk}</td>
-                <td style={{ textAlign: "end" }} className="t-num">{person.hours}h</td>
+                <td className="muted">{hrRoleLabel(person.roleValue || person.role, lang)}</td>
+                <td className="t-num muted">{arTerm(lang, person.kiosk)}</td>
+                <td style={{ textAlign: "end" }} className="t-num">{person.hours}{ar ? "س" : "h"}</td>
                 <td style={{ textAlign: "end" }} className="t-num">{fmtMoney(person.netPay)}</td>
                 <td style={{ textAlign: "end" }}>
-                  {person.payrollStatus === "ready" && <span className="badge badge-pos">{ar ? "Active" : "Active"}</span>}
-                  {person.payrollStatus === "leave-adjusted" && <span className="badge">{ar ? "On leave" : "On leave"}</span>}
-                  {person.payrollStatus === "review" && <span className="badge badge-warn">{ar ? "Review" : "Review"}</span>}
+                  {person.payrollStatus === "ready" && <span className="badge badge-pos">{ar ? "نشط" : "Active"}</span>}
+                  {person.payrollStatus === "leave-adjusted" && <span className="badge">{ar ? "في إجازة" : "On leave"}</span>}
+                  {person.payrollStatus === "review" && <span className="badge badge-warn">{ar ? "مراجعة" : "Review"}</span>}
                 </td>
               </tr>
             ))}
@@ -10012,159 +16017,199 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       </div>
 
       <Modal open={expenseModalOpen} onClose={() => setExpenseModalOpen(false)}
-        title={ar ? "Add expense" : "Add expense"}
-        sub={ar ? "Recorded against operating expenses" : "Recorded against operating expenses"}>
+        title={ui(ar, "addExpense")}
+        sub={ar ? "يُسجل ضمن مصروفات التشغيل" : "Recorded against operating expenses"}>
         <form onSubmit={submitExpense} className="col" style={{ gap: 10 }}>
-          <input className="input" value={expenseDraft.name} onChange={(event) => setExpenseDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="Expense name"/>
+          <input className="input" value={expenseDraft.name} onChange={(event) => setExpenseDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder={ui(ar, "expenseName")}/>
           <select className="input" value={expenseDraft.category} onChange={(event) => setExpenseDraft((draft) => ({ ...draft, category: event.target.value }))}>
-            {["Operations", "Utilities", "Staff", "Maintenance", "Transport"].map((category) => <option key={category}>{category}</option>)}
+            {sourceDriven && <option value="">Select source expense category</option>}
+            {["Operations", "Utilities", "Staff", "Maintenance", "Transport"].map((category) => <option key={category} value={category}>{arTerm(lang, category)}</option>)}
           </select>
-          <input className="input" value={expenseDraft.amount} onChange={(event) => setExpenseDraft((draft) => ({ ...draft, amount: event.target.value }))} placeholder="Amount IQD" inputMode="numeric"/>
+          <input className="input" value={expenseDraft.amount} onChange={(event) => setExpenseDraft((draft) => ({ ...draft, amount: event.target.value }))} placeholder={ui(ar, "amountIqd")} inputMode="numeric"/>
           <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setExpenseModalOpen(false)}>Cancel</button>
-            <button type="submit" className="btn btn-primary">Save expense</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setExpenseModalOpen(false)}>{ui(ar, "cancel")}</button>
+            <button type="submit" className="btn btn-primary">{ui(ar, "saveExpense")}</button>
           </div>
         </form>
       </Modal>
 
       <Modal open={adjustmentModalOpen} onClose={() => setAdjustmentModalOpen(false)}
-        title={ar ? "Payroll adjustment" : "Payroll adjustment"}
-        sub={ar ? "Advances, deductions, and bonuses before approval" : "Advances, deductions, and bonuses before approval"}>
+        title={ui(ar, "payrollAdjustment")}
+        sub={ui(ar, "payrollAdjustmentSub")}>
         <form onSubmit={submitAdjustment} className="col" style={{ gap: 10 }}>
           <select className="input" value={adjustmentDraft.staff} onChange={(event) => setAdjustmentDraft((draft) => ({ ...draft, staff: event.target.value }))}>
-            {allStaff.length ? allStaff.map((person) => <option key={person.name} value={person.name}>{person.name}</option>) : <option value="">No live staff loaded</option>}
+            {allStaff.length ? allStaff.map((person) => <option key={person.name} value={person.name}>{arTerm(lang, person.name)}</option>) : <option value="">{ui(ar, "noSourceStaffLoaded")}</option>}
           </select>
           <select className="input" value={adjustmentDraft.type} onChange={(event) => setAdjustmentDraft((draft) => ({ ...draft, type: event.target.value }))}>
-            <option value="deduction">Deduction</option>
-            <option value="advance">Advance</option>
-            <option value="bonus">Bonus</option>
+            {sourceDriven && <option value="">Select source adjustment type</option>}
+            <option value="deduction">{ar ? "استقطاع" : "Deduction"}</option>
+            <option value="cash_shortage">{ui(ar, "cashShortage")}</option>
+            <option value="advance">{ar ? "سلفة" : "Advance"}</option>
+            <option value="bonus">{ar ? "مكافأة" : "Bonus"}</option>
           </select>
-          <input className="input" value={adjustmentDraft.amount} onChange={(event) => setAdjustmentDraft((draft) => ({ ...draft, amount: event.target.value }))} placeholder="Amount IQD" inputMode="numeric"/>
-          <input className="input" value={adjustmentDraft.reason} onChange={(event) => setAdjustmentDraft((draft) => ({ ...draft, reason: event.target.value }))} placeholder="Reason"/>
+          <input className="input" value={adjustmentDraft.amount} onChange={(event) => setAdjustmentDraft((draft) => ({ ...draft, amount: event.target.value }))} placeholder={ui(ar, "amountIqd")} inputMode="numeric"/>
+          <input className="input" value={adjustmentDraft.reason} onChange={(event) => setAdjustmentDraft((draft) => ({ ...draft, reason: event.target.value }))} placeholder={ui(ar, "reason")}/>
           <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setAdjustmentModalOpen(false)}>Cancel</button>
-            <button type="submit" className="btn btn-primary">Save adjustment</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setAdjustmentModalOpen(false)}>{ui(ar, "cancel")}</button>
+            <button type="submit" className="btn btn-primary">{ui(ar, "saveAdjustment")}</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={attendanceModalOpen} onClose={() => setAttendanceModalOpen(false)}
+        title={ui(ar, "recordAttendance")}
+        sub={ui(ar, "attendanceSourceBacked")}>
+        <form onSubmit={submitAttendance} className="col" style={{ gap: 10 }}>
+          <select className="input" value={attendanceDraft.staff} onChange={(event) => setAttendanceDraft((draft) => ({ ...draft, staff: event.target.value }))}>
+            {allStaff.length ? allStaff.map((person) => <option key={person.id || person.name} value={person.id || person.name}>{arTerm(lang, person.name)}</option>) : <option value="">{ui(ar, "noSourceStaffLoaded")}</option>}
+          </select>
+          <input className="input" type="date" value={attendanceDraft.date} onChange={(event) => setAttendanceDraft((draft) => ({ ...draft, date: event.target.value }))}/>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <input className="input" type="time" value={attendanceDraft.checkIn} onChange={(event) => setAttendanceDraft((draft) => ({ ...draft, checkIn: event.target.value }))}/>
+            <input className="input" type="time" value={attendanceDraft.checkOut} onChange={(event) => setAttendanceDraft((draft) => ({ ...draft, checkOut: event.target.value }))}/>
+          </div>
+          <input className="input" value={attendanceDraft.manualHours} onChange={(event) => setAttendanceDraft((draft) => ({ ...draft, manualHours: event.target.value }))} placeholder={ui(ar, "manualHoursOverride")} inputMode="decimal"/>
+          <input className="input" value={attendanceDraft.note} onChange={(event) => setAttendanceDraft((draft) => ({ ...draft, note: event.target.value }))} placeholder={ui(ar, "attendanceNote")}/>
+          <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+            <button type="button" className="btn btn-ghost" onClick={() => setAttendanceModalOpen(false)}>{ui(ar, "cancel")}</button>
+            <button type="submit" className="btn btn-primary">{ui(ar, "saveAttendance")}</button>
           </div>
         </form>
       </Modal>
 
       <Modal open={coverageModalOpen} onClose={() => setCoverageModalOpen(false)}
         width={520}
-        title={ar ? "Coverage slot" : "Coverage slot"}
-        sub={ar ? "Required kiosk headcount by weekday and time" : "Required kiosk headcount by weekday and time"}>
+        title={ui(ar, "coverageSlot")}
+        sub={ui(ar, "coverageSlotSub")}>
         <form onSubmit={submitCoverageRule} className="col" style={{ gap: 10 }}>
           <div className="row" style={{ gap: 10 }}>
             <div className="col" style={{ flex: 1, gap: 4 }}>
-              <label className="t-micro">{ar ? "Kiosk" : "Kiosk"}</label>
+              <label className="t-micro">{ui(ar, "kiosk")}</label>
               <select className="input" value={coverageDraft.kiosk}
                 onChange={(event) => setCoverageDraft((draft) => ({ ...draft, kiosk: event.target.value }))}>
                 {kioskOptions.length
-                  ? kioskOptions.map((kiosk) => <option key={kiosk.id} value={kiosk.id}>{kiosk.label}</option>)
-                  : <option value="">No live kiosks loaded</option>}
+                  ? kioskOptions.map((kiosk) => <option key={kiosk.id} value={kiosk.id}>{arTerm(lang, kiosk.label)}</option>)
+                  : <option value="">{ui(ar, "noSourceKiosksLoaded")}</option>}
               </select>
             </div>
             <div className="col" style={{ flex: 1, gap: 4 }}>
-              <label className="t-micro">{ar ? "Day" : "Day"}</label>
+              <label className="t-micro">{ui(ar, "day")}</label>
               <select className="input" value={coverageDraft.dayOfWeek}
                 onChange={(event) => setCoverageDraft((draft) => ({ ...draft, dayOfWeek: event.target.value }))}>
-                {WEEKDAY_LABELS.map((day, index) => <option key={day} value={String(index)}>{day}</option>)}
+                {(ar ? WEEKDAY_LABELS_AR : WEEKDAY_LABELS).map((day, index) => <option key={day} value={String(index)}>{day}</option>)}
               </select>
             </div>
           </div>
           <div className="row" style={{ gap: 10 }}>
             <div className="col" style={{ flex: 1, gap: 4 }}>
-              <label className="t-micro">{ar ? "Role" : "Role"}</label>
+              <label className="t-micro">{ui(ar, "role")}</label>
               <select className="input" value={coverageDraft.role}
                 onChange={(event) => setCoverageDraft((draft) => ({ ...draft, role: event.target.value }))}>
-                <option value="any">{HR_ROLE_LABELS.any}</option>
+                {sourceDriven && <option value="">Select source role</option>}
+                <option value="any">{hrRoleLabel("any", lang)}</option>
                 {HR_ROLE_OPTIONS.map((role) => {
                   const value = normalizeHrRole(role);
-                  return <option key={value} value={value}>{role}</option>;
+                  return <option key={value} value={value}>{hrRoleLabel(role, lang)}</option>;
                 })}
               </select>
             </div>
             <div className="col" style={{ width: 124, gap: 4 }}>
-              <label className="t-micro">{ar ? "Headcount" : "Headcount"}</label>
+              <label className="t-micro">{ui(ar, "headcount")}</label>
               <input className="input" type="number" min={1} step={1} value={coverageDraft.requiredCount}
                 onChange={(event) => setCoverageDraft((draft) => ({ ...draft, requiredCount: event.target.value }))}/>
             </div>
           </div>
           <div className="row" style={{ gap: 10 }}>
             <div className="col" style={{ flex: 1, gap: 4 }}>
-              <label className="t-micro">{ar ? "Start" : "Start"}</label>
+              <label className="t-micro">{ui(ar, "start")}</label>
               <input className="input" type="time" value={coverageDraft.start}
                 onChange={(event) => setCoverageDraft((draft) => ({ ...draft, start: event.target.value }))}/>
             </div>
             <div className="col" style={{ flex: 1, gap: 4 }}>
-              <label className="t-micro">{ar ? "End" : "End"}</label>
+              <label className="t-micro">{ui(ar, "end")}</label>
               <input className="input" type="time" value={coverageDraft.end}
                 onChange={(event) => setCoverageDraft((draft) => ({ ...draft, end: event.target.value }))}/>
             </div>
           </div>
           <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setCoverageModalOpen(false)}>Cancel</button>
-            <button type="submit" className="btn btn-primary">Save slot</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setCoverageModalOpen(false)}>{ui(ar, "cancel")}</button>
+            <button type="submit" className="btn btn-primary">{ui(ar, "saveSlot")}</button>
           </div>
         </form>
       </Modal>
 
-      <Modal open={shiftModalOpen} onClose={() => setShiftModalOpen(false)}
+      <Modal open={shiftModalOpen} onClose={() => { setShiftModalOpen(false); setEditingShiftId(null); }}
         width={560}
-        title={ar ? "Assign shift" : "Assign shift"}
-        sub={ar ? "Plan who works each kiosk slot" : "Plan who works each kiosk slot"}>
+        title={editingShiftId ? ui(ar, "editShift") : ui(ar, "assignShift")}
+        sub={ui(ar, "planKioskSlot")}>
         <form onSubmit={submitShift} className="col" style={{ gap: 10 }}>
           <div className="row" style={{ gap: 10 }}>
             <div className="col" style={{ flex: 1, gap: 4 }}>
-              <label className="t-micro">{ar ? "Staff" : "Staff"}</label>
+              <label className="t-micro">{ui(ar, "staff")}</label>
               <select className="input" value={shiftDraft.employee}
                 onChange={(event) => setShiftDraft((draft) => ({ ...draft, employee: event.target.value }))}>
                 {allStaff.length
-                  ? allStaff.map((person) => <option key={person.id || person.name} value={person.id || person.name}>{person.name}</option>)
-                  : <option value="">No live staff loaded</option>}
+                  ? allStaff.map((person) => <option key={person.id || person.name} value={person.id || person.name}>{arTerm(lang, person.name)}</option>)
+                  : <option value="">{ui(ar, "noSourceStaffLoaded")}</option>}
               </select>
             </div>
             <div className="col" style={{ flex: 1, gap: 4 }}>
-              <label className="t-micro">{ar ? "Kiosk" : "Kiosk"}</label>
+              <label className="t-micro">{ui(ar, "kiosk")}</label>
               <select className="input" value={shiftDraft.kiosk}
                 onChange={(event) => setShiftDraft((draft) => ({ ...draft, kiosk: event.target.value }))}>
                 {kioskOptions.length
-                  ? kioskOptions.map((kiosk) => <option key={kiosk.id} value={kiosk.id}>{kiosk.label}</option>)
-                  : <option value="">No live kiosks loaded</option>}
+                  ? kioskOptions.map((kiosk) => <option key={kiosk.id} value={kiosk.id}>{arTerm(lang, kiosk.label)}</option>)
+                  : <option value="">{ui(ar, "noSourceKiosksLoaded")}</option>}
               </select>
             </div>
           </div>
           <div className="row" style={{ gap: 10 }}>
             <div className="col" style={{ flex: 1, gap: 4 }}>
-              <label className="t-micro">{ar ? "Date" : "Date"}</label>
+              <label className="t-micro">{ui(ar, "date")}</label>
               <input className="input" type="date" value={shiftDraft.date}
                 onChange={(event) => setShiftDraft((draft) => ({ ...draft, date: event.target.value }))}/>
             </div>
             <div className="col" style={{ flex: 1, gap: 4 }}>
-              <label className="t-micro">{ar ? "Role" : "Role"}</label>
+              <label className="t-micro">{ui(ar, "role")}</label>
               <select className="input" value={shiftDraft.role}
                 onChange={(event) => setShiftDraft((draft) => ({ ...draft, role: event.target.value }))}>
-                {HR_ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}
+                {sourceDriven && <option value="">Select source role</option>}
+                {HR_ROLE_OPTIONS.map((role) => <option key={role} value={role}>{hrRoleLabel(role, lang)}</option>)}
               </select>
             </div>
           </div>
           <div className="row" style={{ gap: 10 }}>
             <div className="col" style={{ flex: 1, gap: 4 }}>
-              <label className="t-micro">{ar ? "Start" : "Start"}</label>
+              <label className="t-micro">{ui(ar, "start")}</label>
               <input className="input" type="time" value={shiftDraft.start}
                 onChange={(event) => setShiftDraft((draft) => ({ ...draft, start: event.target.value }))}/>
             </div>
             <div className="col" style={{ flex: 1, gap: 4 }}>
-              <label className="t-micro">{ar ? "End" : "End"}</label>
+              <label className="t-micro">{ui(ar, "end")}</label>
               <input className="input" type="time" value={shiftDraft.end}
                 onChange={(event) => setShiftDraft((draft) => ({ ...draft, end: event.target.value }))}/>
             </div>
           </div>
-          <input className="input" value={shiftDraft.note}
-            onChange={(event) => setShiftDraft((draft) => ({ ...draft, note: event.target.value }))}
-            placeholder="Note"/>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ flex: 0.8, gap: 4 }}>
+              <label className="t-micro">{ui(ar, "state")}</label>
+              <select className="input" name="shiftState" value={shiftDraft.state}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, state: event.target.value }))}>
+                <option value="planned">{ui(ar, "planned")}</option>
+                <option value="confirmed">{ui(ar, "confirmed")}</option>
+                <option value="cancelled">{ar ? "ملغاة" : "Cancelled"}</option>
+              </select>
+            </div>
+            <div className="col" style={{ flex: 1.6, gap: 4 }}>
+              <label className="t-micro">{ui(ar, "note")}</label>
+              <input className="input" value={shiftDraft.note}
+                onChange={(event) => setShiftDraft((draft) => ({ ...draft, note: event.target.value }))}
+                placeholder={ui(ar, "note")}/>
+            </div>
+          </div>
           <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button type="button" className="btn btn-ghost" onClick={() => setShiftModalOpen(false)}>Cancel</button>
-            <button type="submit" className="btn btn-primary">Assign shift</button>
+            <button type="button" className="btn btn-ghost" onClick={() => { setShiftModalOpen(false); setEditingShiftId(null); }}>{ui(ar, "cancel")}</button>
+            <button type="submit" className="btn btn-primary">{editingShiftId ? ui(ar, "updateShift") : ui(ar, "assignShift")}</button>
           </div>
         </form>
       </Modal>
@@ -10174,7 +16219,7 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         title={ar ? "إضافة موظف" : "Add staff"}
         sub={ar
           ? "املأ التفاصيل لإضافة موظف إلى الجدول."
-          : liveOnly ? "Creates a Bayaan staff record linked to Odoo HR and the selected kiosk." : "Adds a new staff member to the roster (demo: stays in this browser)."}>
+          : liveOnly ? "Creates a Bayaan staff record linked to HR and the selected kiosk." : "Adds a new staff member to the roster (demo: stays in this browser)."}>
         <form onSubmit={submitStaff} className="col" style={{ gap: 10 }}>
           <div className="col" style={{ gap: 4 }}>
             <label className="t-micro">{ar ? "الاسم" : "Full name"}</label>
@@ -10202,7 +16247,7 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                   ? kioskOptions.map((kiosk) => (
                     <option key={kiosk.id} value={kiosk.id}>{kiosk.label}</option>
                   ))
-                  : <option value="">No live kiosks loaded</option>}
+                  : <option value="">{ui(ar, "noSourceKiosksLoaded")}</option>}
                 {!liveOnly && <option value="Central">Central</option>}
               </select>
             </div>
@@ -10217,6 +16262,7 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                 step={50000}
                 value={staffDraft.salary}
                 onChange={(event) => setStaffDraft((d) => ({ ...d, salary: event.target.value }))}
+                placeholder={sourceDriven ? "Source monthly salary" : "1500000"}
               />
             </div>
             <div className="col" style={{ flex: 1, gap: 4 }}>
@@ -10228,6 +16274,7 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                 step={1}
                 value={staffDraft.hours}
                 onChange={(event) => setStaffDraft((d) => ({ ...d, hours: event.target.value }))}
+                placeholder={sourceDriven ? "Source monthly hours" : "168"}
               />
             </div>
           </div>
@@ -10244,60 +16291,117 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
 }
 
 // =============== REPORTS ===============
-function ReportsScreen({ lang, bootstrap }) {
+function ReportsScreen({ lang, bootstrap, mode = "reports" }) {
   const ar = lang === "ar";
+  const financeMode = mode === "finance";
   const { showToast } = useToast();
   const [period, setPeriod] = useState("Daily");
   const metrics = odooReportMetrics(bootstrap, period);
   const sourceMeta = insightSourceMeta(bootstrap);
+  const summary = odooSummary(bootstrap);
+  const sourceDriven = isSourceDrivenPayload(bootstrap);
+  const allowDemoFallback = canUseDemoFallback(bootstrap);
+  const fiscalSalesRows = useMemo(() => fiscalSalesRowsFromSummary(summary, allowDemoFallback), [summary, allowDemoFallback]);
+  const fiscalSalesTotal = fiscalSalesRows.reduce((sum, row) => sum + Number(row.sales || 0), 0);
+  const fiscalSalesTarget = fiscalSalesTargetFromSummary(summary, allowDemoFallback);
   const periods = ["Daily", "Weekly", "Monthly", "Yearly"];
   const reportAction = (action) => showToast(
-    ar ? `${action} - ${period}` : `${period} report ${action} (demo)`,
-    "success",
+    sourceDriven
+      ? (ar ? `${action} - ${period} needs a source-backed scheduler` : `${period} report ${action} needs a source-backed scheduler`)
+      : (ar ? `${action} - ${period}` : `${period} report ${action} (demo)`),
+    sourceDriven ? "warn" : "success",
   );
   const exportReport = () => {
     const filename = exportManagementReportPack(period, metrics, sourceMeta);
     showToast(
-      ar ? `تم تصدير ${period}` : `${period} report exported as ${filename}`,
+      ar ? `تم تصدير ${arTerm(lang, period)}` : `${period} report exported as ${filename}`,
       "success",
     );
   };
-  const grossProfit = metrics.revenue - metrics.cogs;
-  const payrollExpense = Number(metrics.payroll || 0);
-  const netAfterPayroll = Math.max(0, Number(metrics.netProfit || 0) - payrollExpense);
-  const margin = metrics.revenue ? ((netAfterPayroll / metrics.revenue) * 100).toFixed(1) : "0.0";
+  const grossProfit = isFiniteNumber(metrics.revenue) && isFiniteNumber(metrics.cogs)
+    ? Number(metrics.revenue) - Number(metrics.cogs)
+    : null;
+  const payrollExpense = isFiniteNumber(metrics.payroll) ? Number(metrics.payroll) : null;
+  const operatingExpenses = isFiniteNumber(metrics.operatingExpenses) ? Number(metrics.operatingExpenses) : 0;
+  const varianceImpact = Number(metrics.varianceImpact || 0);
+  const netAfterPayroll = sourceNetAfterPayroll(metrics);
+  const margin = isFiniteNumber(metrics.revenue) && Number(metrics.revenue) && isFiniteNumber(netAfterPayroll)
+    ? ((Number(netAfterPayroll) / Number(metrics.revenue)) * 100).toFixed(1)
+    : null;
+  const netDirection = !isFiniteNumber(netAfterPayroll) ? "flat" : netAfterPayroll < 0 ? "down" : netAfterPayroll > 0 ? "up" : "flat";
   const pnlRows = [
     ["Revenue", metrics.revenue, null, "up"],
-    ["COGS", -metrics.cogs, metrics.revenue ? `${((metrics.cogs / metrics.revenue) * 100).toFixed(1)}%` : null, "flat"],
-    ["Gross profit", grossProfit, metrics.revenue ? `${((grossProfit / metrics.revenue) * 100).toFixed(1)}%` : null, "up"],
-    ["Waste & loss", -metrics.waste, metrics.revenue ? `${((metrics.waste / metrics.revenue) * 100).toFixed(2)}%` : null, "down"],
-    ["Payroll", -payrollExpense, metrics.revenue ? `${((payrollExpense / metrics.revenue) * 100).toFixed(1)}%` : null, "flat"],
-    ["Net profit", netAfterPayroll, `${margin}%`, "up"],
+    ["COGS", isFiniteNumber(metrics.cogs) ? -Number(metrics.cogs) : null, metrics.revenue ? `${((Number(metrics.cogs || 0) / metrics.revenue) * 100).toFixed(1)}%` : null, "flat"],
+    ["Gross profit", grossProfit, metrics.revenue && isFiniteNumber(grossProfit) ? `${((Number(grossProfit) / metrics.revenue) * 100).toFixed(1)}%` : null, "up"],
+    ["Waste & loss", isFiniteNumber(metrics.waste) ? -Number(metrics.waste) : null, metrics.revenue ? `${((Number(metrics.waste || 0) / metrics.revenue) * 100).toFixed(2)}%` : null, "down"],
+    ["Variance impact", varianceImpact, metrics.revenue ? `${((varianceImpact / metrics.revenue) * 100).toFixed(2)}%` : null, varianceImpact < 0 ? "down" : varianceImpact > 0 ? "up" : "flat"],
+    ["Payroll", payrollExpense == null ? null : -payrollExpense, payrollExpense != null && metrics.revenue ? `${((payrollExpense / metrics.revenue) * 100).toFixed(1)}%` : null, "flat"],
+    ["Operating expenses", -operatingExpenses, metrics.revenue ? `${((operatingExpenses / metrics.revenue) * 100).toFixed(1)}%` : null, "flat"],
+    ["Net profit", netAfterPayroll, margin == null ? null : `${margin}%`, netDirection],
+  ];
+  const reportSourceCounts = metrics.sourceCounts || {};
+  const gatewaySettlementRows = metrics.gatewayRows || [];
+  const gatewayBadge = gatewaySettlementRows
+    .filter((row) => Number(row.amount || 0) > 0)
+    .slice(0, 3)
+    .map((row) => row.label || row.provider || row.id)
+    .join(" / ") || (sourceDriven ? "No verified providers" : "Demo providers");
+  const managementReportRows = [
+    ["Kiosk performance", "Which stalls need action or coaching", "pos.order, bayaan.shift.close", sourceDriven ? `${reportSourceCounts.orders || 0} orders / ${reportSourceCounts.closingRows || 0} closes` : "Demo kiosk review"],
+    ["Product profitability", "Which prices or recipes should change", "product.template, bayaan.recipe, purchase.order", sourceDriven ? `${fmtMoneyShort(metrics.revenue)} revenue / ${fmtMoneyShort(metrics.cogs)} COGS` : "Demo recipe margin"],
+    ["Ingredient consumption", "What to transfer or buy tomorrow", "bayaan.consumption.ledger, stock.quant", sourceDriven ? `${reportSourceCounts.consumptionRows || 0} ledger rows / ${reportSourceCounts.stockRows || 0} stock rows` : "Demo ingredient trend"],
+    ["Waste/loss", "What waste reason is driving margin loss", "bayaan.waste.entry, shift close lines", sourceDriven ? `${reportSourceCounts.wasteRows || 0} waste rows / ${fmtMoneyShort(metrics.waste)} loss` : "Demo waste pattern"],
+    ["Payment methods", "How much was cash, card, QR, wallet, FIB, or manual digital", "pos.payment, bayaan.shift.close", metrics.paymentSignal],
+    ["HR payroll & expenses", "Which labor and operating costs changed net profit", "hr.employee, hr.attendance, bayaan.payroll.adjustment, bayaan.payroll.run, bayaan.operating.expense", `${fmtMoneyShort(payrollExpense)} payroll / ${fmtMoneyShort(operatingExpenses)} expenses`],
+    ["Cash flow", "How much cash should be counted and deposited", "pos.payment, account.move, shift cash count", sourceDriven ? `${fmtMoneyShort(metrics.cashVariance || 0)} cash variance` : "Demo cash variance"],
   ];
   return (
     <div className="col" style={{ gap: 14 }}>
+      {financeMode && (
+        <AccountAllocationCard
+          metrics={metrics}
+          netAfterPayroll={netAfterPayroll}
+          ar={ar}
+        />
+      )}
+
       <div className="card card-pad">
         <div className="row" style={{ marginBottom: 6 }}>
           <AITag>{ar ? "ملخص التقرير" : "Report summary"}</AITag>
-          <span className="t-small subtle" style={{ marginInlineStart: 8 }}>{period}</span>
+          <span className="t-small subtle" style={{ marginInlineStart: 8 }}>{arTerm(lang, period)}</span>
           {metrics.sourceCounts && (
             <span className="badge" style={{ marginInlineStart: 8 }}>
-              {metrics.sourceCounts.orders || 0} orders / {metrics.sourceCounts.closingRows || 0} closes
+              {ar ? `${metrics.sourceCounts.orders || 0} طلبات / ${metrics.sourceCounts.closingRows || 0} إغلاقات` : `${metrics.sourceCounts.orders || 0} orders / ${metrics.sourceCounts.closingRows || 0} closes`}
             </span>
           )}
         </div>
         <div className="ai-block" style={{ fontSize: 14.5, lineHeight: 1.55, maxWidth: 820 }}>
-          {ar
-            ? <>أبريل أنهى بإيرادات <strong>د.ع ١٫٣٤ مليار</strong> (+١٢٪ شهر/شهر) وصافي ربح <strong>د.ع ٣٤٣ مليون</strong> (٢٥.٦٪ هامش). أكبر تحرك: تكاليف المورد ارتفعت ١.٤ نقطة. أكبر فرصة: ٤ كشاك تحت المتوسط في عصائر العصر.</>
-            : <>{period} report shows <strong>{fmtMoney(metrics.revenue)}</strong> revenue and <strong>{fmtMoney(netAfterPayroll)}</strong> net profit after payroll ({margin}% margin). Payment split: {metrics.paymentSignal}. Waste, loss, and payroll remain separated for management review.</>
-          }
+          {period} report shows <strong>{fmtMoney(metrics.revenue)}</strong> revenue and <strong>{fmtMoney(netAfterPayroll)}</strong> net profit after payroll ({margin == null ? "margin —" : `${margin}% margin`}). Payment split: {metrics.paymentSignal}. Waste, loss, and payroll remain separated for management review.
         </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
-        <KPI label={ar ? "الإيرادات MTD" : `Revenue ${period}`} value={fmtMoney(metrics.revenue)} delta="10.4%" deltaDir="up" sparkData={[42,46,52,58,62,68,72,78,84,90,98,104,110]} size="lg"/>
-        <KPI label={ar ? "تكلفة البضاعة" : `COGS ${period}`} value={fmtMoney(metrics.cogs)} delta="38.1%" deltaDir="flat" footer={ar ? "هدف ٣٧٪" : "target 37%"} size="lg"/>
-        <KPI label={ar ? "صافي الربح" : `Net profit ${period}`} value={fmtMoney(netAfterPayroll)} delta={`${margin}%`} deltaDir="up" footer={ar ? "هامش ٢٥.٤٪" : `${margin}% margin`} size="lg"/>
+        <KPI label={ar ? "الإيرادات" : `Revenue ${period}`} value={fmtMoney(metrics.revenue)} delta={`${metrics.sourceCounts?.orders || 0} orders`} deltaDir="flat" sparkData={allowDemoFallback ? [42,46,52,58,62,68,72,78,84,90,98,104,110] : undefined} size="lg"/>
+        <KPI label={ar ? "تكلفة البضاعة" : `COGS ${period}`} value={fmtMoney(metrics.cogs)} delta={metrics.revenue ? `${((metrics.cogs / metrics.revenue) * 100).toFixed(1)}%` : "0.0%"} deltaDir="flat" footer={sourceDriven ? "verified COGS ratio" : "demo COGS ratio"} size="lg"/>
+        <KPI label={ar ? "صافي الربح" : `Net profit ${period}`} value={fmtMoney(netAfterPayroll)} delta={margin == null ? undefined : `${margin}%`} deltaDir={netDirection} footer={margin == null ? (ar ? "غير متاح بدون الرواتب" : "Requires payroll wiring") : (ar ? `${margin}% هامش` : `${margin}% margin`)} size="lg"/>
+      </div>
+
+      <div className="card">
+        <div className="between" style={{ padding: "14px 18px" }}>
+          <div>
+            <div className="t-h2">{ar ? "إجمالي المبيعات عبر السنة" : "Total sales across years"}</div>
+            <div className="t-small subtle">{ar ? "نمط مخطط تدفق المبيعات المؤهلة، مكيّف لمبيعات بيان من يونيو إلى مايو" : "Qualified Lead Flow style, adapted for Bayaan sales from Jun to May"}</div>
+          </div>
+          <button className="btn btn-ghost" style={{ height: 28, fontSize: 12 }}>
+            {ar ? "آخر سنة مالية" : "Last fiscal year"} <Icon name="chevDown" size={11}/>
+          </button>
+        </div>
+        <QualifiedSalesFlowChart
+          rows={fiscalSalesRows}
+          total={fiscalSalesTotal}
+          target={fiscalSalesTarget}
+          ar={ar}
+        />
       </div>
 
       <div className="card">
@@ -10306,13 +16410,13 @@ function ReportsScreen({ lang, bootstrap }) {
             <div className="t-h2">{ar ? "طرق الدفع" : "Payment methods"}</div>
             <div className="t-small subtle">{ar ? "فصل النقد عن المدفوعات الرقمية" : "Cash stays separate from terminal, QR, wallet, and manual digital collections"}</div>
           </div>
-          <span className="badge">{metrics.paymentSignal}</span>
+          <span className="badge">{arTerm(lang, metrics.paymentSignal)}</span>
         </div>
         <table className="tbl">
           <tbody>
             {metrics.paymentRows.map(([label, amount]) => (
               <tr key={label}>
-                <td style={{ fontWeight: 500 }}>{label}</td>
+                <td style={{ fontWeight: 500 }}>{arTerm(lang, label)}</td>
                 <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(amount)}</td>
               </tr>
             ))}
@@ -10326,7 +16430,7 @@ function ReportsScreen({ lang, bootstrap }) {
             <div className="t-h2">{ar ? "تسوية بوابات العراق" : "Iraqi gateway settlement"}</div>
             <div className="t-small subtle">{ar ? "إجماليات المزودين من طرق دفع نقطة البيع" : "Provider totals from configured POS payment methods"}</div>
           </div>
-          <span className="badge">Zain Cash / FIB / Qi</span>
+          <span className="badge">{arTerm(lang, gatewayBadge)}</span>
         </div>
         <table className="tbl">
           <thead>
@@ -10338,14 +16442,18 @@ function ReportsScreen({ lang, bootstrap }) {
             </tr>
           </thead>
           <tbody>
-            {(metrics.gatewayRows || []).map((row) => (
+            {gatewaySettlementRows.length ? gatewaySettlementRows.map((row) => (
               <tr key={row.provider || row.id}>
-                <td style={{ fontWeight: 500 }}>{row.label}</td>
-                <td><span className="badge">{paymentCategoryLabel(row.category)}</span></td>
-                <td className="muted">{String(row.settlement || "").replace(/_/g, " ")}</td>
+                <td style={{ fontWeight: 500 }}>{arTerm(lang, row.label)}</td>
+                <td><span className="badge">{arTerm(lang, paymentCategoryLabel(row.category))}</span></td>
+                <td className="muted">{arTerm(lang, String(row.settlement || "").replace(/_/g, " "))}</td>
                 <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(row.amount || 0)}</td>
               </tr>
-            ))}
+            )) : (
+              <tr>
+                <td colSpan={4} className="muted">{ar ? "لا توجد مدفوعات مزود موثقة" : "No verified provider payments loaded"}</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -10359,7 +16467,7 @@ function ReportsScreen({ lang, bootstrap }) {
           <div className="row" style={{ gap: 6 }}>
             {periods.map((periodName) => (
               <button key={periodName} onClick={() => setPeriod(periodName)} className={"btn " + (periodName === period ? "btn-primary" : "btn-ghost")} style={{ height: 28, fontSize: 12 }}>
-                {periodName}
+                {arTerm(lang, periodName)}
               </button>
             ))}
             <button className="btn btn-ghost" onClick={exportReport} style={{ height: 28, fontSize: 12 }}>
@@ -10380,19 +16488,12 @@ function ReportsScreen({ lang, bootstrap }) {
             </tr>
           </thead>
           <tbody>
-            {[
-              ["Kiosk performance", "Which stalls need action or coaching", "pos.order, bayaan.shift.close", "K-07 review"],
-              ["Product profitability", "Which prices or recipes should change", "product.template, bayaan.recipe, purchase.order", "Pistachio -6 pts"],
-              ["Ingredient consumption", "What to transfer or buy tomorrow", "bayaan.consumption.ledger, stock.quant", "Oranges -1.4 kg"],
-              ["Waste/loss", "What waste reason is driving margin loss", "bayaan.waste.entry, shift close lines", "Croissants 42%"],
-              ["Payment methods", "How much was cash, card, QR, wallet, FIB, or manual digital", "pos.payment, bayaan.shift.close", metrics.paymentSignal],
-              ["Cash flow", "How much cash should be counted and deposited", "pos.payment, account.move, shift cash count", "3 variances"],
-            ].map(([report, decision, sources, signal]) => (
+            {managementReportRows.map(([report, decision, sources, signal]) => (
               <tr key={report}>
-                <td style={{ fontWeight: 500 }}>{report}</td>
-                <td className="muted">{decision}</td>
+                <td style={{ fontWeight: 500 }}>{arTerm(lang, report)}</td>
+                <td className="muted">{arTerm(lang, decision)}</td>
                 <td><span className="badge">{sources}</span></td>
-                <td className="t-num" style={{ textAlign: "end" }}>{signal}</td>
+                <td className="t-num" style={{ textAlign: "end" }}>{arTerm(lang, signal)}</td>
               </tr>
             ))}
           </tbody>
@@ -10412,13 +16513,15 @@ function ReportsScreen({ lang, bootstrap }) {
             {pnlRows.map(([label, val, sub, dir], i) => {
               const isTotal = ["Revenue", "Gross profit", "Net profit"].includes(label);
               const isSub = label.startsWith("  ");
+              const hasVal = isFiniteNumber(val);
+              const numVal = hasVal ? Number(val) : 0;
               return (
                 <tr key={i} style={{ background: isTotal ? "var(--surface-2)" : undefined }}>
                   <td style={{ paddingInlineStart: isSub ? 28 : 14, fontWeight: isTotal ? 600 : 400, color: isSub ? "var(--ink-2)" : undefined, fontSize: isSub ? 12.5 : undefined }}>
-                    {isSub ? label.trim() : label}
+                    {arTerm(lang, isSub ? label.trim() : label)}
                   </td>
-                  <td className="t-num" style={{ textAlign: "end", fontWeight: isTotal ? 600 : 400, color: val < 0 ? "var(--ink-2)" : undefined }}>
-                    {val < 0 ? `(${fmtMoney(-val)})` : fmtMoney(val)}
+                  <td className="t-num" style={{ textAlign: "end", fontWeight: isTotal ? 600 : 400, color: hasVal && numVal < 0 ? "var(--ink-2)" : undefined }}>
+                    {hasVal ? (numVal < 0 ? `(${fmtMoney(-numVal)})` : fmtMoney(numVal)) : "—"}
                   </td>
                   <td style={{ textAlign: "end", width: 110 }} className="t-small">
                     {sub && <span className={dir === "up" ? "delta-pos" : dir === "down" ? "delta-neg" : "muted"}>{sub}</span>}
@@ -10443,14 +16546,14 @@ function ReportsScreen({ lang, bootstrap }) {
 
 const ADMIN_NAV = [
   { section: "TODAY" },
-  { id: "overview", label: "Today Command", icon: "grid" },
-  { id: "insights", label: "AI Insights", icon: "sparkles", badge: 4 },
+  { id: "overview", label: "Today Command", icon: "gauge" },
+  { id: "insights", label: "AI Insights", icon: "brain", badge: 4 },
   { section: "OPERATIONS" },
   { id: "kiosks", label: "Kiosks", icon: "store" },
-  { id: "warehouses", label: "Warehouses", icon: "box" },
-  { id: "items", label: "Items Catalog", icon: "box" },
+  { id: "warehouses", label: "Warehouses", icon: "warehouse" },
+  { id: "items", label: "Items Catalog", icon: "packageSearch" },
   { id: "sales", label: "Sales & POS", icon: "receipt" },
-  { id: "closing", label: "Daily Close", icon: "receipt", badge: 3 },
+  { id: "closing", label: "Daily Close", icon: "clipboardCheck", badge: 3 },
   { id: "waste", label: "Waste & Loss", icon: "trash", badge: 3 },
   { section: "STOCK" },
   { id: "products", label: "Products & Recipes", icon: "coffee" },
@@ -10460,7 +16563,7 @@ const ADMIN_NAV = [
   { id: "staff", label: "Staff", icon: "users" },
   { id: "finance", label: "Finance", icon: "cash" },
   { section: "ANALYTICS" },
-  { id: "reports", label: "Reports", icon: "chart" },
+  { id: "reports", label: "Reports", icon: "fileText" },
 ];
 
 const ROLE_LABELS = {
@@ -10470,6 +16573,15 @@ const ROLE_LABELS = {
   accountant: "Accountant",
   supervisor: "Supervisor",
   cashier: "Cashier",
+};
+
+const ROLE_LABELS_DISPLAY_AR = {
+  superadmin: "مدير عام",
+  manager: "مدير",
+  logistics: "اللوجستيات",
+  accountant: "محاسب",
+  supervisor: "مشرف",
+  cashier: "كاشير",
 };
 
 const TEST_ACCOUNTS = [
@@ -10537,50 +16649,55 @@ const ADMIN_NAV_AR = {
   ANALYTICS: "التحليلات",
 };
 
-function AdminSidebar({ active, setActive, lang }) {
+function AdminSidebar({ active, setActive, lang, navBadges = null }) {
   const bayaan = useBayaan();
   const isAr = lang === "ar";
   const navRows = filteredAdminNav(bayaan.auth, bayaan.hasBackend);
   const user = bayaan.auth.user || {};
-  const roleLabel = ROLE_LABELS[user.primaryRole] || "Owner";
+  const roleLabel = isAr ? (ROLE_LABELS_DISPLAY_AR[user.primaryRole] || "المالك") : (ROLE_LABELS[user.primaryRole] || "Owner");
   return (
-    <aside style={{
-      width: 220, flexShrink: 0,
-      background: "var(--surface-2)",
-      borderInlineEnd: "1px solid var(--line)",
-      padding: "12px 10px",
-      display: "flex", flexDirection: "column", gap: 2,
-      overflowY: "auto"
-    }}>
-      <div style={{ padding: "6px 10px 14px", display: "flex", alignItems: "center", gap: 8 }}>
-        <div style={{ width: 22, height: 22, borderRadius: 5, background: "var(--brand-mark-bg)", color: "var(--brand-mark-fg)",
-          display: "grid", placeItems: "center", fontWeight: 600, fontSize: 12, letterSpacing: "-0.02em" }}>M</div>
-        <div style={{ fontWeight: 500, fontSize: 13.5 }}>{isAr ? "مقهى" : "Maqha"}</div>
+    <aside className="admin-sidebar">
+      <div className="admin-sidebar-header">
+        <BrandLogo className="admin-sidebar-logo" alt={isAr ? BRAND.arabic : BRAND.name}/>
         <Icon name="chevDown" size={12} style={{ color: "var(--ink-3)", marginInlineStart: "auto" }}/>
       </div>
 
-      {navRows.map((it, i) => {
-        if (it.section) {
-          return <div key={i} className="nav-section">{isAr ? ADMIN_NAV_AR[it.section] : it.section}</div>;
-        }
-        const on = active === it.id;
-        return (
-          <div key={it.id} className={"nav-item" + (on ? " active" : "")} onClick={() => setActive(it.id)}>
-            <Icon name={it.icon} size={14} className="nav-icon"/>
-            <span style={{ flex: 1 }}>{isAr ? ADMIN_NAV_AR[it.id] : it.label}</span>
-            {it.badge && <span className="badge" style={{ height: 16, fontSize: 10, padding: "0 5px" }}>{it.badge}</span>}
-          </div>
-        );
-      })}
+      <div className="admin-sidebar-actions">
+        <button className="admin-sidebar-action-main" type="button" onClick={() => setActive("inventory")}>
+          <Icon name="plusCircle" size={16}/>
+          <span>{isAr ? "تحويل جديد" : "New Transfer"}</span>
+        </button>
+        <button className="admin-sidebar-action-icon" type="button" aria-label={isAr ? "الموافقات" : "Approvals"} title={isAr ? "الموافقات" : "Approvals"} onClick={() => setActive("closing")}>
+          <Icon name="mail" size={16}/>
+        </button>
+      </div>
 
-      <div style={{ marginTop: "auto", paddingTop: 12, borderTop: "1px solid var(--line)" }}>
-        <div className="nav-item" style={{ height: 36 }}>
-          <Avatar name={user.name || "Bayaan"} size={20}/>
+      <div className="admin-sidebar-nav">
+        {navRows.map((it, i) => {
+          if (it.section) {
+            return <div key={i} className="nav-section">{isAr ? ADMIN_NAV_AR[it.section] : it.section}</div>;
+          }
+          const on = active === it.id;
+          const badgeValue = navBadges && Object.prototype.hasOwnProperty.call(navBadges, it.id) ? navBadges[it.id] : it.badge;
+          const showBadge = badgeValue !== undefined && badgeValue !== null && badgeValue !== "" && Number(badgeValue) !== 0;
+          return (
+            <button key={it.id} className={"nav-item" + (on ? " active" : "")} type="button" onClick={() => setActive(it.id)}>
+              <Icon name={it.icon} size={16} className="nav-icon"/>
+              <span style={{ flex: 1, textAlign: "start" }}>{isAr ? ADMIN_NAV_AR[it.id] : it.label}</span>
+              {showBadge && <span className="badge">{badgeValue}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="admin-sidebar-footer">
+        <div className="nav-item admin-sidebar-user">
+          <Avatar name={user.name || "Bayaan"} size={32}/>
           <div style={{ flex: 1, lineHeight: 1.15 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 500 }}>{user.name || (isAr ? "بيان" : "Bayaan")}</div>
-            <div style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{roleLabel}</div>
+            <div style={{ fontSize: 12.5, fontWeight: 500 }}>{arTerm(lang, user.name || (isAr ? "بيان" : "Bayaan"))}</div>
+            <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{roleLabel}</div>
           </div>
-          <Icon name="settings" size={13} style={{ color: "var(--ink-3)" }}/>
+          <Icon name="dots" size={16} style={{ color: "var(--ink-3)" }}/>
         </div>
       </div>
     </aside>
@@ -10589,7 +16706,7 @@ function AdminSidebar({ active, setActive, lang }) {
 
 function AdminTopBar({ title, sub, right, lang }) {
   return (
-    <div style={{
+    <div className="admin-topbar" style={{
       height: 56, padding: "0 24px",
       borderBottom: "1px solid var(--line)",
       display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -10617,42 +16734,116 @@ function AdminTopBar({ title, sub, right, lang }) {
   );
 }
 
-function DataModeToggle({ bayaan, lang }) {
+function DataModeToggle({ bayaan, lang, bootstrap }) {
   const ar = lang === "ar";
   const liveOnly = bayaan.mode === "live";
+  const simulation = isSimulationRuntime();
+  const simulationSpeed = simulationRuntimeSpeed();
+  const simulationMeta = unwrapOdoo(bootstrap)?.meta?.simulation;
+  const switchDataMode = (target) => {
+    if (typeof window === "undefined") {
+      bayaan.setMode(target === "demo" ? "demo" : "live");
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("bayaanSimulation");
+    url.searchParams.delete("bayaanSimFull");
+    url.searchParams.delete("bayaanSimMinutes");
+    url.searchParams.delete("bayaanSimSpeed");
+    url.searchParams.delete("bayaanMode");
+    if (target === "simulation") {
+      window.localStorage.setItem("BAYAAN_SIMULATION", "peak");
+      window.localStorage.removeItem("bayaan.mode.v1");
+      url.searchParams.set("bayaanSimulation", "peak");
+      url.searchParams.set("bayaanSimMinutes", String(simulationRuntimeMinutes()));
+      url.searchParams.set("bayaanSimSpeed", String(simulationSpeed));
+      window.location.assign(url.toString());
+      return;
+    }
+    window.localStorage.removeItem("BAYAAN_SIMULATION");
+    window.localStorage.setItem("bayaan.mode.v1", target);
+    if (simulation) {
+      window.location.assign(url.toString());
+      return;
+    }
+    bayaan.setMode(target === "demo" ? "demo" : "live");
+  };
+  const setSimulationSpeed = (speed) => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    window.localStorage.setItem("BAYAAN_SIMULATION", "peak");
+    window.localStorage.setItem("BAYAAN_SIMULATION_SPEED", String(speed));
+    window.localStorage.removeItem("bayaan.mode.v1");
+    url.searchParams.set("bayaanSimulation", "peak");
+    url.searchParams.set("bayaanSimMinutes", String(simulationRuntimeMinutes()));
+    url.searchParams.set("bayaanSimSpeed", String(speed));
+    url.searchParams.delete("bayaanSimFull");
+    window.location.assign(url.toString());
+  };
   return (
-    <div className="segmented" aria-label={ar ? "Ù…ØµØ¯Ø± Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª" : "Data source"} style={{ height: 30 }}>
+    <div className="row" style={{ gap: 6 }}>
+    <div className="segmented" aria-label={ui(ar, "dataSource")} style={{ height: 30 }}>
       <button
         type="button"
-        className={`seg-btn ${liveOnly ? "active" : ""}`}
-        onClick={() => bayaan.setMode("live")}
+        className={`seg-btn ${simulation ? "active" : ""}`}
+        onClick={() => switchDataMode("simulation")}
+        title="Run the adjustable 10-kiosk peak-opening simulation"
+      >
+        <Icon name="chart" size={12}/>
+        {ui(ar, "simulation")}
+      </button>
+      <button
+        type="button"
+        className={`seg-btn ${liveOnly && !simulation ? "active" : ""}`}
+        onClick={() => switchDataMode("live")}
         title={bayaan.hasBackend ? "Use only verified engine data" : "Live-only mode; backend URL is not configured"}
       >
         <Icon name="zap" size={12}/>
-        {ar ? "ØªØ´ØºÙŠÙ„ ÙÙ‚Ø·" : "Live only"}
+        {ui(ar, "liveOnly")}
       </button>
       <button
         type="button"
-        className={`seg-btn ${!liveOnly ? "active" : ""}`}
-        onClick={() => bayaan.setMode("demo")}
+        className={`seg-btn ${!liveOnly && !simulation ? "active" : ""}`}
+        onClick={() => switchDataMode("demo")}
         title="Allow demo fallback data"
       >
         <Icon name="grid" size={12}/>
-        {ar ? "ØªØ¬Ø±ÙŠØ¨ÙŠ" : "Demo data"}
+        {ui(ar, "demoData")}
       </button>
+    </div>
+    {simulation && (
+      <div className="segmented" aria-label="Simulation speed" style={{ height: 30 }}>
+        {[1, 2, 5, 10].map((speed) => (
+          <button
+            key={speed}
+            type="button"
+            className={`seg-btn ${simulationSpeed === speed ? "active" : ""}`}
+            onClick={() => setSimulationSpeed(speed)}
+            title={`Run simulation at x${speed}`}
+          >
+            x{speed}
+          </button>
+        ))}
+      </div>
+    )}
+    {simulation && simulationMeta && (
+      <span className="badge badge-pos" title="Simulation progress">
+        {Number(simulationMeta.cursorMinute || 0)}/{Number(simulationMeta.minutes || simulationRuntimeMinutes())} min / {Number(simulationMeta.kioskCount || 10)} kiosks / x{simulationSpeed}
+      </span>
+    )}
     </div>
   );
 }
 
-function AuditLogRail({ lang, sourceOfTruth }) {
+function AuditLogRail({ lang, sourceOfTruth, allowDemoFallback = true }) {
   const ar = lang === "ar";
-  const [events, setEvents] = React.useState(() => demoAuditEvents());
+  const [events, setEvents] = React.useState(() => allowDemoFallback ? demoAuditEvents() : []);
   const [status, setStatus] = React.useState("idle");
   const [error, setError] = React.useState("");
   const loadEvents = React.useCallback(async () => {
     if (!sourceOfTruth?.enabled) {
-      setEvents(demoAuditEvents());
-      setStatus("demo");
+      setEvents(allowDemoFallback ? demoAuditEvents() : []);
+      setStatus(allowDemoFallback ? "demo" : "source-missing");
       setError("");
       return;
     }
@@ -10667,7 +16858,7 @@ function AuditLogRail({ lang, sourceOfTruth }) {
       setStatus("error");
       setError(compactError(err));
     }
-  }, [sourceOfTruth]);
+  }, [allowDemoFallback, sourceOfTruth]);
 
   React.useEffect(() => {
     void loadEvents();
@@ -10692,6 +16883,7 @@ function AuditLogRail({ lang, sourceOfTruth }) {
     const timer = window.setInterval(() => void loadEvents(), 8000);
     return () => window.clearInterval(timer);
   }, [loadEvents, sourceOfTruth?.enabled]);
+  const sourceAuditMissing = status === "source-missing";
 
   return (
     <aside style={{
@@ -10705,13 +16897,13 @@ function AuditLogRail({ lang, sourceOfTruth }) {
     }}>
       <div className="between" style={{ height: 56, padding: "0 16px", borderBottom: "1px solid var(--line)" }}>
         <div>
-          <div className="t-h2">{ar ? "سجل النظام" : "Live action log"}</div>
+          <div className="t-h2">{ui(ar, "liveActionLog")}</div>
           <div className="t-small subtle">
-            {status === "live" ? (ar ? "متصل" : "Realtime stream") : status === "demo" ? "Demo events" : status === "error" ? "Log unavailable" : "Loading"}
+            {status === "live" ? (ar ? "متصل" : ui(ar, "realtimeStream")) : status === "demo" ? ui(ar, "demoEvents") : sourceAuditMissing ? (ar ? "سجل تدقيق المصدر غير متاح" : "Source audit log unavailable") : status === "error" ? ui(ar, "logUnavailable") : ui(ar, "loading")}
           </div>
         </div>
         <button className="btn btn-ghost" onClick={loadEvents} style={{ height: 28, fontSize: 12 }}>
-          <Icon name="refresh" size={12}/>{ar ? "تحديث" : "Refresh"}
+          <Icon name="refresh" size={12}/>{ui(ar, "refresh")}
         </button>
       </div>
       {error && (
@@ -10743,8 +16935,8 @@ function AuditLogRail({ lang, sourceOfTruth }) {
           ))}
           {!events.length && (
             <div className="card" style={{ padding: 14 }}>
-              <div style={{ fontSize: 13, fontWeight: 500 }}>{ar ? "لا توجد أحداث" : "No events yet"}</div>
-              <div className="t-small subtle" style={{ marginTop: 4 }}>System changes will appear here after they are committed.</div>
+              <div style={{ fontSize: 13, fontWeight: 500 }}>{sourceAuditMissing ? (ar ? "لا توجد أحداث تدقيق من المصدر" : "No source audit events loaded") : ui(ar, "noEventsYet")}</div>
+              <div className="t-small subtle" style={{ marginTop: 4 }}>{sourceAuditMissing ? (ar ? "اربط محرك المصدر لعرض أحداث تدقيق بيان." : "Connect the source engine to show Bayaan audit events.") : ui(ar, "systemChangesAppear")}</div>
             </div>
           )}
         </div>
@@ -10756,7 +16948,7 @@ function AuditLogRail({ lang, sourceOfTruth }) {
 function AdminPanel({ lang }) {
   const bayaan = useBayaan();
   const [active, setActive] = useState("overview");
-  const [selectedKiosk, setSelectedKiosk] = useState(MOCK.kiosks[0]);
+  const [selectedKiosk, setSelectedKiosk] = useState(null);
   const allowedIds = useMemo(() => allowedAdminIds(bayaan.auth, bayaan.hasBackend), [bayaan.auth, bayaan.hasBackend]);
   const canViewAuditLog = isSuperadminAuth(bayaan.auth);
   const [auditLogOpen, setAuditLogOpen] = useState(false);
@@ -10779,18 +16971,26 @@ function AdminPanel({ lang }) {
     });
   }, [baseGateway, liveBackendActive]);
   const [sync, setSync] = useState({
-    status: liveBackendActive ? "syncing" : "demo",
-    bootstrap: null,
+    status: liveBackendActive ? "syncing" : liveOnlySelected ? "missing" : "demo",
+    bootstrap: liveOnlySelected ? EMPTY_ENGINE_SNAPSHOT : null,
     warehouseSetup: liveOnlySelected ? EMPTY_WAREHOUSE_SETUP : DEMO_WAREHOUSE_SETUP,
     error: "",
   });
   const [realtime, setRealtime] = useState({
-    status: liveBackendActive ? "connecting" : "demo",
+    status: liveBackendActive ? "connecting" : liveOnlySelected ? "missing" : "demo",
     lastEvent: null,
     eventCount: 0,
     error: "",
   });
   const realtimeRefreshRef = React.useRef(false);
+
+  useEffectIns(() => {
+    if (typeof window === "undefined") return undefined;
+    window.__bayaanSetAdminSection = setActive;
+    return () => {
+      if (window.__bayaanSetAdminSection === setActive) delete window.__bayaanSetAdminSection;
+    };
+  }, []);
 
   const refreshOdoo = React.useCallback(async () => {
     if (!liveOnlySelected) {
@@ -10833,6 +17033,15 @@ function AdminPanel({ lang }) {
     void refreshOdoo();
     // Re-run whenever mode flips so the dashboard immediately respects Demo/Live.
   }, [refreshOdoo, bayaan.mode, baseGateway.enabled]);
+
+  useEffect(() => {
+    if (!liveBackendActive) return undefined;
+    const refreshAfterSourceMutation = () => {
+      void refreshOdoo();
+    };
+    window.addEventListener("bayaan:source-mutated", refreshAfterSourceMutation);
+    return () => window.removeEventListener("bayaan:source-mutated", refreshAfterSourceMutation);
+  }, [liveBackendActive, refreshOdoo]);
 
   useEffect(() => {
     if (!liveBackendActive) {
@@ -10889,51 +17098,126 @@ function AdminPanel({ lang }) {
   }, [auditLogOpen, canViewAuditLog]);
 
   const openKiosk = (kiosk) => {
-    setSelectedKiosk(kiosk || MOCK.kiosks[0]);
+    setSelectedKiosk(kiosk || (liveOnlySelected ? null : MOCK.kiosks[0]));
     setActive("kioskDetail");
   };
 
+  const dashboardSync = useMemo(() => {
+    if (!liveOnlySelected) return sync;
+    return {
+      ...sync,
+      status: sync.status === "demo" ? "missing" : sync.status,
+      bootstrap: sync.bootstrap || EMPTY_ENGINE_SNAPSHOT,
+      warehouseSetup: sync.warehouseSetup || EMPTY_WAREHOUSE_SETUP,
+    };
+  }, [liveOnlySelected, sync]);
+  const dashboardBootstrap = dashboardSync.bootstrap;
+
   const screens = {
-    overview: <OverviewScreen lang={lang} bootstrap={sync.bootstrap}/>,
-    insights: <InsightsScreen lang={lang} bootstrap={sync.bootstrap} navigate={setActive}/>,
-    sales: <SalesMonitorScreen lang={lang} bootstrap={sync.bootstrap}/>,
-    kiosks: <KiosksScreen lang={lang} bootstrap={sync.bootstrap} sync={sync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} onPick={openKiosk}/>,
-    kioskDetail: <KioskDetailScreen lang={lang} kiosk={selectedKiosk} bootstrap={sync.bootstrap} onBack={() => setActive("kiosks")}/>,
-    warehouses: <WarehousesScreen lang={lang} sync={sync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    items: <ItemsCatalogScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    inventory: <InventoryScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    products: <ProductsScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    closing: <ClosingScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth}/>,
-    waste: <WasteScreen lang={lang} bootstrap={sync.bootstrap}/>,
-    suppliers: <SuppliersScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    staff: <HRPayrollScreen lang={lang} bootstrap={sync.bootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    finance: <ReportsScreen lang={lang} bootstrap={sync.bootstrap}/>,
-    reports: <ReportsScreen lang={lang} bootstrap={sync.bootstrap}/>,
+    overview: <OverviewScreen lang={lang} bootstrap={dashboardBootstrap}/>,
+    insights: <InsightsScreen lang={lang} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth} navigate={setActive}/>,
+    sales: <SalesMonitorScreen lang={lang} bootstrap={dashboardBootstrap}/>,
+    kiosks: <KiosksScreen lang={lang} bootstrap={dashboardBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} onPick={openKiosk}/>,
+    kioskDetail: <KioskDetailScreen lang={lang} kiosk={selectedKiosk} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} onBack={() => setActive("kiosks")}/>,
+    warehouses: <WarehousesScreen lang={lang} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    items: <ItemsCatalogScreen lang={lang} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    inventory: <InventoryScreen lang={lang} bootstrap={dashboardBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    products: <ProductsScreen lang={lang} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    closing: <ClosingScreen lang={lang} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth}/>,
+    waste: <WasteScreen lang={lang} bootstrap={dashboardBootstrap}/>,
+    suppliers: <SuppliersScreen lang={lang} bootstrap={dashboardBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    staff: <HRPayrollScreen lang={lang} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    finance: <ReportsScreen lang={lang} bootstrap={dashboardBootstrap} mode="finance"/>,
+    reports: <ReportsScreen lang={lang} bootstrap={dashboardBootstrap}/>,
+  };
+  const adminSourceDriven = isSourceDrivenPayload(dashboardBootstrap);
+  const adminSummary = useMemo(() => odooSummary(dashboardBootstrap), [dashboardBootstrap]);
+  const adminKiosks = useMemo(() => odooKioskRows(dashboardBootstrap), [dashboardBootstrap]);
+  const adminWasteRows = useMemo(() => odooWasteRows(dashboardBootstrap), [dashboardBootstrap]);
+  useEffect(() => {
+    if (liveOnlySelected) {
+      if (!adminKiosks.length) {
+        setSelectedKiosk(null);
+        return;
+      }
+      setSelectedKiosk((current) => {
+        if (current && adminKiosks.some((row) => matchesKiosk(row.id, current))) return current;
+        return adminKiosks[0];
+      });
+      return;
+    }
+    setSelectedKiosk((current) => current || MOCK.kiosks[0]);
+  }, [adminKiosks, liveOnlySelected]);
+  const adminSourceCounts = adminSummary?.sourceCounts || {};
+  const sourceKioskCount = Number(adminSourceCounts.kiosks ?? adminKiosks.length ?? 0);
+  const sourceCityCount = new Set(adminKiosks.map((kiosk) => kiosk.city).filter(Boolean)).size;
+  const sourceOrderCount = Number(adminSourceCounts.orders ?? adminSummary?.totals?.ordersToday ?? 0);
+  const sourcePaymentCount = Number(adminSourceCounts.payments ?? 0);
+  const sourceClosingCount = Number(adminSourceCounts.closingRows ?? 0);
+  const sourceWasteCount = Number(adminSourceCounts.wasteRows ?? adminWasteRows.length ?? 0);
+  const sourceWasteAlerts = Number(adminSummary?.alerts?.wasteLossAlerts ?? 0);
+  const sourceUnresolvedAlerts = Number(adminSummary?.alerts?.unresolvedVariances ?? 0);
+  const sourceRecipeIssues = Number(adminSummary?.alerts?.recipePostingIssues ?? 0);
+  const sourceLowStockAlerts = Number(adminSummary?.alerts?.lowStockItems ?? 0);
+  const sourceInsightAlerts = sourceUnresolvedAlerts + sourceWasteAlerts + sourceRecipeIssues + sourceLowStockAlerts;
+  const selectedForTitle = selectedKiosk || adminKiosks[0] || (liveOnlySelected ? null : MOCK.kiosks[0]);
+  const adminNavBadges = adminSourceDriven ? {
+    insights: sourceInsightAlerts,
+    closing: sourceUnresolvedAlerts + sourceRecipeIssues,
+    waste: sourceWasteAlerts,
+  } : null;
+  const sourceOverviewSub = {
+    en: `${sourceKioskCount} source kiosks / ${sourceOrderCount} orders / ${sourceClosingCount} closes`,
+    ar: `${sourceKioskCount} أكشاك مصدر / ${sourceOrderCount} طلبات / ${sourceClosingCount} إغلاقات`,
+  };
+  const sourceKiosksSub = {
+    en: `${sourceKioskCount} source locations${sourceCityCount ? ` / ${sourceCityCount} cities` : ""}`,
+    ar: `${sourceKioskCount} مواقع مصدر${sourceCityCount ? ` / ${sourceCityCount} مدن` : ""}`,
+  };
+  const sourceKioskDetailSub = {
+    en: `${selectedForTitle?.city || selectedForTitle?.area || "Source kiosk"} - ${selectedForTitle?.stockLocation || selectedForTitle?.warehouse || selectedForTitle?.posConfig || "stock location pending"}`,
+    ar: `${selectedForTitle?.city || selectedForTitle?.area || "كشك مصدر"} - ${selectedForTitle?.stockLocation || selectedForTitle?.warehouse || selectedForTitle?.posConfig || "موقع المخزون غير محمل"}`,
+  };
+  const sourceSalesSub = {
+    en: `${sourceOrderCount} source orders / ${sourcePaymentCount} payment rows / recipe posting status`,
+    ar: `${sourceOrderCount} طلبات مصدر / ${sourcePaymentCount} سطور دفع / حالة ترحيل الوصفة`,
+  };
+  const sourceWasteSub = {
+    en: `${sourceWasteCount} verified waste rows / ${sourceWasteAlerts} source alerts`,
+    ar: `${sourceWasteCount} سطور هدر موثقة / ${sourceWasteAlerts} تنبيهات مصدر`,
   };
   const titles = {
-    overview: { en: "Today Command Center", ar: "مركز قيادة اليوم", sub: { en: "Saturday, May 9 - all kiosks", ar: "السبت، 9 مايو · جميع الأكشاك" } },
+    overview: { en: "Today Command Center", ar: "مركز قيادة اليوم", sub: adminSourceDriven ? sourceOverviewSub : { en: "Saturday, May 9 - all kiosks", ar: "السبت، 9 مايو · جميع الأكشاك" } },
     insights: { en: "AI Insights", ar: "تحليلات الذكاء", sub: { en: "What changed and what needs attention", ar: "ما الذي تغير وما يحتاج اهتمامك" } },
-    kiosks: { en: "Kiosks", ar: "الأكشاك", sub: { en: "10 active locations - 3 cities", ar: "١٠ مواقع نشطة · ٣ مدن" } },
-    kioskDetail: { en: `${selectedKiosk.name} - ${selectedKiosk.id}`, ar: `${selectedKiosk.name} · ${selectedKiosk.id}`, sub: { en: `${selectedKiosk.city} - ${selectedKiosk.staff} staff - stock location scoped`, ar: `${selectedKiosk.city} · ${selectedKiosk.staff} موظفين · مخزون مستقل` } },
-    sales: { en: "Sales & POS Monitor", ar: "مراقبة المبيعات ونقاط البيع", sub: { en: "Live POS orders, payment methods, refunds, voids, and recipe posting", ar: "أوامر POS وطرق الدفع والمرتجعات والإلغاءات وترحيل الوصفة" } },
-    warehouses: { en: "Warehouses", ar: "المستودعات", sub: { en: "Locations, POS configs, and kiosk stock sources", ar: "المواقع ونقاط البيع ومصادر مخزون الأكشاك" } },
+    kiosks: { en: "Kiosks", ar: "الأكشاك", sub: adminSourceDriven ? sourceKiosksSub : { en: "10 active locations - 3 cities", ar: "١٠ مواقع نشطة · ٣ مدن" } },
+    kioskDetail: {
+      en: `${selectedForTitle?.name || "Kiosk"} - ${selectedForTitle?.id || selectedForTitle?.kiosk_code || "--"}`,
+      ar: `${selectedForTitle?.name || "كشك"} · ${selectedForTitle?.id || selectedForTitle?.kiosk_code || "--"}`,
+      sub: adminSourceDriven ? sourceKioskDetailSub : {
+            en: `${selectedForTitle?.city || "-"} - ${selectedForTitle?.staff ?? "staff unknown"} staff - stock location scoped`,
+            ar: `${selectedForTitle?.city || "-"} · ${selectedForTitle?.staff ?? "الطاقم غير متاح"} موظفين · مخزون مستقل`,
+          },
+    },
+    sales: { en: "Sales & POS Monitor", ar: "مراقبة المبيعات ونقاط البيع", sub: adminSourceDriven ? sourceSalesSub : { en: "Demo POS orders, payment methods, refunds, voids, and recipe posting", ar: "أوامر POS تجريبية وطرق الدفع والمرتجعات والإلغاءات وترحيل الوصفة" } },
+    warehouses: { en: "Warehouses", ar: "المستودعات", sub: { en: "Central receiving warehouses and stock receipts", ar: "مستودعات الاستلام المركزية وحركات المخزون" } },
     items: { en: "Items Catalog", ar: "كتالوج البنود", sub: { en: "Global purchasable stock items used by suppliers, purchases, and recipes", ar: "بنود مخزون عالمية للموردين والمشتريات والوصفات" } },
-    inventory: { en: "Stock & Allocation", ar: "المخزون والتوزيع", sub: { en: "Warehouse stock, kiosk stock, live needs, and transfer execution", ar: "مخزون المستودع والأكشاك والتحويلات والتنبيهات" } },
+    inventory: { en: "Stock & Allocation", ar: "المخزون والتوزيع", sub: { en: "Warehouse stock, kiosk stock, stock needs, and transfer execution", ar: "مخزون المستودع والأكشاك والتحويلات والتنبيهات" } },
     products: { en: "Products & Recipes", ar: "المنتجات والوصفات", sub: { en: "Menu, prices, sizes, images, ingredient recipes", ar: "القائمة والأسعار والأحجام والصور ووصفات المكونات" } },
     closing: { en: "Daily Close & Variance", ar: "الإغلاق اليومي والمطابقة", sub: { en: "Expected vs counted - across kiosks", ar: "متوقع مقابل فعلي — عبر الأكشاك" } },
-    waste: { en: "Waste & Loss", ar: "الهدر والخسارة", sub: { en: "Last 7 days - 3 anomalies flagged", ar: "آخر ٧ أيام · ٣ حالات شاذة" } },
+    waste: { en: "Waste & Loss", ar: "الهدر والخسارة", sub: adminSourceDriven ? sourceWasteSub : { en: "Demo last 7 days - 3 anomalies flagged", ar: "آخر ٧ أيام تجريبية · ٣ حالات شاذة" } },
     suppliers: { en: "Purchases & Suppliers", ar: "المشتريات والموردون", sub: { en: "Supplier health, purchase orders, ingredient costs, and margin impact", ar: "الموردون وطلبات الشراء وتكاليف المكونات وأثر الهامش" } },
-    staff: { en: "HR & Payroll", ar: "HR & Payroll", sub: { en: "Staff, attendance, payroll approval, and expenses", ar: "Staff, attendance, payroll approval, and expenses" } },
+    staff: { en: uiText("en", "hrPayroll"), ar: uiText("ar", "hrPayroll"), sub: { en: uiText("en", "hrPayrollSub"), ar: uiText("ar", "hrPayrollSub") } },
     finance: { en: "Finance", ar: "المالية", sub: { en: "Profit, cash flow, payment split, and payroll impact", ar: "الأرباح والتدفق النقدي وطرق الدفع وأثر الرواتب" } },
     reports: { en: "Reports", ar: "التقارير", sub: { en: "Sales, P&L, cash flow", ar: "المبيعات والأرباح والتدفق النقدي" } },
   };
   const t = titles[active];
+  const assistantCanvasActive = active === "insights";
 
   return (
-    <div style={{ flex: 1, display: "flex", overflow: "hidden", background: "var(--paper)" }}>
-      <AdminSidebar active={active === "kioskDetail" ? "kiosks" : active} setActive={setActive} lang={lang}/>
-      {canViewAuditLog && auditLogOpen && <AuditLogRail lang={lang} sourceOfTruth={sourceOfTruth}/>}
-      <main style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div className={`admin-shell-layout ${assistantCanvasActive ? "admin-shell-layout-assistant" : "admin-shell-layout-dashboard"}`}>
+      <AdminSidebar active={active === "kioskDetail" ? "kiosks" : active} setActive={setActive} lang={lang} navBadges={adminNavBadges}/>
+      {canViewAuditLog && auditLogOpen && <AuditLogRail lang={lang} sourceOfTruth={sourceOfTruth} allowDemoFallback={!liveOnlySelected}/>}
+      <main className={`admin-content-inset ${assistantCanvasActive ? "admin-content-inset-assistant" : "admin-content-inset-dashboard"}`}>
         <AdminTopBar title={lang === "ar" ? t.ar : t.en} sub={lang === "ar" ? t.sub.ar : t.sub.en} lang={lang}
           right={(
             <div className="row" style={{ gap: 6 }}>
@@ -10946,20 +17230,20 @@ function AdminPanel({ lang }) {
                   <Icon name="list" size={12}/>{lang === "ar" ? "السجل" : "Log"}
                 </button>
               )}
-              <DataModeToggle bayaan={bayaan} lang={lang}/>
+              <DataModeToggle bayaan={bayaan} lang={lang} bootstrap={dashboardBootstrap}/>
               <span className={`badge ${sync.status === "synced" ? "badge-pos" : ["error", "missing"].includes(sync.status) ? "badge-crit" : "badge-warn"}`}>
                 <span className={`dot ${sync.status === "synced" ? "pos" : ["error", "missing"].includes(sync.status) ? "crit" : "warn"}`}></span>
                 {sync.status === "synced"
-                  ? "Engine synced"
+                  ? (lang === "ar" ? "تمت مزامنة المحرك" : "Engine synced")
                   : sync.status === "error"
-                    ? "Engine error"
+                    ? (lang === "ar" ? "خطأ في المحرك" : "Engine error")
                     : sync.status === "missing"
-                      ? "Backend missing"
+                      ? (lang === "ar" ? "الخلفية غير مضبوطة" : "Backend missing")
                       : liveOnlySelected
-                        ? "Live only"
+                        ? uiText(lang, "liveOnly")
                         : sourceOfTruth.enabled
-                          ? "Engine syncing"
-                          : "Demo mode"}
+                          ? (lang === "ar" ? "جار مزامنة المحرك" : "Engine syncing")
+                          : (lang === "ar" ? "وضع تجريبي" : "Demo mode")}
               </span>
               {liveOnlySelected && (
                 <span
@@ -10968,14 +17252,14 @@ function AdminPanel({ lang }) {
                 >
                   <span className={`dot ${["live", "polling"].includes(realtime.status) ? "pos" : realtime.status === "error" ? "crit" : "warn"}`}></span>
                   {realtime.status === "live"
-                    ? "Stream live"
+                    ? (lang === "ar" ? "التدفق مباشر" : "Stream live")
                     : realtime.status === "polling"
-                      ? "Bus fallback"
+                      ? (lang === "ar" ? "استرجاع عبر الناقل" : "Bus fallback")
                       : realtime.status === "error"
-                        ? "Stream error"
+                        ? (lang === "ar" ? "خطأ في التدفق" : "Stream error")
                       : realtime.status === "missing"
-                          ? bayaan.auth.authenticated ? "Stream missing" : "Stream waiting"
-                          : "Stream connecting"}
+                          ? bayaan.auth.authenticated ? (lang === "ar" ? "التدفق مفقود" : "Stream missing") : (lang === "ar" ? "التدفق ينتظر" : "Stream waiting")
+                          : (lang === "ar" ? "جار الاتصال بالتدفق" : "Stream connecting")}
                 </span>
               )}
               {active === "overview" && (
@@ -11025,7 +17309,7 @@ function POSPanel({ lang }) {
   const [tender, setTender] = useStatePOS(null);
   const [posTransfers, setPosTransfers] = useStatePOS([]);
   const [transferBusy, setTransferBusy] = useStatePOS("");
-  const [posBootstrap, setPosBootstrap] = useStatePOS(null);
+  const [posBootstrap, setPosBootstrap] = useStatePOS(() => bayaan.mode === "live" ? EMPTY_ENGINE_SNAPSHOT : null);
 
   const goSale = () => { setScreen("sale"); setCart([]); };
   const endShiftAndLogout = () => {
@@ -11049,17 +17333,31 @@ function POSPanel({ lang }) {
   // Track last added item for the "just added" flash on customer display
   const [lastAdded, setLastAdded] = useStatePOS(null);
   const wrappedAdd = (item, size) => {
+    const key = item.id + ":" + size;
     addItem(item, size);
-    setLastAdded({ name: item.name, price: item.price, t: Date.now() });
+    setLastAdded({ key, name: item.name, price: item.price, t: Date.now() });
   };
   const posKioskId = bayaan.shift?.kioskId || bayaan.kioskId;
+  React.useEffect(() => {
+    if (bayaan.mode === "live" && !posBootstrap) {
+      setPosBootstrap(EMPTY_ENGINE_SNAPSHOT);
+    } else if (bayaan.mode !== "live" && isLiveOnlyPayload(posBootstrap)) {
+      setPosBootstrap(null);
+    }
+  }, [bayaan.mode, posBootstrap]);
+  const posScreenBootstrap = bayaan.mode === "live" ? posBootstrap || EMPTY_ENGINE_SNAPSHOT : posBootstrap;
+
   const loadPosTransfers = React.useCallback(async () => {
     try {
       const bootstrap = bayaan.mode === "live" && bayaan.hasBackend
         ? await bayaan.gateway.getChainBootstrap()
         : null;
       if (bootstrap) setPosBootstrap(markLiveOnlySnapshot(bootstrap));
-      const rows = bootstrap ? odooTransferRows(bootstrap) : MOCK.pendingTransfers;
+      const rows = bootstrap
+        ? odooTransferRows(bootstrap)
+        : bayaan.mode === "live"
+          ? []
+          : MOCK.pendingTransfers;
       setPosTransfers(rows.filter((transfer) => {
         const status = String(transfer.status || "").toLowerCase();
         if (["cancel", "cancelled"].includes(status)) return false;
@@ -11092,6 +17390,10 @@ function POSPanel({ lang }) {
   }, [bayaan.gateway, bayaan.hasBackend, bayaan.mode, loadPosTransfers, posKioskId]);
 
   const receivePosTransfer = async (transfer) => {
+    if (bayaan.mode === "live" && !bayaan.hasBackend) {
+      showToast("Connect the source engine before receiving source stock transfers", "warn");
+      return;
+    }
     setTransferBusy(transfer.id);
     try {
       if (bayaan.mode === "live" && bayaan.hasBackend) {
@@ -11100,6 +17402,10 @@ function POSPanel({ lang }) {
         setPosTransfers((rows) => rows.map((row) => row.id === transfer.id
           ? { ...row, status: receivedStatus, engineState: result?.state || row.engineState || "done", eta: "received" }
           : row));
+        await loadPosTransfers();
+        window.dispatchEvent(new CustomEvent("bayaan:source-mutated", {
+          detail: { action: "transfer.received", transfer: transfer.id, kiosk: posKioskId },
+        }));
       } else {
         setPosTransfers((rows) => rows.map((row) => row.id === transfer.id ? { ...row, status: "received" } : row));
       }
@@ -11119,8 +17425,9 @@ function POSPanel({ lang }) {
           {screen === "login" && <POSLogin lang={lang} onIn={goSale}/>}
           {screen === "sale" && <POSSale lang={lang}
             cart={cart} setCart={setCart} addItem={wrappedAdd}
+            lastAdded={lastAdded}
             subTotal={subTotal} vat={vat} total={total}
-            bootstrap={posBootstrap}
+            bootstrap={posScreenBootstrap}
             onCharge={() => setScreen("payment")}
             onWaste={() => setScreen("waste")}
             onStock={() => setScreen("stock")}
@@ -11129,16 +17436,17 @@ function POSPanel({ lang }) {
           />}
           {screen === "payment" && <POSPayment lang={lang}
             total={total} cart={cart}
+            bootstrap={posScreenBootstrap}
             onTender={(t) => setTender(t)}
             tender={tender}
             onDone={() => { setScreen("sale"); setCart([]); setTender(null); }}
             onBack={() => setScreen("sale")}
           />}
           {screen === "waste" && <POSWaste lang={lang}
-            bootstrap={posBootstrap}
+            bootstrap={posScreenBootstrap}
             onDone={() => setScreen("sale")} onBack={() => setScreen("sale")}/>}
           {screen === "close" && <POSClose lang={lang}
-            bootstrap={posBootstrap}
+            bootstrap={posScreenBootstrap}
             onBack={() => setScreen("sale")}
             onClosed={endShiftAndLogout}/>}
           {screen === "stock" && <POSTransfers lang={lang}
@@ -11181,18 +17489,45 @@ function POSLogin({ lang, onIn }) {
   const ar = lang === "ar";
   const bayaan = useBayaan();
   const { showToast } = useToast();
-  const staff = DEMO_STAFF;
+  const simulationRuntime = isSimulationRuntime();
+  const sourceEngineMissing = bayaan.mode === "live" && !bayaan.hasBackend;
+  const sourceBackedShift = bayaan.mode === "live" && bayaan.hasBackend && !simulationRuntime;
+  const sourceUser = bayaan.auth?.user || {};
+  const staff = sourceEngineMissing
+    ? []
+    : sourceBackedShift
+      ? [{
+          name: sourceUser.name || sourceUser.login || "Bayaan cashier",
+          arName: sourceUser.name || sourceUser.login || "كاشير بيان",
+          role: sourceUser.primaryRole || "Cashier",
+          arRole: arTerm(lang, sourceUser.primaryRole || "Cashier"),
+          pin: "",
+          openingCash: 0,
+        }]
+      : DEMO_STAFF;
   const [picked, setPicked] = useStatePOS(null);
   const [pin, setPin] = useStatePOS("");
   const [error, setError] = useStatePOS("");
 
+  React.useEffect(() => {
+    if (!sourceEngineMissing) return;
+    setPicked(null);
+    setPin("");
+    setError("");
+  }, [sourceEngineMissing]);
+
   const tryStartShift = () => {
+    if (sourceEngineMissing) {
+      setError(ar ? "اربط محرك المصدر قبل فتح وردية POS." : "Connect the source engine before opening a source POS shift.");
+      showToast(ar ? "محرك المصدر غير متصل" : "Source engine is not connected", "warn");
+      return;
+    }
     if (!picked) return;
-    if (pin.length !== 4) {
+    if (!sourceBackedShift && pin.length !== 4) {
       setError(ar ? "أدخل رمز ٤ أرقام" : "Enter your 4-digit PIN");
       return;
     }
-    if (pin !== picked.pin) {
+    if (!sourceBackedShift && pin !== picked.pin) {
       setError(ar ? "رمز غير صحيح" : "Incorrect PIN");
       setPin("");
       showToast(ar ? "رمز الدخول غير صحيح" : "Incorrect PIN", "warn");
@@ -11201,27 +17536,33 @@ function POSLogin({ lang, onIn }) {
     bayaan.startShift({
       kioskId: bayaan.kioskId,
       cashier: picked.name,
-      openingCash: picked.openingCash,
+      openingCash: sourceBackedShift ? 0 : picked.openingCash,
     });
     setError("");
     onIn();
   };
 
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Top bar */}
-      <div style={{ height: 56, padding: "0 28px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--line)" }}>
-        <div className="row" style={{ gap: 10 }}>
-          <div style={{ width: 26, height: 26, borderRadius: 6, background: "var(--brand-mark-bg)", color: "var(--brand-mark-fg)", display: "grid", placeItems: "center", fontSize: 13, fontWeight: 600 }}>M</div>
+      <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+        {/* Top bar */}
+        <div style={{ height: 56, padding: "0 28px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--line)" }}>
+          <div className="row" style={{ gap: 10 }}>
+          <BrandLogo className="cashier-pos-logo" alt={ar ? BRAND.arabic : BRAND.name}/>
           <div className="col">
-            <div style={{ fontSize: 13.5, fontWeight: 500 }}>{ar ? "الكرادة · K-01" : "Karrada Center - K-01"}</div>
-            <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>{ar ? "السبت ٩ مايو · ٧:٤٢ ص" : "Sat May 9 - 7:42 AM"}</div>
+            <div style={{ fontSize: 13.5, fontWeight: 500 }}>
+              {bayaan.mode === "demo"
+                ? (ar ? "الكرادة · K-01" : "Karrada Center - K-01")
+                : (ar ? `الكشك · ${bayaan.kioskId}` : `Kiosk - ${bayaan.kioskId}`)}
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+              {new Date().toLocaleString(ar ? "ar-IQ" : "en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+            </div>
           </div>
         </div>
         <div className="row" style={{ gap: 10, fontSize: 11.5, color: "var(--ink-3)" }}>
-          <span className="row" style={{ gap: 5 }}><span className="dot pos"></span>{ar ? "متصل" : "Online"}</span>
+          <span className="row" style={{ gap: 5 }}><span className={`dot ${sourceEngineMissing ? "crit" : "pos"}`}></span>{sourceEngineMissing ? (ar ? "مصدر مطلوب" : "Source required") : sourceBackedShift ? (ar ? "مصدر موثق" : "Source verified") : (ar ? "متصل" : "Online")}</span>
           <span>·</span>
-          <span>{ar ? "آخر مزامنة الآن" : "Last sync just now"}</span>
+          <span>{sourceEngineMissing ? (ar ? "لا توجد مزامنة مصدر" : "No source sync") : sourceBackedShift ? (ar ? "تم التحقق من حساب بيان" : "Bayaan account verified") : (ar ? "آخر مزامنة الآن" : "Last sync just now")}</span>
         </div>
       </div>
 
@@ -11231,6 +17572,12 @@ function POSLogin({ lang, onIn }) {
           <div className="t-display" style={{ fontWeight: 500, marginBottom: 6 }}>{ar ? "صباح الخير" : "Good morning"}</div>
           <div className="t-h2 muted" style={{ fontWeight: 400, marginBottom: 28 }}>{ar ? "اختر اسمك للبدء" : "Pick your name to start the shift"}</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12, maxWidth: 640 }}>
+            {sourceEngineMissing && (
+              <div className="card" style={{ gridColumn: "1 / -1", padding: 22 }}>
+                <div style={{ fontSize: 15, fontWeight: 500 }}>{ar ? "لا توجد وردية POS من المصدر" : "No source POS shift available"}</div>
+                <div className="t-small subtle" style={{ marginTop: 6 }}>{ar ? "اربط محرك المصدر لاستخدام /bayaan/api/auth_status و /bayaan/api/open_session قبل بدء البيع." : "Connect the source engine so /bayaan/api/auth_status and /bayaan/api/open_session can verify the cashier before selling."}</div>
+              </div>
+            )}
             {staff.map(s => (
               <button key={s.name} onClick={() => { setPicked(s); setPin(""); }}
                 className="card"
@@ -11286,11 +17633,13 @@ function POSLogin({ lang, onIn }) {
             {error && (
               <div style={{ marginTop: 10, fontSize: 12, color: "var(--crit, #C04A38)", textAlign: "center" }}>{error}</div>
             )}
-            <button onClick={tryStartShift} disabled={pin.length !== 4} className="btn btn-primary btn-xl" style={{ marginTop: 14, justifyContent: "center", opacity: pin.length === 4 ? 1 : 0.4 }}>
+            <button onClick={tryStartShift} disabled={!sourceBackedShift && pin.length !== 4} className="btn btn-primary btn-xl" style={{ marginTop: 14, justifyContent: "center", opacity: sourceBackedShift || pin.length === 4 ? 1 : 0.4 }}>
               {ar ? "ابدأ الوردية" : "Start shift"} <Icon name="arrowRight" size={14}/>
             </button>
             <div style={{ marginTop: 14, fontSize: 11.5, color: "var(--ink-3)", textAlign: "center" }}>
-              {bayaan.mode === "demo"
+              {sourceBackedShift
+                ? (ar ? "سيتم فتح الوردية عبر محرك المصدر." : "Shift will open through the source engine.")
+                : bayaan.mode === "demo"
                 ? (ar ? `رمز تجريبي: ${picked.pin}` : `Demo PIN: ${picked.pin}`)
                 : (ar ? `العد النقدي: د.ع ${picked.openingCash.toLocaleString("en")}` : `Cash float: IQD ${picked.openingCash.toLocaleString("en")}`)}
             </div>
@@ -11309,13 +17658,16 @@ function POSLogin({ lang, onIn }) {
    POS Sale screen — order taking
    ============================================================ */
 
-function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, bootstrap, onCharge, onWaste, onStock, expectedTransfers = [], onLogout }) {
+function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total, bootstrap, onCharge, onWaste, onStock, expectedTransfers = [], onLogout }) {
   const ar = lang === "ar";
   const bayaan = useBayaan();
   const catalog = useCatalog();
+  const cartLineRefs = React.useRef(new Map());
   const menu = React.useMemo(() => (
-    bayaan.mode === "live" && bayaan.hasBackend
-      ? odooPosMenu(bootstrap)
+    bayaan.mode === "live"
+      ? bayaan.hasBackend
+        ? odooPosMenu(bootstrap)
+        : []
       : catalog.menuByCategory()
   ), [bayaan.hasBackend, bayaan.mode, bootstrap, catalog.state.products]);
   const [activeCat, setActiveCat] = useStatePOS(0);
@@ -11325,20 +17677,28 @@ function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, bootstrap
     ? menu.flatMap(c => c.items).filter(i => i.name.toLowerCase().includes(search.toLowerCase()))
     : cat.items;
   const dispatchedTransfers = expectedTransfers.filter((transfer) => isDispatchedTransfer(transfer.status));
+  const sourceMenuMissing = bayaan.mode === "live" && items.length === 0;
+  const cashierName = bayaan.shift?.cashier || (ar ? "كاشير بيان" : "Bayaan cashier");
 
   const inc = (key) => setCart(c => c.map(x => x.key === key ? { ...x, qty: x.qty + 1 } : x));
   const dec = (key) => setCart(c => c.flatMap(x => x.key === key ? (x.qty > 1 ? [{ ...x, qty: x.qty - 1 }] : []) : [x]));
   const rm = (key) => setCart(c => c.filter(x => x.key !== key));
 
+  React.useEffect(() => {
+    if (!lastAdded?.key) return;
+    const line = cartLineRefs.current.get(lastAdded.key);
+    line?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [lastAdded?.t]);
+
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+    <div style={{ height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }}>
       {/* Top bar */}
       <div style={{ height: 52, padding: "0 18px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--line)", background: "var(--surface)" }}>
         <div className="row" style={{ gap: 12 }}>
-          <Avatar name="Maya Ahmed" size={26}/>
+          <Avatar name={cashierName} size={26}/>
           <div className="col" style={{ lineHeight: 1.1 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 500 }}>{ar ? "مايا أحمد" : "Maya Ahmed"}</div>
-            <div style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{ar ? "الكرادة · وردية ٧:٠٠ ص" : "Karrada · Shift 7:00 AM"}</div>
+            <div style={{ fontSize: 12.5, fontWeight: 500 }}>{cashierName}</div>
+            <div style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{bayaan.kioskId} · {bayaan.mode === "live" ? (ar ? "وردية مصدر" : "Source shift") : (ar ? "وردية تجريبية" : "Demo shift")}</div>
           </div>
           <span style={{ width: 1, height: 24, background: "var(--line)", marginInlineStart: 6 }}></span>
           <span className="badge"><span className="dot pos"></span>{ar ? "متصل" : "Online"}</span>
@@ -11380,9 +17740,9 @@ function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, bootstrap
       )}
 
       {/* Body */}
-      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 380px", overflow: "hidden" }}>
+      <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "1fr 380px", overflow: "hidden" }}>
         {/* Menu */}
-        <div style={{ display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--paper)" }}>
+        <div style={{ minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--paper)" }}>
           <div style={{ padding: "14px 18px 10px", display: "flex", gap: 10, alignItems: "center" }}>
             <div className="row" style={{ gap: 6, padding: "0 10px", height: 36, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, flex: 1, maxWidth: 320 }}>
               <Icon name="search" size={14} style={{ color: "var(--ink-3)" }}/>
@@ -11432,7 +17792,17 @@ function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, bootstrap
                 </button>
               ))}
             </div>
-            {items.length === 0 && (
+            {sourceMenuMissing ? (
+              <div style={{ textAlign: "center", padding: 60, color: "var(--ink-3)" }}>
+                <Icon name="box" size={28} style={{ marginBottom: 12, opacity: 0.5 }}/>
+                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>
+                  {ar ? "لا توجد منتجات POS من المصدر" : "No source POS products loaded"}
+                </div>
+                <div className="t-small subtle" style={{ marginTop: 6 }}>
+                  {ar ? "اربط محرك المصدر أو فعّل منتجات نقطة البيع في بيان." : "Connect the source engine or enable POS products in Bayaan before taking orders."}
+                </div>
+              </div>
+            ) : items.length === 0 && (
               <div style={{ textAlign: "center", padding: 60, color: "var(--ink-3)" }}>
                 {ar ? "لا توجد نتائج" : "No matches"}
               </div>
@@ -11441,7 +17811,7 @@ function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, bootstrap
         </div>
 
         {/* Cart */}
-        <div style={{ borderInlineStart: "1px solid var(--line)", background: "var(--surface)", display: "flex", flexDirection: "column" }}>
+        <div className="pos-cart-panel">
           <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--line)" }}>
             <div className="between">
               <div>
@@ -11454,7 +17824,7 @@ function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, bootstrap
             </div>
           </div>
 
-          <div className="scroll" style={{ flex: 1, overflow: "auto", padding: "8px 0" }}>
+          <div className="scroll pos-cart-items">
             {cart.length === 0 && (
               <div style={{ textAlign: "center", padding: "60px 20px", color: "var(--ink-3)" }}>
                 <Icon name="receipt" size={28} style={{ marginBottom: 12, opacity: 0.5 }}/>
@@ -11462,7 +17832,14 @@ function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, bootstrap
               </div>
             )}
             {cart.map(line => (
-              <div key={line.key} style={{ padding: "12px 20px", borderBottom: "1px solid var(--line-soft)" }}>
+              <div
+                key={line.key}
+                ref={(node) => {
+                  if (node) cartLineRefs.current.set(line.key, node);
+                  else cartLineRefs.current.delete(line.key);
+                }}
+                style={{ padding: "12px 20px", borderBottom: "1px solid var(--line-soft)" }}
+              >
                 <div className="between" style={{ alignItems: "flex-start" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 500 }}>{line.name}</div>
@@ -11471,10 +17848,10 @@ function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, bootstrap
                   <div className="t-num" style={{ fontSize: 13 }}>IQD {(line.price * line.qty).toLocaleString("en")}</div>
                 </div>
                 <div className="row" style={{ marginTop: 8, justifyContent: "space-between" }}>
-                  <div className="row" style={{ gap: 0, border: "1px solid var(--line)", borderRadius: 6, overflow: "hidden" }}>
-                    <button onClick={() => dec(line.key)} style={{ width: 28, height: 26, background: "var(--surface-2)", borderInlineEnd: "1px solid var(--line)" }}><Icon name="minus" size={11}/></button>
-                    <div style={{ width: 30, textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 13, lineHeight: "26px" }}>{line.qty}</div>
-                    <button onClick={() => inc(line.key)} style={{ width: 28, height: 26, background: "var(--surface-2)", borderInlineStart: "1px solid var(--line)" }}><Icon name="plus" size={11}/></button>
+                  <div className="pos-qty-stepper">
+                    <button type="button" aria-label="Decrease quantity" onClick={() => dec(line.key)} className="pos-qty-button"><Icon name="minus" size={11}/></button>
+                    <div className="pos-qty-value">{line.qty}</div>
+                    <button type="button" aria-label="Increase quantity" onClick={() => inc(line.key)} className="pos-qty-button"><Icon name="plus" size={11}/></button>
                   </div>
                   <button onClick={() => rm(line.key)} className="btn btn-quiet" style={{ height: 24, fontSize: 11, color: "var(--ink-3)" }}>{ar ? "إزالة" : "Remove"}</button>
                 </div>
@@ -11482,7 +17859,7 @@ function POSSale({ lang, cart, setCart, addItem, subTotal, vat, total, bootstrap
             ))}
           </div>
 
-          <div style={{ padding: "16px 20px", borderTop: "1px solid var(--line)", background: "var(--surface-2)" }}>
+          <div className="pos-cart-footer">
             <div className="col" style={{ gap: 6, marginBottom: 14 }}>
               <div className="between"><span className="muted t-small">{ar ? "المجموع الفرعي" : "Subtotal"}</span><span className="t-num">{fmtMoney(subTotal)}</span></div>
               <div className="between"><span className="muted t-small">{ar ? "ضريبة ٥٪" : "VAT 5%"}</span><span className="t-num muted">{fmtMoney(vat)}</span></div>
@@ -11519,12 +17896,12 @@ function POSTransfers({ lang, kioskId, transfers, busy, onReceive, onRefresh, on
             <Icon name="arrowLeft" size={14}/>
           </button>
           <div>
-            <div style={{ fontSize: 13.5, fontWeight: 500 }}>{ar ? "Expected transfers" : "Expected transfers"}</div>
-            <div className="t-small subtle">{kioskId} receives only what arrived here</div>
+            <div style={{ fontSize: 13.5, fontWeight: 500 }}>{ui(ar, "expectedTransfers")}</div>
+            <div className="t-small subtle">{ui(ar, "kioskReceivesOnlyArrived", { kioskId })}</div>
           </div>
         </div>
         <button className="btn btn-ghost" onClick={onRefresh} style={{ height: 30, fontSize: 12 }}>
-          <Icon name="refresh" size={12}/>{ar ? "Refresh" : "Refresh"}
+          <Icon name="refresh" size={12}/>{ui(ar, "refresh")}
         </button>
       </div>
 
@@ -11542,14 +17919,14 @@ function POSTransfers({ lang, kioskId, transfers, busy, onReceive, onRefresh, on
                     <div className="t-small subtle" style={{ marginTop: 3 }}>{transfer.from}{" -> "}{transfer.to}</div>
                     <div className="t-small" style={{ marginTop: 8 }}>{transfer.items}</div>
                   </div>
-                  <span className={`badge ${transferStatusClass(status)}`}>{received ? "received" : transfer.status}</span>
+                  <span className={`badge ${transferStatusClass(status)}`}>{received ? arTerm(lang, "received") : arTerm(lang, transfer.status)}</span>
                 </div>
                 <div className="row" style={{ justifyContent: "space-between", gap: 8, marginTop: 12 }}>
                   <div className="t-small subtle">
-                    {received ? "Confirmed at kiosk" : canReceive ? "Arrived - waiting for kiosk confirmation" : `ETA ${transfer.eta || "--:--"}`}
+                    {received ? ui(ar, "confirmedAtKiosk") : canReceive ? ui(ar, "transferArrivedWaiting") : (ar ? `الوصول ${transfer.eta || "--:--"}` : `ETA ${transfer.eta || "--:--"}`)}
                   </div>
                   <button className="btn btn-primary" disabled={!canReceive || busy === transfer.id} onClick={() => onReceive(transfer)} style={{ height: 30, fontSize: 12 }}>
-                    {busy === transfer.id ? "Receiving..." : received ? "Confirmed" : "Confirm arrived"}
+                    {busy === transfer.id ? ui(ar, "receiving") : received ? ui(ar, "confirmed") : ui(ar, "confirmArrived")}
                   </button>
                 </div>
               </div>
@@ -11558,15 +17935,15 @@ function POSTransfers({ lang, kioskId, transfers, busy, onReceive, onRefresh, on
           {transfers.length === 0 && (
             <div className="card" style={{ padding: 24, textAlign: "center" }}>
               <Icon name="box" size={26} style={{ color: "var(--ink-3)", marginBottom: 10 }}/>
-              <div style={{ fontSize: 14, fontWeight: 500 }}>{ar ? "No expected transfers" : "No expected transfers"}</div>
-              <div className="t-small subtle" style={{ marginTop: 5 }}>Dispatched warehouse transfers will appear here for kiosk receipt.</div>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>{ui(ar, "noExpectedTransfers")}</div>
+              <div className="t-small subtle" style={{ marginTop: 5 }}>{ui(ar, "transferReceiptEmpty")}</div>
             </div>
           )}
         </div>
       </div>
 
       <div style={{ padding: "12px 18px", borderTop: "1px solid var(--line)", background: "var(--surface)" }}>
-        <div className="t-small subtle">{actionable.length} transfer{actionable.length === 1 ? "" : "s"} waiting for kiosk confirmation</div>
+        <div className="t-small subtle">{ui(ar, "transfersWaiting", { count: actionable.length, suffix: actionable.length === 1 ? "" : "s" })}</div>
       </div>
     </div>
   );
@@ -11577,18 +17954,58 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
   const bayaan = useBayaan();
   const { showToast } = useToast();
   const snapshot = unwrapOdoo(bootstrap);
+  const simulationClose = isSimulationPayload(snapshot);
   const kioskId = bayaan.shift?.kioskId || bayaan.kioskId;
   const stockRows = React.useMemo(() => (
     (snapshot?.kiosk_stock_rows || [])
       .filter((row) => matchesKiosk(row.kiosk, { id: kioskId, kiosk_code: kioskId }))
       .slice(0, 12)
   ), [kioskId, snapshot]);
+  const closeSales = React.useMemo(() => {
+    const openedAt = Date.parse(bayaan.shift?.openedAt || "");
+    return (snapshot?.today?.orders || [])
+      .filter((order) => matchesKiosk(order.kiosk || order.pos_config, { id: kioskId, kiosk_code: kioskId }))
+      .filter((order) => {
+        if (simulationClose) return true;
+        if (Number.isNaN(openedAt)) return true;
+        const orderAt = Date.parse(order.date_order || "");
+        return Number.isNaN(orderAt) || orderAt >= openedAt;
+      })
+      .map((order) => {
+        const payment = order.payments?.[0] || {};
+        const paymentSignal = String(payment.provider?.category || payment.method || "").toLowerCase();
+        const method = paymentSignal.includes("cash") ? "cash" : paymentSignal.includes("card") ? "card" : "wallet";
+        const total = Number(order.amount_total || 0);
+        return {
+          id: order.name || String(order.id || "POS"),
+          lines: [],
+          subtotal: total,
+          tax: 0,
+          total,
+          tender: { method },
+          createdAt: order.date_order || new Date().toISOString(),
+        };
+      });
+  }, [bayaan.shift?.openedAt, kioskId, simulationClose, snapshot]);
+  const expectedCash = bayaan.shift
+    ? bayaan.shift.openingCash + closeSales
+      .filter((sale) => sale.tender.method === "cash")
+      .reduce((sum, sale) => sum + sale.total, 0)
+    : 0;
   const [actualCash, setActualCash] = useStatePOS("");
   const [counts, setCounts] = useStatePOS({});
   const [busy, setBusy] = useStatePOS(false);
 
   const submitClose = async () => {
     if (!bayaan.shift) return;
+    if (bayaan.mode === "live" && !bayaan.hasBackend) {
+      showToast(ar ? "اربط محرك المصدر قبل إرسال إغلاق وردية مصدر." : "Connect the source engine before submitting source shift close", "warn");
+      return;
+    }
+    if (bayaan.pendingCount > 0) {
+      showToast(ar ? "Sync offline queue before closing shift" : "Sync offline queue before closing shift", "warn");
+      return;
+    }
     const cash = Number(actualCash || 0);
     setBusy(true);
     try {
@@ -11599,13 +18016,15 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
           expected_qty: Number(row.actual_qty || 0),
           actual_qty: Number(counts[row.item] ?? row.actual_qty ?? 0),
         }));
-        await bayaan.gateway.submitShiftClose({
+        const result = await bayaan.submitShiftClose({
           kioskId,
           cashier: bayaan.shift.cashier,
+          stock: [],
           shift: {
             openedAt: bayaan.shift.openedAt,
             openingCash: bayaan.shift.openingCash,
-            sales: [],
+            sales: closeSales,
+            waste: [],
           },
           draft: {
             actualCash: cash,
@@ -11616,8 +18035,9 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
             })),
           },
         });
+        if (!result.ok) throw new Error(result.error);
       }
-      showToast(ar ? "ØªÙ… Ø¥ØºÙ„Ø§Ù‚ Ø§Ù„ÙˆØ±Ø¯ÙŠØ©" : "Shift close submitted", "success");
+      showToast(ar ? "تم إرسال إغلاق الوردية" : "Shift close submitted", "success");
       onClosed();
     } catch (error) {
       showToast(error?.message || "Could not submit shift close", "warn");
@@ -11629,20 +18049,20 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <div className="between" style={{ height: 52, padding: "0 18px", borderBottom: "1px solid var(--line)", background: "var(--surface)" }}>
-        <button className="btn btn-ghost" onClick={onBack}><Icon name="arrowLeft" size={13}/>{ar ? "Ø±Ø¬ÙˆØ¹" : "Back"}</button>
-        <div className="t-h2">{ar ? "Ø¥ØºÙ„Ø§Ù‚ Ø§Ù„ÙˆØ±Ø¯ÙŠØ©" : "Close shift"}</div>
+        <button className="btn btn-ghost" onClick={onBack}><Icon name="arrowLeft" size={13}/>{ar ? "عودة" : "Back"}</button>
+        <div className="t-h2">{ui(ar, "closeShift")}</div>
         <span className="badge">{kioskId}</span>
       </div>
       <div className="col" style={{ gap: 14, padding: 18, overflow: "auto" }}>
         <div className="card card-pad">
-          <label className="t-micro">{ar ? "Ø§Ù„Ù†Ù‚Ø¯ Ø§Ù„Ù…Ø¹Ø¯ÙˆØ¯" : "Counted cash"}</label>
-          <input className="input" type="number" min={0} value={actualCash} onChange={(event) => setActualCash(event.target.value)} placeholder={String(bayaan.shift?.openingCash || 0)}/>
+          <label className="t-micro">{ui(ar, "countedCash")}</label>
+          <input className="input" type="number" min={0} value={actualCash} onChange={(event) => setActualCash(event.target.value)} placeholder={String(expectedCash || bayaan.shift?.openingCash || 0)}/>
         </div>
         <div className="card">
           <div className="between" style={{ padding: "12px 14px" }}>
             <div>
-              <div className="t-h2">{ar ? "Ø¹Ø¯ Ø§Ù„Ù…Ø®Ø²ÙˆÙ†" : "Stock count"}</div>
-              <div className="t-small subtle">{ar ? "ÙŠØªØ­ÙˆÙ„ Ø¥Ù„Ù‰ ÙØ±Ù‚ Ø¹Ù†Ø¯ Ø§Ù„Ù…Ø¯ÙŠØ±" : "These counted values become the variance record"}</div>
+              <div className="t-h2">{ui(ar, "stockCount")}</div>
+              <div className="t-small subtle">{ui(ar, "varianceRecordSub")}</div>
             </div>
           </div>
           <table className="tbl">
@@ -11660,13 +18080,13 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
                 </tr>
               ))}
               {!stockRows.length && (
-                <tr><td className="muted" style={{ textAlign: "center", padding: 24 }}>{ar ? "Ù„Ø§ ÙŠÙˆØ¬Ø¯ Ù…Ø®Ø²ÙˆÙ† Ù…Ø­Ù…Ù„" : "No live kiosk stock loaded"}</td></tr>
+                <tr><td className="muted" style={{ textAlign: "center", padding: 24 }}>{ui(ar, "noSourceKioskStock")}</td></tr>
               )}
             </tbody>
           </table>
         </div>
-        <button className="btn btn-primary btn-xl" onClick={submitClose} disabled={busy || !actualCash} style={{ justifyContent: "center" }}>
-          <Icon name="check" size={14}/>{busy ? (ar ? "Ø¬Ø§Ø±Ù Ø§Ù„Ø¥Ø±Ø³Ø§Ù„" : "Submitting") : (ar ? "Ø¥Ø±Ø³Ø§Ù„ Ø§Ù„Ø¥ØºÙ„Ø§Ù‚" : "Submit close")}
+        <button className="btn btn-primary btn-xl" onClick={submitClose} disabled={busy || !actualCash || bayaan.pendingCount > 0} style={{ justifyContent: "center" }}>
+          <Icon name="check" size={14}/>{busy ? ui(ar, "submitting") : ui(ar, "submitClose")}
         </button>
       </div>
     </div>
@@ -11674,27 +18094,39 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
 }
 
 // =============== PAYMENT ===============
-function POSPayment({ lang, total, cart, onTender, tender, onDone, onBack }) {
+function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, onBack }) {
   const ar = lang === "ar";
   const bayaan = useBayaan();
   const { showToast } = useToast();
   const [phase, setPhase] = useStatePOS("choose"); // choose -> processing -> done
   const [cashGiven, setCashGiven] = useStatePOS("");
   const [submitState, setSubmitState] = useStatePOS({ status: "idle", externalId: null, queued: false, error: "" });
-  const tenderOptions = [
-    { id: "card", icon: "card", label: ar ? "بطاقة" : "Card", sub: ar ? "تلامس أو إدخال" : "Tap or insert" },
-    { id: "cash", icon: "cash", label: ar ? "نقد" : "Cash", sub: ar ? "أدخل المبلغ المستلم" : "Enter amount received" },
-    { id: "zain cash", icon: "card", label: "Zain Cash", sub: ar ? "محفظة أو رابط دفع" : "Wallet or pay link" },
-    { id: "fib", icon: "card", label: "FIB", sub: ar ? "تطبيق البنك أو QR" : "Bank app or QR" },
-    { id: "qi card", icon: "card", label: "Qi Card", sub: ar ? "بطاقة أو SuperQi" : "Card or SuperQi" },
-    { id: "fastpay", icon: "card", label: "FastPay", sub: ar ? "QR التاجر" : "Merchant QR" },
-  ];
+  const demoTenderOptions = React.useMemo(() => [
+    { id: "card", icon: "card", label: ar ? "بطاقة" : "Card", sub: ar ? "تلامس أو إدخال" : "Tap or insert card", category: "card" },
+    { id: "cash", icon: "cash", label: ar ? "نقد" : "Cash", sub: ar ? "أدخل المبلغ المستلم" : "Enter amount received", category: "cash" },
+    { id: "zain cash", icon: "card", label: "Zain Cash", sub: ar ? "محفظة أو رابط دفع" : "Wallet or pay link", category: "mobile_wallet" },
+    { id: "fib", icon: "card", label: "FIB", sub: ar ? "تطبيق البنك أو QR" : "Bank app or QR", category: "bank_app" },
+    { id: "qi card", icon: "card", label: "Qi Card", sub: ar ? "بطاقة أو SuperQi" : "Card or SuperQi", category: "card" },
+    { id: "fastpay", icon: "card", label: "FastPay", sub: ar ? "QR التاجر" : "Merchant QR", category: "mobile_wallet" },
+  ], [ar]);
+  const sourceTenderOptions = React.useMemo(
+    () => sourcePosPaymentOptions(bootstrap, bayaan.kioskId, ar),
+    [ar, bayaan.kioskId, bootstrap],
+  );
+  const tenderOptions = bayaan.mode === "live" ? sourceTenderOptions : demoTenderOptions;
+  const noSourceTenderOptions = bayaan.mode === "live" && tenderOptions.length === 0;
+  const cashTender = tenderOptions.find((option) => option.category === "cash" || normalizePaymentText(option.id) === "cash");
 
   const pickTender = (t) => {
+    if (noSourceTenderOptions) {
+      showToast(ar ? "لا توجد طرق دفع مصدر مهيأة." : "No source payment methods are configured.", "warn");
+      return;
+    }
     onTender(t);
     setPhase("processing");
     setSubmitState({ status: "submitting", externalId: null, queued: false, error: "" });
-    const minProcessingMs = t === "card" ? 1400 : 600;
+    const tenderOption = tenderOptions.find((option) => option.id === t);
+    const minProcessingMs = tenderOption?.category === "card" ? 1400 : 600;
     const submitPromise = bayaan.submitSale({ cart, tender: t, total });
     const delayPromise = new Promise((resolve) => setTimeout(resolve, minProcessingMs));
     Promise.all([submitPromise, delayPromise]).then(([result]) => {
@@ -11702,7 +18134,8 @@ function POSPayment({ lang, total, cart, onTender, tender, onDone, onBack }) {
         const externalId = result.result?.external_id || result.result?.id || null;
         setSubmitState({ status: "ok", externalId, queued: false, error: "" });
       } else if (result.queued) {
-        setSubmitState({ status: "queued", externalId: null, queued: true, error: result.error });
+        const blocked = result.queueStatus === "blocked";
+        setSubmitState({ status: blocked ? "blocked" : "queued", externalId: null, queued: true, error: result.error });
         showToast(
           ar ? `تم حفظ البيع محلياً وسيتم الإرسال عند رجوع الاتصال` : `Sale queued offline · will sync when online`,
           "warn",
@@ -11724,27 +18157,33 @@ function POSPayment({ lang, total, cart, onTender, tender, onDone, onBack }) {
   if (phase === "done") {
     const isError = submitState.status === "error";
     const isQueued = submitState.status === "queued";
+    const isBlocked = submitState.status === "blocked";
     const isOk = submitState.status === "ok";
-    const titleAr = isError ? "فشل البيع" : isQueued ? "تم الحفظ بانتظار الاتصال" : "تم الدفع";
-    const titleEn = isError ? "Sale failed" : isQueued ? "Saved offline" : "Payment complete";
+    const titleAr = isError ? "فشل البيع" : isBlocked ? "محفوظ للمراجعة" : isQueued ? "تم الحفظ بانتظار الاتصال" : "تم الدفع";
+    const titleEn = isError ? "Sale failed" : isBlocked ? "Saved for review" : isQueued ? "Saved offline" : "Payment complete";
     const subAr = isError
       ? "لم يتم تسجيل البيع. أعد المحاولة أو استدعِ المشرف."
+      : isBlocked
+      ? "Server rejected this local sale. A manager must reconcile it before close."
       : isQueued
       ? "البيع في قائمة الانتظار وسيُرسل تلقائياً عند رجوع الاتصال."
       : `طلب ${submitState.externalId ? "#" + String(submitState.externalId).slice(-8) : "#A-1247"} مدفوع`;
     const subEn = isError
       ? "Sale was NOT recorded. Retry or call supervisor."
+      : isBlocked
+      ? "Server rejected this local sale. A manager must reconcile it before close."
       : isQueued
       ? "Sale queued · will sync automatically when network is back."
       : `Order ${submitState.externalId ? "#" + String(submitState.externalId).slice(-8) : "#A-1247"} paid`;
-    const iconBg = isError ? "var(--crit, #C04A38)" : isQueued ? "var(--warn, #B8860B)" : "var(--ink)";
-    const iconName = isError ? "x" : isQueued ? "clock" : "check";
+    const iconBg = isError ? "var(--crit, #C04A38)" : (isQueued || isBlocked) ? "var(--warn, #B8860B)" : "var(--ink)";
+    const iconName = isError ? "x" : (isQueued || isBlocked) ? "clock" : "check";
     return (
       <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
         <div style={{ height: 52, padding: "0 18px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center" }}>
           <span style={{ fontSize: 13, fontWeight: 500 }}>{ar ? titleAr : titleEn}</span>
           {isOk && <span className="badge badge-pos" style={{ marginInlineStart: 10 }}><span className="dot pos"></span>{ar ? "مسجل" : "Recorded"}</span>}
           {isQueued && <span className="badge badge-warn" style={{ marginInlineStart: 10 }}><span className="dot warn"></span>{ar ? "بانتظار" : "Queued"}</span>}
+          {isBlocked && <span className="badge badge-warn" style={{ marginInlineStart: 10 }}><span className="dot warn"></span>{ar ? "مراجعة" : "Review"}</span>}
           {isError && <span className="badge badge-crit" style={{ marginInlineStart: 10 }}><span className="dot crit"></span>{ar ? "خطأ" : "Error"}</span>}
         </div>
         <div className="fade-up" style={{ flex: 1, display: "grid", placeItems: "center", padding: 40 }}>
@@ -11805,36 +18244,34 @@ function POSPayment({ lang, total, cart, onTender, tender, onDone, onBack }) {
           <div className="t-num-display" style={{ fontSize: 56, marginBottom: 36, letterSpacing: "-0.03em" }}>{fmtMoney(total)}</div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, maxWidth: 760 }}>
-            <button onClick={() => pickTender("card")} className="card" style={{ padding: 24, textAlign: "start", cursor: "pointer", minHeight: 140 }}>
-              <Icon name="card" size={28} style={{ color: "var(--ink-1)", marginBottom: 14 }}/>
-              <div style={{ fontSize: 17, fontWeight: 500 }}>{ar ? "بطاقة" : "Card"}</div>
-              <div className="t-small subtle" style={{ marginTop: 4 }}>{ar ? "تواصل أو إدخال" : "Tap or insert"}</div>
-            </button>
-            <button onClick={() => pickTender("cash")} className="card" style={{ padding: 24, textAlign: "start", cursor: "pointer", minHeight: 140 }}>
-              <Icon name="cash" size={28} style={{ color: "var(--ink-1)", marginBottom: 14 }}/>
-              <div style={{ fontSize: 17, fontWeight: 500 }}>{ar ? "نقد" : "Cash"}</div>
-              <div className="t-small subtle" style={{ marginTop: 4 }}>{ar ? "أدخل المبلغ المستلم" : "Enter amount received"}</div>
-            </button>
-            {tenderOptions.slice(2).map((option) => (
+            {tenderOptions.map((option) => (
               <button key={option.id} onClick={() => pickTender(option.id)} className="card" style={{ padding: 24, textAlign: "start", cursor: "pointer", minHeight: 140 }}>
                 <Icon name={option.icon} size={28} style={{ color: "var(--ink-1)", marginBottom: 14 }}/>
                 <div style={{ fontSize: 17, fontWeight: 500 }}>{option.label}</div>
                 <div className="t-small subtle" style={{ marginTop: 4 }}>{option.sub}</div>
               </button>
             ))}
+            {noSourceTenderOptions && (
+              <div className="card" style={{ gridColumn: "1 / -1", padding: 18 }}>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{ar ? "لا توجد طرق دفع من المصدر" : "No source payment methods loaded"}</div>
+                <div className="t-small subtle" style={{ marginTop: 6 }}>{ar ? "حمّل طرق الدفع المهيأة من /bayaan/api/chain_bootstrap قبل إتمام البيع." : "Load configured POS payment methods from /bayaan/api/chain_bootstrap before completing the sale."}</div>
+              </div>
+            )}
           </div>
 
-          <div style={{ marginTop: 28, maxWidth: 640 }}>
-            <div className="t-micro" style={{ marginBottom: 10 }}>{ar ? "نقد سريع" : "Quick cash"}</div>
-            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-              {[total, Math.ceil(total/10)*10, Math.ceil(total/50)*50, Math.ceil(total/100)*100, 200, 500].filter((v,i,a) => a.indexOf(v) === i).slice(0, 5).map(amt => (
-                <button key={amt} onClick={() => { setCashGiven(String(amt)); pickTender("cash"); }}
-                  className="btn btn-ghost btn-lg" style={{ minWidth: 92 }}>
-                  {fmtMoney(amt)}
-                </button>
-              ))}
+          {cashTender && (
+            <div style={{ marginTop: 28, maxWidth: 640 }}>
+              <div className="t-micro" style={{ marginBottom: 10 }}>{ar ? "نقد سريع" : "Quick cash"}</div>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                {[total, Math.ceil(total/10)*10, Math.ceil(total/50)*50, Math.ceil(total/100)*100, 200, 500].filter((v,i,a) => a.indexOf(v) === i).slice(0, 5).map(amt => (
+                  <button key={amt} onClick={() => { setCashGiven(String(amt)); pickTender(cashTender.id); }}
+                    className="btn btn-ghost btn-lg" style={{ minWidth: 92 }}>
+                    {fmtMoney(amt)}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </div>
         <div style={{ borderInlineStart: "1px solid var(--line)", padding: 20, background: "var(--surface-2)", overflow: "auto" }}>
           <div className="t-micro" style={{ marginBottom: 12 }}>{ar ? "ملخص الطلب" : "Order summary"}</div>
@@ -11868,7 +18305,8 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
 
   const liveWasteItems = React.useMemo(() => {
     const snapshot = unwrapOdoo(bootstrap);
-    if (!(bayaan.mode === "live" && bayaan.hasBackend) || !snapshot) return null;
+    if (bayaan.mode !== "live") return null;
+    if (!bayaan.hasBackend || !snapshot) return [];
     const stockRows = (snapshot.kiosk_stock_rows || [])
       .filter((row) => matchesKiosk(row.kiosk, { id: bayaan.kioskId, kiosk_code: bayaan.kioskId }));
     const productsByCode = new Map((snapshot.products || []).map((product) => [product.default_code || product.name, product]));
@@ -11876,14 +18314,14 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
       const product = productsByCode.get(row.item);
       return {
         id: product?.default_code || row.item,
-        name: cleanDisplayName(product?.name || row.item),
-        price: Number(product?.standard_price || 0),
+        name: cleanDisplayName(product?.name || row.name || row.item),
+        price: Number(product?.standard_price || row.standard_price || row.unit_cost || row.unitCost || 0),
       };
     });
-    return rows.length ? rows : null;
+    return rows;
   }, [bayaan.hasBackend, bayaan.kioskId, bayaan.mode, bootstrap]);
 
-  const items = liveWasteItems || [
+  const items = liveWasteItems ?? [
     { id: "menu-croissant-plain", name: "Croissant — Plain", price: 12 },
     { id: "menu-croissant-chocolate", name: "Croissant — Chocolate", price: 14 },
     { id: "menu-pistachio-cake", name: "Pistachio Cake", price: 32 },
@@ -11900,6 +18338,10 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
+    if (bayaan.mode === "live" && !bayaan.hasBackend) {
+      showToast(ar ? "اربط محرك المصدر قبل تسجيل هدر مصدر." : "Connect the source engine before recording source waste", "warn");
+      return;
+    }
     setBusy(true);
     try {
       const result = await bayaan.submitWaste({ item, qty, reason });
@@ -11951,6 +18393,12 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
                 <div className="t-small subtle">IQD {it.price.toLocaleString("en")}</div>
               </button>
             ))}
+            {items.length === 0 && (
+              <div className="card" style={{ gridColumn: "1 / -1", padding: 18, color: "var(--ink-3)" }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>{ar ? "لا توجد بنود هدر من المصدر" : "No source waste items loaded"}</div>
+                <div className="t-small subtle" style={{ marginTop: 6 }}>{ar ? "اربط محرك المصدر أو حمّل مخزون الكشك قبل تسجيل الهدر." : "Connect the source engine or load kiosk stock before recording waste."}</div>
+              </div>
+            )}
           </div>
 
           <div className="t-micro" style={{ marginBottom: 10 }}>2 — {ar ? "الكمية" : "Quantity"}</div>
@@ -12029,7 +18477,8 @@ function CustomerDisplay({ lang, screen, cart, subTotal, vat, total, tender, las
       <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--terminal)", color: "var(--terminal-ink)" }}>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: "0 32px", textAlign: "center" }}>
           <JuiceLottie className="customer-standby-lottie" />
-          <div style={{ fontSize: 40, fontWeight: 500, letterSpacing: "-0.03em", lineHeight: 1 }}>{ar ? "مقهى" : "Maqha"}</div>
+          <BrandLogo className="customer-display-logo" alt={ar ? BRAND.arabic : BRAND.name}/>
+          <div className="customer-display-brand-text">{ar ? BRAND.arabic : BRAND.name}</div>
           <div style={{ fontSize: 12, color: "#9A998F", marginTop: 12, letterSpacing: "0.06em", textTransform: "uppercase" }}>
             {ar ? "قهوة · عصائر · مخبوزات" : "Coffee · Juice · Bakery"}
           </div>
@@ -12106,11 +18555,11 @@ function CustomerDisplay({ lang, screen, cart, subTotal, vat, total, tender, las
 
   // ---- SALE: live order mirror ----
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--paper)" }}>
-      <div style={{ padding: "16px 20px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--line)" }}>
-        <div className="row" style={{ gap: 8 }}>
-          <div style={{ width: 22, height: 22, borderRadius: 5, background: "var(--brand-mark-bg)", color: "var(--brand-mark-fg)", display: "grid", placeItems: "center", fontSize: 12, fontWeight: 600 }}>M</div>
-          <span style={{ fontSize: 13.5, fontWeight: 500 }}>{ar ? "مقهى" : "Maqha"}</span>
+      <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--paper)" }}>
+        <div style={{ padding: "16px 20px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--line)" }}>
+          <div className="row" style={{ gap: 8 }}>
+          <BrandLogo className="customer-sale-logo" alt={ar ? BRAND.arabic : BRAND.name}/>
+          <span style={{ fontSize: 13.5, fontWeight: 500 }}>{ar ? BRAND.arabic : BRAND.name}</span>
         </div>
         <span className="t-small subtle">#A-{1247 + cart.length}</span>
       </div>
@@ -12209,7 +18658,7 @@ function AuthChip({ lang }) {
   if (!bayaan.hasBackend) return null;
 
   const user = bayaan.auth.user || {};
-  const roleLabel = ROLE_LABELS[user.primaryRole] || "User";
+  const roleLabel = ar ? (ROLE_LABELS_DISPLAY_AR[user.primaryRole] || "مستخدم") : (ROLE_LABELS[user.primaryRole] || "User");
   const signedIn = bayaan.auth.authenticated;
   const submit = async (event) => {
     event.preventDefault();
@@ -12231,26 +18680,26 @@ function AuthChip({ lang }) {
     <>
       <button type="button" className="btn btn-ghost" style={{ height: 28, fontSize: 12 }} onClick={() => setOpen(true)}>
         <Icon name="user" size={12}/>
-        {signedIn ? `${roleLabel} · ${user.name || user.login}` : (ar ? "دخول" : "Sign in")}
+        {signedIn ? `${roleLabel} · ${arTerm(lang, user.name || user.login)}` : (ar ? "دخول" : "Sign in")}
       </button>
-      <Modal open={open} onClose={() => setOpen(false)} title={signedIn ? "Bayaan account" : "Sign in to Bayaan"} width={420}>
+      <Modal open={open} onClose={() => setOpen(false)} title={signedIn ? (ar ? "حساب بيان" : "Bayaan account") : (ar ? "الدخول إلى بيان" : "Sign in to Bayaan")} width={420}>
         {signedIn ? (
           <div style={{ display: "grid", gap: 14 }}>
             <div className="card" style={{ padding: 14 }}>
-              <div style={{ fontWeight: 600 }}>{user.name}</div>
+              <div style={{ fontWeight: 600 }}>{arTerm(lang, user.name)}</div>
               <div className="t-small subtle">{user.login}</div>
               <div style={{ marginTop: 10 }}><span className="badge">{roleLabel}</span></div>
             </div>
             <div className="between">
-              <button type="button" className="btn btn-ghost" onClick={() => setOpen(false)}>Close</button>
-              <button type="button" className="btn btn-primary" onClick={signOut}>Sign out</button>
+              <button type="button" className="btn btn-ghost" onClick={() => setOpen(false)}>{ar ? "إغلاق" : "Close"}</button>
+              <button type="button" className="btn btn-primary" onClick={signOut}>{ar ? "خروج" : "Sign out"}</button>
             </div>
           </div>
         ) : (
           <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
-            <label className="field-label">Login</label>
+            <label className="field-label">{ar ? "الدخول" : "Login"}</label>
             <input className="input" value={form.login} onChange={(event) => setForm((current) => ({ ...current, login: event.target.value }))}/>
-            <label className="field-label">Password</label>
+            <label className="field-label">{ar ? "كلمة المرور" : "Password"}</label>
             <input className="input" type="password" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}/>
             <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               {TEST_ACCOUNTS.map((account) => (
@@ -12261,7 +18710,7 @@ function AuthChip({ lang }) {
                   style={{ justifyContent: "flex-start", fontSize: 12 }}
                   onClick={() => setForm({ login: account.login, password: "test" })}
                 >
-                  {account.role}
+                  {arTerm(lang, account.role)}
                 </button>
               ))}
             </div>
@@ -12271,9 +18720,9 @@ function AuthChip({ lang }) {
               </div>
             )}
             <div className="between">
-              <button type="button" className="btn btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
+              <button type="button" className="btn btn-ghost" onClick={() => setOpen(false)}>{ui(ar, "cancel")}</button>
               <button type="submit" className="btn btn-primary" disabled={bayaan.auth.busy || !form.login || !form.password}>
-                {bayaan.auth.busy ? "Signing in" : "Sign in"}
+                {bayaan.auth.busy ? (ar ? "جار الدخول" : "Signing in") : (ar ? "دخول" : "Sign in")}
               </button>
             </div>
           </form>
@@ -12291,12 +18740,11 @@ function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme }) {
   return (
     <div className="master-top">
       <div className="brand">
-        <div className="brand-mark">M</div>
-        <span style={{ letterSpacing: "-0.01em" }}>Maqha</span>
-        <span style={{ color: "#6E6E68", fontWeight: 400 }}>- operations</span>
+        <BrandLogo className="master-brand-logo" />
+        <span style={{ color: "#6E6E68", fontWeight: 400 }}>{ar ? "- العمليات" : "- operations"}</span>
       </div>
       <div className="seg">
-        <button className={panel === "admin" ? "on" : ""} disabled={!canAdmin} onClick={() => setPanel("admin")}>Admin</button>
+        <button className={panel === "admin" ? "on" : ""} disabled={!canAdmin} onClick={() => setPanel("admin")}>{ar ? "الإدارة" : "Admin"}</button>
         <button className={panel === "pos" ? "on" : ""} disabled={!canPos} onClick={() => setPanel("pos")}>POS</button>
       </div>
       <div className="row" style={{ gap: 12 }}>
@@ -12334,14 +18782,27 @@ function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme }) {
 }
 
 function ModeBadge({ bayaan, ar }) {
-  const { mode, setMode, hasBackend, pendingCount, kioskId } = bayaan;
+  const { mode, setMode, hasBackend, pendingCount, blockedCount, online, kioskId } = bayaan;
   const liveAvailable = hasBackend;
   const live = mode === "live";
+  const retryingCount = Math.max(0, pendingCount - blockedCount);
+  const simulation = isSimulationRuntime();
   const onToggle = () => {
+    if (simulation && typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("bayaanSimulation");
+      url.searchParams.delete("bayaanSimFull");
+      window.localStorage.removeItem("BAYAAN_SIMULATION");
+      window.localStorage.setItem("bayaan.mode.v1", "demo");
+      window.location.assign(url.toString());
+      return;
+    }
     setMode(mode === "live" ? "demo" : "live");
   };
-  const dotClass = live ? (liveAvailable ? "pos" : "crit") : "warn";
-  const label = live
+  const dotClass = simulation ? "pos" : live ? (liveAvailable ? "pos" : "crit") : "warn";
+  const label = simulation
+    ? (ar ? "وضع المحاكاة" : "Simulation mode")
+    : live
     ? (ar ? "تشغيل فقط" : "Live only")
     : (ar ? "وضع تجريبي" : "Demo mode");
   return (
@@ -12355,8 +18816,8 @@ function ModeBadge({ bayaan, ar }) {
         display: "inline-flex", alignItems: "center", gap: 6,
         padding: "3px 9px 3px 7px", height: 22, borderRadius: 4,
         background: "transparent",
-        border: `1px solid ${live ? "var(--pos)" : "var(--line)"}`,
-        color: live ? "var(--pos)" : "#8B8A82",
+        border: `1px solid ${live || simulation ? "var(--pos)" : "var(--line)"}`,
+        color: live || simulation ? "var(--pos)" : "#8B8A82",
         fontSize: 11, fontWeight: 500, letterSpacing: "0.01em",
         cursor: "pointer",
         opacity: 1,
@@ -12365,7 +18826,19 @@ function ModeBadge({ bayaan, ar }) {
       <span className={`dot ${dotClass}`} style={{ width: 6, height: 6 }}></span>
       <span>{label}</span>
       <span style={{ color: "#6E6E68", fontWeight: 400 }}>· {kioskId}</span>
-      {pendingCount > 0 && (
+      {live && !online && (
+        <span style={{
+          marginInlineStart: 4, padding: "0 5px", borderRadius: 8,
+          background: "var(--warn-soft, #FCE8C2)", color: "var(--warn, #B8860B)", fontSize: 10,
+        }}>{ar ? "Ø£ÙˆÙÙ„Ø§ÙŠÙ†" : "offline"}</span>
+      )}
+      {blockedCount > 0 && (
+        <span style={{
+          marginInlineStart: 4, padding: "0 5px", borderRadius: 8,
+          background: "var(--crit-soft, #F7D5CC)", color: "var(--crit, #C04A38)", fontSize: 10,
+        }}>{blockedCount} {ar ? "Ù…Ø±Ø§Ø¬Ø¹Ø©" : "review"}</span>
+      )}
+      {retryingCount > 0 && (
         <span style={{
           marginInlineStart: 4, padding: "0 5px", borderRadius: 8,
           background: "var(--warn-soft, #FCE8C2)", color: "var(--warn, #B8860B)", fontSize: 10,
@@ -12383,7 +18856,7 @@ function AuthRequired({ lang }) {
       <div className="card" style={{ width: 420, maxWidth: "100%", padding: 18 }}>
         <div className="t-h2">{ar ? "تسجيل الدخول" : "Sign in"}</div>
         <div className="t-small subtle" style={{ marginTop: 4 }}>
-          {ar ? "وضع التشغيل يحتاج حساب أودو/بيان." : "Live mode uses Odoo users and Bayaan role groups."}
+          {ar ? "وضع التشغيل يحتاج حساب بيان." : "Live mode uses Bayaan users and role groups."}
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 16 }}>
           {TEST_ACCOUNTS.map((account) => (
@@ -12394,7 +18867,7 @@ function AuthRequired({ lang }) {
               style={{ justifyContent: "flex-start", height: 34 }}
               onClick={() => void bayaan.login({ login: account.login, password: "test" })}
             >
-              {account.role}
+              {arTerm(lang, account.role)}
             </button>
           ))}
         </div>

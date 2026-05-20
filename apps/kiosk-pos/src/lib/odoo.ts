@@ -69,5 +69,5 @@ export const odooMapping = {
   stockAllocation: ["stock.picking", "stock.move", "stock.location"],
   ingredientConsumption: ["bayaan.recipe", "stock.scrap", "stock.move"],
   purchases: ["purchase.order", "res.partner", "product.supplierinfo"],
-  reports: ["pos.order", "stock.quant", "account.move", "bayaan.shift.close"],
+  reports: ["pos.order", "stock.quant", "account.move", "bayaan.shift.close", "bayaan.operating.expense"],
 } as const;

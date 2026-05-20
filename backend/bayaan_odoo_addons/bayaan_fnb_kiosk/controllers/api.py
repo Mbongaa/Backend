@@ -1,11 +1,15 @@
 import json
 import logging
+import math
+import os
 from datetime import datetime, time, timedelta
 from uuid import uuid4
 
-from odoo import fields, http
+import requests
+
+from odoo import SUPERUSER_ID, api, fields, http
 from odoo.exceptions import UserError
-from odoo.http import request
+from odoo.http import request, Response
 from odoo.tools import float_compare
 
 from ..payment_gateways import (
@@ -390,6 +394,99 @@ class BayaanKioskApi(http.Controller):
             return default
         return float(value)
 
+    def _payload_float(self, payload, keys, default=None):
+        for key in keys:
+            if payload.get(key) not in (None, ""):
+                return self._float_value(payload.get(key), default or 0.0)
+        return default
+
+    def _stock_plan_payload_values(self, payload, include_defaults=False):
+        values = {}
+        field_keys = {
+            "bayaan_stock_target_qty": (
+                "target_qty", "targetQty", "stock_target_qty", "stockTargetQty",
+                "kiosk_target_qty", "kioskTargetQty", "bayaan_stock_target_qty",
+            ),
+            "bayaan_stock_reorder_qty": (
+                "reorder_qty", "reorderQty", "reorder", "stock_reorder_qty",
+                "stockReorderQty", "bayaan_stock_reorder_qty",
+            ),
+            "bayaan_stock_critical_qty": (
+                "critical_qty", "criticalQty", "critical", "safety_qty",
+                "safetyQty", "bayaan_stock_critical_qty",
+            ),
+            "bayaan_stock_max_qty": (
+                "max_qty", "maxQty", "stock_max_qty", "stockMaxQty",
+                "bayaan_stock_max_qty",
+            ),
+            "bayaan_stock_priority_weight": (
+                "priority_weight", "priorityWeight", "stock_priority_weight",
+                "stockPriorityWeight", "bayaan_stock_priority_weight",
+            ),
+        }
+        for field_name, keys in field_keys.items():
+            value = self._payload_float(payload, keys)
+            if value is not None:
+                values[field_name] = max(value, 0.0)
+        if include_defaults:
+            target = values.get("bayaan_stock_target_qty", 0.0)
+            reorder = values.get("bayaan_stock_reorder_qty", 0.0)
+            critical = values.get("bayaan_stock_critical_qty", 0.0)
+            if target and not reorder:
+                values["bayaan_stock_reorder_qty"] = target * 0.5
+                reorder = values["bayaan_stock_reorder_qty"]
+            if reorder and not target:
+                values["bayaan_stock_target_qty"] = reorder * 2
+                target = values["bayaan_stock_target_qty"]
+            if reorder and not critical:
+                values["bayaan_stock_critical_qty"] = reorder * 0.5
+            if target and not values.get("bayaan_stock_max_qty"):
+                values["bayaan_stock_max_qty"] = target
+            if not values.get("bayaan_stock_priority_weight"):
+                values["bayaan_stock_priority_weight"] = 1.0
+        return values
+
+    def _product_stock_plan(self, product, actual_qty=0.0):
+        template = product.product_tmpl_id
+        configured_target = max(template.bayaan_stock_target_qty or 0.0, 0.0)
+        configured_reorder = max(template.bayaan_stock_reorder_qty or 0.0, 0.0)
+        configured_critical = max(template.bayaan_stock_critical_qty or 0.0, 0.0)
+        configured_max = max(template.bayaan_stock_max_qty or 0.0, 0.0)
+        target_qty = configured_target
+        target_source = "configured" if target_qty else "unconfigured"
+        if not target_qty:
+            target_qty = max(configured_reorder * 2, configured_critical * 4, configured_max, 0.0)
+            if target_qty:
+                target_source = "derived"
+        reorder_qty = configured_reorder or (target_qty * 0.5 if target_qty else 0.0)
+        critical_qty = configured_critical or (reorder_qty * 0.5 if reorder_qty else 0.0)
+        max_qty = max(configured_max, target_qty)
+        priority_weight = max(template.bayaan_stock_priority_weight or 1.0, 0.1)
+        stock_percent = 0.0
+        if target_qty:
+            stock_percent = max(0.0, min(100.0, (actual_qty / target_qty) * 100.0))
+        status = "ok"
+        if target_qty <= 0:
+            status = "unconfigured"
+        elif actual_qty <= 0:
+            status = "empty"
+        elif critical_qty and actual_qty <= critical_qty:
+            status = "critical"
+        elif reorder_qty and actual_qty <= reorder_qty:
+            status = "low"
+        elif max_qty and actual_qty > max_qty:
+            status = "over_target"
+        return {
+            "target_qty": round(target_qty, 3),
+            "reorder_qty": round(reorder_qty, 3),
+            "critical_qty": round(critical_qty, 3),
+            "max_qty": round(max_qty, 3),
+            "priority_weight": round(priority_weight, 3),
+            "stock_percent": round(stock_percent, 1),
+            "status": status,
+            "target_source": target_source,
+        }
+
     def _hour_value(self, value, default=0.0):
         if value in (None, ""):
             return default
@@ -428,6 +525,7 @@ class BayaanKioskApi(http.Controller):
         return "%s-%s" % (candidate[:42], index)
 
     def _serialize_stock_item(self, product):
+        plan = self._product_stock_plan(product, product.qty_available)
         return {
             "id": product.id,
             "name": product.display_name,
@@ -439,6 +537,11 @@ class BayaanKioskApi(http.Controller):
             "list_price": product.lst_price,
             "consumption_mode": product.product_tmpl_id.bayaan_consumption_mode,
             "qty_available": product.qty_available,
+            "target_qty": plan["target_qty"],
+            "reorder_qty": plan["reorder_qty"],
+            "critical_qty": plan["critical_qty"],
+            "max_qty": plan["max_qty"],
+            "stock_priority_weight": plan["priority_weight"],
         }
 
     def _serialize_supplier_partner(self, partner, spend30=0.0, last_order="-"):
@@ -479,6 +582,7 @@ class BayaanKioskApi(http.Controller):
         Attendance = request.env["bayaan.attendance"].sudo()
         Adjustment = request.env["bayaan.payroll.adjustment"].sudo()
         PayrollRun = request.env["bayaan.payroll.run"].sudo()
+        Expense = request.env["bayaan.operating.expense"].sudo()
         today = fields.Date.context_today(request.env.user)
         month_start = today.replace(day=1)
         employees = Employee.search([("company_id", "=", company.id)], order="name", limit=500)
@@ -491,6 +595,22 @@ class BayaanKioskApi(http.Controller):
             ("date", ">=", month_start),
         ], order="date desc, id desc", limit=500)
         payroll_runs = PayrollRun.search([("company_id", "=", company.id)], order="date_from desc, id desc", limit=24)
+        expenses = Expense.search([
+            ("company_id", "=", company.id),
+            ("date", ">=", month_start),
+        ], order="date desc, id desc", limit=500)
+        approved_adjustments = adjustments.filtered(lambda adjustment: adjustment.state == "approved")
+        payroll_base = sum(employees.mapped("monthly_salary"))
+        payroll_adjustment_impact = (
+            sum(approved_adjustments.filtered(lambda adj: adj.type == "bonus").mapped("amount"))
+            - sum(approved_adjustments.filtered(lambda adj: adj.type in ("deduction", "advance", "cash_shortage")).mapped("amount"))
+        )
+        latest_payroll_run = payroll_runs[:1]
+        payroll_accrued = (
+            latest_payroll_run.total_net
+            if latest_payroll_run and latest_payroll_run.state in ("review", "approved", "paid")
+            else max(payroll_base + payroll_adjustment_impact, 0.0)
+        )
         return {
             "engine": "odoo_pos",
             "employees": [self._serialize_employee(employee) for employee in employees],
@@ -505,6 +625,13 @@ class BayaanKioskApi(http.Controller):
             } for row in attendance],
             "adjustments": [self._serialize_payroll_adjustment(adjustment) for adjustment in adjustments],
             "payrollRuns": [self._serialize_payroll_run(run) for run in payroll_runs],
+            "expenses": [self._serialize_operating_expense(expense) for expense in expenses],
+            "summary": {
+                "payrollAccrued": payroll_accrued,
+                "payrollBase": payroll_base,
+                "payrollAdjustmentImpact": payroll_adjustment_impact,
+                "operatingExpenses": sum(expenses.mapped("amount")),
+            },
         }
 
     def _attach_purchase_invoice(self, order, payload):
@@ -689,6 +816,16 @@ class BayaanKioskApi(http.Controller):
             "odooAttendanceId": attendance.hr_attendance_id.id,
         }
 
+    def _serialize_operating_expense(self, expense):
+        return {
+            "id": expense.id,
+            "name": expense.name,
+            "category": expense.category,
+            "amount": expense.amount,
+            "date": fields.Date.to_string(expense.date),
+            "note": expense.note or "",
+        }
+
     def _serialize_hr_shift(self, shift):
         return {
             "id": shift.id,
@@ -761,6 +898,18 @@ class BayaanKioskApi(http.Controller):
             "approvedBy": adjustment.approved_by_id.name,
             "approvedAt": fields.Datetime.to_string(adjustment.approved_at) if adjustment.approved_at else False,
         }
+
+    def _ensure_payroll_adjustment_period_open(self, adjustment_date):
+        locked_run = request.env["bayaan.payroll.run"].sudo().search([
+            ("company_id", "=", request.env.company.id),
+            ("date_from", "<=", adjustment_date),
+            ("date_to", ">=", adjustment_date),
+            ("state", "in", ["approved", "paid"]),
+        ], limit=1)
+        if locked_run:
+            raise UserError(
+                "Payroll period is already approved or paid; create an adjustment for the next payroll run."
+            )
 
     def _serialize_payroll_run(self, payroll_run):
         return {
@@ -1230,6 +1379,1324 @@ class BayaanKioskApi(http.Controller):
             "created": created or {},
         }
 
+    def _ai_plan_templates(self):
+        return {
+            "executive-summary": {
+                "dataPacks": ["overview", "sales", "kiosks", "finance", "reports"],
+                "components": [
+                    {"componentId": "overview.kpi_panel", "size": "wide", "mode": "read-only", "dataBinding": "overview", "title": "Today command metrics"},
+                    {"componentId": "overview.top_performers_rank", "size": "medium", "mode": "read-only", "dataBinding": "kiosks", "title": "Top performers"},
+                    {"componentId": "overview.alerts", "size": "medium", "mode": "read-only", "dataBinding": "overview", "title": "Signals needing attention"},
+                    {"componentId": "overview.ai_summary", "size": "wide", "mode": "read-only", "dataBinding": "reports", "title": "Traceable summary"},
+                ],
+                "sourceRefsRequired": ["pos.order", "pos.payment", "bayaan.consumption.ledger", "bayaan.shift.close", "report.pack"],
+                "explanationStyle": "brief",
+            },
+            "kiosk-diagnosis": {
+                "dataPacks": ["kiosks", "sales", "inventory", "closing"],
+                "components": [
+                    {"componentId": "canvas.headline", "size": "wide", "mode": "read-only", "dataBinding": "kiosks", "title": "Kiosk diagnosis"},
+                    {"componentId": "canvas.stack", "size": "wide", "mode": "read-only", "dataBinding": "sales", "title": "Variance breakdown"},
+                    {"componentId": "canvas.hourly", "size": "full", "mode": "read-only", "dataBinding": "sales", "title": "Hourly pattern"},
+                    {"componentId": "inventory.studio_stock_needs_panel", "size": "medium", "mode": "proposal-only", "dataBinding": "inventory", "title": "Stock proof"},
+                ],
+                "sourceRefsRequired": ["pos.order", "stock.quant", "bayaan.shift.close", "bayaan.waste.entry"],
+                "explanationStyle": "diagnostic",
+            },
+            "waste-anomaly-review": {
+                "dataPacks": ["waste", "closing", "sales"],
+                "components": [
+                    {"componentId": "canvas.wastegrid", "size": "wide", "mode": "read-only", "dataBinding": "waste", "title": "Waste heatmap"},
+                    {"componentId": "waste.reason_bar_chart", "size": "wide", "mode": "read-only", "dataBinding": "waste", "title": "Reason control"},
+                    {"componentId": "waste.entries_flag_table", "size": "full", "mode": "read-only", "dataBinding": "waste", "title": "Flagged entries"},
+                    {"componentId": "canvas.actions", "size": "medium", "mode": "proposal-only", "dataBinding": "waste", "title": "Recommended next steps"},
+                ],
+                "sourceRefsRequired": ["bayaan.waste.entry", "bayaan.shift.close", "pos.order"],
+                "explanationStyle": "diagnostic",
+            },
+            "stock-allocation": {
+                "dataPacks": ["inventory", "warehouses", "items"],
+                "components": [
+                    {"componentId": "inventory.studio_health_donut", "size": "medium", "mode": "read-only", "dataBinding": "inventory", "title": "Inventory health"},
+                    {"componentId": "inventory.studio_stock_needs_panel", "size": "wide", "mode": "proposal-only", "dataBinding": "inventory", "title": "Kiosk live stock needs"},
+                    {"componentId": "inventory.studio_transfers_panel", "size": "wide", "mode": "proposal-only", "dataBinding": "inventory", "title": "Transfer queue"},
+                    {"componentId": "canvas.actions", "size": "medium", "mode": "proposal-only", "dataBinding": "inventory", "title": "Proposal only"},
+                ],
+                "sourceRefsRequired": ["stock.quant", "stock.location", "stock.picking", "bayaan.kiosk"],
+                "explanationStyle": "diagnostic",
+            },
+            "close-review": {
+                "dataPacks": ["closing", "waste", "inventory", "products", "staff"],
+                "components": [
+                    {"componentId": "closing.today_closes_table", "size": "full", "mode": "read-only", "dataBinding": "closing", "title": "Closes needing review"},
+                    {"componentId": "closing.variance_inputs_expanded", "size": "full", "mode": "read-only", "dataBinding": "closing", "title": "Variance inputs"},
+                    {"componentId": "closing.recipe_posting_review", "size": "wide", "mode": "read-only", "dataBinding": "products", "title": "Recipe posting blockers"},
+                    {"componentId": "staff.cashier_performance_table", "size": "wide", "mode": "read-only", "dataBinding": "staff", "title": "Cashier overlap"},
+                ],
+                "sourceRefsRequired": ["bayaan.shift.close", "bayaan.shift.close.line", "pos.session", "bayaan.consumption.ledger"],
+                "explanationStyle": "audit",
+            },
+            "recipe-margin-review": {
+                "dataPacks": ["products", "suppliers", "sales", "finance"],
+                "components": [
+                    {"componentId": "products.recipe_margin_table", "size": "full", "mode": "read-only", "dataBinding": "products", "title": "Recipe margin proof"},
+                    {"componentId": "suppliers.item_catalog_table", "size": "wide", "mode": "read-only", "dataBinding": "suppliers", "title": "Supplier cost driver"},
+                    {"componentId": "canvas.bars", "size": "medium", "mode": "read-only", "dataBinding": "sales", "title": "Trend comparison"},
+                    {"componentId": "reports.pnl_table", "size": "wide", "mode": "read-only", "dataBinding": "finance", "title": "P&L impact"},
+                ],
+                "sourceRefsRequired": ["product.template", "bayaan.recipe", "purchase.order", "report.pack"],
+                "explanationStyle": "diagnostic",
+            },
+            "payment-reconciliation": {
+                "dataPacks": ["sales", "finance", "reports"],
+                "components": [
+                    {"componentId": "sales.payment_split", "size": "medium", "mode": "read-only", "dataBinding": "sales", "title": "Payment split"},
+                    {"componentId": "reports.payment_methods_table", "size": "medium", "mode": "read-only", "dataBinding": "reports", "title": "Payment methods"},
+                    {"componentId": "reports.gateway_settlement_table", "size": "wide", "mode": "read-only", "dataBinding": "finance", "title": "Gateway settlement"},
+                    {"componentId": "sales.live_orders_table", "size": "full", "mode": "read-only", "dataBinding": "sales", "title": "Order-level proof"},
+                ],
+                "sourceRefsRequired": ["pos.order", "pos.payment", "account.move", "report.pack"],
+                "explanationStyle": "audit",
+            },
+            "staff-coaching": {
+                "dataPacks": ["staff", "closing", "sales"],
+                "components": [
+                    {"componentId": "staff.cashier_performance_table", "size": "full", "mode": "read-only", "dataBinding": "staff", "title": "Cashier performance"},
+                    {"componentId": "closing.today_closes_table", "size": "wide", "mode": "read-only", "dataBinding": "closing", "title": "Close variance overlap"},
+                    {"componentId": "canvas.rank", "size": "medium", "mode": "read-only", "dataBinding": "staff", "title": "Peer comparison"},
+                ],
+                "sourceRefsRequired": ["hr.employee", "hr.attendance", "pos.order", "bayaan.shift.close"],
+                "explanationStyle": "diagnostic",
+            },
+            "warehouse-topology": {
+                "dataPacks": ["warehouses", "inventory"],
+                "components": [
+                    {"componentId": "warehouses.realtime_card", "size": "wide", "mode": "read-only", "dataBinding": "warehouses", "title": "Stock source cards"},
+                    {"componentId": "warehouses.topology_table", "size": "full", "mode": "read-only", "dataBinding": "warehouses", "title": "Topology table"},
+                    {"componentId": "inventory.studio_transfers_panel", "size": "wide", "mode": "proposal-only", "dataBinding": "inventory", "title": "Transfer queue"},
+                ],
+                "sourceRefsRequired": ["stock.location", "stock.quant", "bayaan.kiosk", "stock.picking"],
+                "explanationStyle": "audit",
+            },
+            "catalog-lookup": {
+                "dataPacks": ["items", "products", "inventory"],
+                "components": [
+                    {"componentId": "items.catalog_table", "size": "full", "mode": "read-only", "dataBinding": "items", "title": "Stock item catalog"},
+                    {"componentId": "products.product_list_table", "size": "full", "mode": "read-only", "dataBinding": "products", "title": "Menu product catalog"},
+                    {"componentId": "inventory.studio_ledger_table", "size": "wide", "mode": "read-only", "dataBinding": "inventory", "title": "Inventory ledger"},
+                ],
+                "sourceRefsRequired": ["product.template", "stock.quant", "stock.location"],
+                "explanationStyle": "brief",
+            },
+        }
+
+    def _ai_infer_intent(self, query):
+        text = " ".join((query or "").lower().split())
+        checks = [
+            ("close-review", ("close", "closing", "variance", "approve", "approval", "counted", "expected", "drawer", "إغلاق", "اغلاق", "فرق", "فروقات", "اعتماد", "معدود", "متوقع", "درج")),
+            ("waste-anomaly-review", ("waste", "loss", "spoil", "spoiled", "anomaly", "anomalies", "tossed", "هدر", "خسارة", "شذوذ", "تالف")),
+            ("catalog-lookup", ("catalog", "uom", "ingredient", "ingredients", "menu", "كتالوج", "صنف", "أصناف", "مكون", "مكونات", "قائمة")),
+            ("stock-allocation", ("transfer", "allocate", "allocation", "stock", "inventory", "reorder", "runout", "cover", "تحويل", "مخزون", "إرسال", "ارسال", "أرسل", "ارسل", "نرسل", "تزويد", "نفاد", "تغطية")),
+            ("recipe-margin-review", ("recipe", "margin", "product", "profitability", "pistachio", "price", "supplier cost", "وصفة", "هامش", "منتج", "ربحية", "فستق", "سعر", "تكلفة المورد")),
+            ("staff-coaching", ("cashier", "staff", "employee", "coach", "training", "payroll", "shortage", "كاشير", "موظف", "موظفين", "تدريب", "رواتب", "عجز")),
+            ("payment-reconciliation", ("payment", "cash", "card", "online", "electronic", "e-payment", "epayment", "gateway", "settlement", "fib", "zain", "qi", "wallet", "دفع", "مدفوعات", "نقد", "بطاقة", "بوابة", "تسوية", "محفظة", "زين")),
+            ("warehouse-topology", ("warehouse", "topology", "location", "source", "reserved", "مستودع", "موقع", "مصدر", "محجوز", "هيكل")),
+            ("kiosk-diagnosis", ("kiosk", "zayouna", "mansour", "karrada", "majidi", "behind", "underperform", "why", "كشك", "زيونة", "زايونة", "منصور", "كرادة", "مجيدي", "متأخر", "متاخر", "لماذا", "ليش")),
+        ]
+        for intent, terms in checks:
+            if any(term in text for term in terms):
+                return intent
+        return "executive-summary"
+
+    def _ai_scope(self, query, payload):
+        text = " ".join((query or "").lower().split())
+        payload_scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+        time_range = "today"
+        if any(term in text for term in ("month", "monthly", "april", "شهر", "شهري", "أبريل", "ابريل")):
+            time_range = "month"
+        elif any(term in text for term in ("week", "weekly", "7 day", "7-day", "أسبوع", "اسبوع", "أسبوعي", "اسبوعي")):
+            time_range = "week"
+        kiosk_id = payload.get("kioskId") or payload.get("kiosk_id") or payload_scope.get("kioskId") or payload_scope.get("kiosk_id")
+        if not kiosk_id:
+            import re
+            match = re.search(r"\bK-?\d{1,3}\b", query or "", re.IGNORECASE)
+            if match:
+                kiosk_id = match.group(0).upper().replace("K", "K-", 1) if "-" not in match.group(0) else match.group(0).upper()
+        return {
+            "kioskId": kiosk_id or False,
+            "sectionId": payload.get("sectionId") or payload.get("section_id") or payload_scope.get("sectionId") or payload_scope.get("section_id") or "insights",
+            "timeRange": payload.get("timeRange") or payload.get("time_range") or payload_scope.get("timeRange") or payload_scope.get("time_range") or time_range,
+        }
+
+    def _ai_template_plan(self, query, payload):
+        templates = self._ai_plan_templates()
+        intent = self._ai_infer_intent(query)
+        template = templates[intent]
+        return {
+            "intent": intent,
+            "query": query,
+            "scope": self._ai_scope(query, payload),
+            "requiredDataPacks": template["dataPacks"],
+            "components": template["components"],
+            "sourceRefsRequired": template["sourceRefsRequired"],
+            "explanationStyle": template["explanationStyle"],
+        }
+
+    def _ai_answer_mode(self, query, plan):
+        text = " ".join((query or "").lower().split())
+        if not text:
+            return "analysis"
+        greetings = {
+            "hi", "hello", "hey", "yo", "salam", "salaam", "مرحبا", "هلا", "السلام عليكم",
+        }
+        if text in greetings or any(text.startswith("%s " % greeting) for greeting in greetings):
+            return "conversation"
+        operational_terms = (
+            "today", "happened", "sales", "orders", "cash", "payment", "stock", "inventory",
+            "waste", "close", "closing", "variance", "kiosk", "warehouse", "recipe", "margin",
+            "staff", "cashier", "supplier", "purchase", "transfer", "report", "profit", "loss",
+            "approve", "create", "record", "odoo", "bayaan",
+        )
+        if plan.get("intent") == "executive-summary" and not any(term in text for term in operational_terms):
+            return "conversation"
+        return "analysis"
+
+    def _ai_compact_report_pack(self, query, payload):
+        bootstrap = self.chain_bootstrap()
+        summary = bootstrap.get("summary", {})
+        today = bootstrap.get("today", {})
+        source_counts = summary.get("sourceCounts", {})
+        rows = {
+            "orders": (today.get("orders") or [])[:80],
+            "payments": (today.get("payments") or [])[:80],
+            "sales": (today.get("sales") or [])[:80],
+            "consumption": (today.get("consumption") or [])[:80],
+            "waste": (today.get("waste") or [])[:80],
+            "closings": (bootstrap.get("closings") or [])[:80],
+            "stock": (bootstrap.get("kiosk_stock_rows") or [])[:120],
+            "transfers": (bootstrap.get("transfers") or [])[:50],
+            "suggestedTransfers": (bootstrap.get("suggested_transfers") or [])[:25],
+            "products": (bootstrap.get("products") or [])[:80],
+            "recipes": (bootstrap.get("recipes") or [])[:60],
+            "purchaseOrders": (bootstrap.get("purchase_orders") or [])[:50],
+            "staff": ((bootstrap.get("hr") or {}).get("employees") or [])[:80],
+        }
+        row_sources = {
+            "bayaan.kiosk": bootstrap.get("kiosks") or [],
+            "pos.order": rows["orders"],
+            "pos.payment": rows["payments"],
+            "bayaan.consumption.ledger": rows["consumption"],
+            "bayaan.waste.entry": rows["waste"],
+            "bayaan.shift.close": rows["closings"],
+            "bayaan.shift.close.line": [
+                line
+                for close in rows["closings"]
+                for line in close.get("stock", []) or []
+            ],
+            "stock.quant": rows["stock"],
+            "stock.location": bootstrap.get("kiosks") or [],
+            "stock.picking": rows["transfers"],
+            "product.template": rows["products"],
+            "bayaan.recipe": rows["recipes"],
+            "purchase.order": rows["purchaseOrders"],
+            "hr.employee": rows["staff"],
+            "hr.attendance": (bootstrap.get("hr") or {}).get("attendance") or [],
+        }
+        source_models = {
+            "bayaan.kiosk": source_counts.get("kiosks", len(bootstrap.get("kiosks") or [])),
+            "pos.order": source_counts.get("orders", len(rows["orders"])),
+            "pos.payment": source_counts.get("payments", len(rows["payments"])),
+            "bayaan.consumption.ledger": source_counts.get("consumptionRows", len(rows["consumption"])),
+            "bayaan.waste.entry": source_counts.get("wasteRows", len(rows["waste"])),
+            "bayaan.shift.close": source_counts.get("closingRows", len(rows["closings"])),
+            "bayaan.shift.close.line": len(row_sources["bayaan.shift.close.line"]),
+            "stock.quant": source_counts.get("stockRows", len(rows["stock"])),
+            "stock.location": len(row_sources["stock.location"]),
+            "stock.picking": source_counts.get("transferRows", len(rows["transfers"])),
+            "product.template": source_counts.get("products", len(rows["products"])),
+            "bayaan.recipe": source_counts.get("recipes", len(rows["recipes"])),
+            "purchase.order": source_counts.get("purchaseOrders", len(rows["purchaseOrders"])),
+            "hr.employee": source_counts.get("hrEmployeeRows", len(rows["staff"])),
+            "hr.attendance": source_counts.get("hrAttendanceRows", len(row_sources["hr.attendance"])),
+            "pos.session": source_counts.get("orders", len(rows["orders"])),
+            "account.move": source_counts.get("accountMoveRows", 0),
+            "report.pack": 1 if summary.get("reportPeriods") else 0,
+        }
+        source_evidence = [{
+            "model": model,
+            "rowCount": int(count or 0),
+            "filter": "company/current user scope, %s" % self._ai_scope(query, payload).get("timeRange", "today"),
+            "generatedAt": (bootstrap.get("meta") or {}).get("generated_at") or fields.Datetime.to_string(fields.Datetime.now()),
+            "sampleRefs": self._ai_source_sample_refs(row_sources.get(model, [])),
+        } for model, count in source_models.items()]
+        return {
+            "engine": "odoo_pos",
+            "query": query,
+            "scope": self._ai_scope(query, payload),
+            "generatedAt": (bootstrap.get("meta") or {}).get("generated_at") or fields.Datetime.to_string(fields.Datetime.now()),
+            "limits": {
+                "orders": 80,
+                "payments": 80,
+                "stock": 120,
+                "otherRows": 80,
+                "rawPosOrderPagination": False,
+            },
+            "metrics": {
+                "totals": summary.get("totals", {}),
+                "payments": summary.get("payments", {}),
+                "alerts": summary.get("alerts", {}),
+                "sourceCounts": source_counts,
+                "byKiosk": (summary.get("byKiosk") or [])[:25],
+                "reportPeriods": summary.get("reportPeriods", {}),
+            },
+            "rows": rows,
+            "sourceEvidence": source_evidence,
+        }
+
+    def _ai_source_sample_refs(self, rows):
+        refs = []
+        for row in (rows or [])[:5]:
+            if not isinstance(row, dict):
+                continue
+            for key in ("id", "name", "order", "kiosk", "kiosk_code", "item", "product", "ingredient"):
+                value = row.get(key)
+                if value not in (None, "", False):
+                    text = str(value)
+                    if text not in refs:
+                        refs.append(text)
+                    break
+        return refs
+
+    def _ai_provider_config(self):
+        ICP = request.env["ir.config_parameter"].sudo()
+        provider = (ICP.get_param("bayaan.ai.provider") or os.environ.get("BAYAAN_AI_PROVIDER") or "openai").strip().lower()
+        model = (
+            ICP.get_param("bayaan.ai.openai.model")
+            or os.environ.get("BAYAAN_AI_OPENAI_MODEL")
+            or os.environ.get("OPENAI_MODEL")
+            or "gpt-5.4-mini"
+        ).strip()
+        api_key = (
+            ICP.get_param("bayaan.ai.openai.api_key")
+            or os.environ.get("BAYAAN_OPENAI_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or ""
+        ).strip()
+        return {
+            "provider": provider,
+            "model": model,
+            "api_key": api_key,
+            "configured": bool(api_key) and provider == "openai",
+        }
+
+    def _ai_int_config(self, key, env_name, default):
+        ICP = request.env["ir.config_parameter"].sudo()
+        raw_value = ICP.get_param(key)
+        if raw_value in (None, ""):
+            raw_value = os.environ.get(env_name)
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            value = default
+        return max(0, value)
+
+    def _ai_feature_config(self):
+        ICP = request.env["ir.config_parameter"].sudo()
+        tier = (
+            ICP.get_param("bayaan.ai.feature_tier")
+            or os.environ.get("BAYAAN_AI_FEATURE_TIER")
+            or "daily-only"
+        ).strip().lower()
+        allowed_time_ranges = {
+            "alerts-only": ["today"],
+            "daily-only": ["today"],
+            "daily-weekly": ["today", "week"],
+            "full-chat": ["today", "week", "month", "custom"],
+        }
+        allowed_intents = {
+            "alerts-only": ["waste-anomaly-review", "close-review", "stock-allocation", "payment-reconciliation"],
+            "daily-only": ["executive-summary", "kiosk-diagnosis", "waste-anomaly-review", "stock-allocation", "close-review", "recipe-margin-review", "payment-reconciliation", "staff-coaching", "warehouse-topology", "catalog-lookup"],
+            "daily-weekly": ["executive-summary", "kiosk-diagnosis", "waste-anomaly-review", "stock-allocation", "close-review", "recipe-margin-review", "payment-reconciliation", "staff-coaching", "warehouse-topology", "catalog-lookup"],
+            "full-chat": ["executive-summary", "kiosk-diagnosis", "waste-anomaly-review", "stock-allocation", "close-review", "recipe-margin-review", "payment-reconciliation", "staff-coaching", "warehouse-topology", "catalog-lookup"],
+        }
+        if tier not in allowed_time_ranges:
+            tier = "daily-only"
+        return {
+            "tier": tier,
+            "allowedTimeRanges": allowed_time_ranges[tier],
+            "allowedIntents": allowed_intents[tier],
+            "tokenBudgetRequired": True,
+        }
+
+    def _ai_usage_period(self):
+        today = fields.Date.context_today(request.env.user)
+        return "%04d-%02d" % (today.year, today.month)
+
+    def _ai_usage_key(self, period=None):
+        return "bayaan.ai.usage.%s" % (period or self._ai_usage_period())
+
+    def _ai_read_usage(self, period=None):
+        ICP = request.env["ir.config_parameter"].sudo()
+        try:
+            usage = json.loads(ICP.get_param(self._ai_usage_key(period)) or "{}")
+        except ValueError:
+            usage = {}
+        return {
+            "input_tokens": int(usage.get("input_tokens") or 0),
+            "output_tokens": int(usage.get("output_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+            "requests": int(usage.get("requests") or 0),
+        }
+
+    def _ai_estimate_request_tokens(self, query, report_pack, plan):
+        packed = json.dumps({
+            "query": query,
+            "draftPlan": plan,
+            "reportPack": report_pack,
+        }, ensure_ascii=False, default=str)
+        return max(1, len(packed) // 4) + 1400
+
+    def _ai_budget_payload(self, period, monthly_budget, usage, estimated_request_tokens=0):
+        total_tokens = int((usage or {}).get("total_tokens") or 0)
+        remaining = False if monthly_budget <= 0 else max(0, monthly_budget - total_tokens)
+        status = "unlimited" if monthly_budget <= 0 else "exhausted" if remaining <= 0 else "within_budget"
+        return {
+            "period": period,
+            "monthlyTokenBudget": monthly_budget,
+            "usedTokens": total_tokens,
+            "inputTokens": int((usage or {}).get("input_tokens") or 0),
+            "outputTokens": int((usage or {}).get("output_tokens") or 0),
+            "requests": int((usage or {}).get("requests") or 0),
+            "remainingTokens": remaining,
+            "estimatedRequestTokens": estimated_request_tokens,
+            "status": status,
+        }
+
+    def _ai_budget_snapshot(self, estimated_request_tokens=0):
+        budget = self._ai_int_config("bayaan.ai.monthly_token_budget", "BAYAAN_AI_MONTHLY_TOKEN_BUDGET", 100000)
+        period = self._ai_usage_period()
+        usage = self._ai_read_usage(period)
+        return self._ai_budget_payload(period, budget, usage, estimated_request_tokens)
+
+    def _ai_record_usage(self, usage, estimated_request_tokens):
+        ICP = request.env["ir.config_parameter"].sudo()
+        period = self._ai_usage_period()
+        current = self._ai_read_usage(period)
+        input_tokens = int((usage or {}).get("input_tokens") or 0)
+        output_tokens = int((usage or {}).get("output_tokens") or 0)
+        total_tokens = int((usage or {}).get("total_tokens") or input_tokens + output_tokens or estimated_request_tokens)
+        current["input_tokens"] += input_tokens
+        current["output_tokens"] += output_tokens
+        current["total_tokens"] += total_tokens
+        current["requests"] += 1
+        ICP.set_param(self._ai_usage_key(period), json.dumps(current, sort_keys=True))
+        return self._ai_budget_snapshot()
+
+    def _ai_record_usage_from_registry(self, registry, user_id, context, period, monthly_budget, usage, estimated_request_tokens):
+        with registry.cursor() as cr:
+            env = api.Environment(cr, user_id or SUPERUSER_ID, context or {})
+            ICP = env["ir.config_parameter"].sudo()
+            try:
+                current = json.loads(ICP.get_param(self._ai_usage_key(period)) or "{}")
+            except ValueError:
+                current = {}
+            current = {
+                "input_tokens": int(current.get("input_tokens") or 0),
+                "output_tokens": int(current.get("output_tokens") or 0),
+                "total_tokens": int(current.get("total_tokens") or 0),
+                "requests": int(current.get("requests") or 0),
+            }
+            input_tokens = int((usage or {}).get("input_tokens") or 0)
+            output_tokens = int((usage or {}).get("output_tokens") or 0)
+            total_tokens = int((usage or {}).get("total_tokens") or input_tokens + output_tokens or estimated_request_tokens)
+            current["input_tokens"] += input_tokens
+            current["output_tokens"] += output_tokens
+            current["total_tokens"] += total_tokens
+            current["requests"] += 1
+            ICP.set_param(self._ai_usage_key(period), json.dumps(current, sort_keys=True))
+            cr.commit()
+            return self._ai_budget_payload(period, monthly_budget, current, estimated_request_tokens)
+
+    def _ai_provider_guard(self, query, report_pack, plan):
+        feature = self._ai_feature_config()
+        estimate = self._ai_estimate_request_tokens(query, report_pack, plan)
+        budget = self._ai_budget_snapshot(estimate)
+        answer_mode = self._ai_answer_mode(query, plan)
+        scope = plan.get("scope") or {}
+        time_range = scope.get("timeRange") or "today"
+        if time_range not in feature["allowedTimeRanges"] or plan.get("intent") not in feature["allowedIntents"]:
+            provider_config = self._ai_provider_config()
+            return {
+                "status": "tier_limited",
+                "provider": provider_config["provider"],
+                "model": provider_config["model"],
+                "plan": plan,
+                "answerMode": answer_mode,
+                "featureTier": feature,
+                "budget": budget,
+                "claims": self._ai_deterministic_claims(report_pack, plan),
+                "visualizations": [],
+                "explanation": "This tenant's AI feature tier allows %s time ranges for %s intents. Bayaan did not ask the model for an answer or visualization." % (
+                    ", ".join(feature["allowedTimeRanges"]),
+                    feature["tier"],
+                ),
+            }
+        if budget["monthlyTokenBudget"] > 0 and budget["remainingTokens"] is not False and estimate > budget["remainingTokens"]:
+            provider_config = self._ai_provider_config()
+            return {
+                "status": "budget_exhausted",
+                "provider": provider_config["provider"],
+                "model": provider_config["model"],
+                "plan": plan,
+                "answerMode": answer_mode,
+                "featureTier": feature,
+                "budget": budget,
+                "claims": self._ai_deterministic_claims(report_pack, plan),
+                "visualizations": [],
+                "explanation": "The tenant AI token budget is exhausted or too low for this request. Bayaan did not ask the model for an answer or visualization.",
+            }
+        return None
+
+    def _ai_visualization_types(self):
+        return (
+            "metric-card",
+            "metric-grid",
+            "bar-chart",
+            "pie-chart",
+            "table",
+            "rank-list",
+            "callout",
+            "timeline",
+            "proposal-list",
+        )
+
+    def _ai_openai_schema(self):
+        templates = self._ai_plan_templates()
+        component_ids = sorted({
+            component["componentId"]
+            for template in templates.values()
+            for component in template["components"]
+        })
+        data_pack_ids = sorted({
+            pack
+            for template in templates.values()
+            for pack in template["dataPacks"]
+        })
+        source_refs = sorted({
+            ref
+            for template in templates.values()
+            for ref in template["sourceRefsRequired"]
+        })
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["intent", "scope", "requiredDataPacks", "components", "sourceRefsRequired", "explanationStyle", "summary", "claims", "visualizations"],
+            "properties": {
+                "intent": {"type": "string", "enum": sorted(templates.keys())},
+                "scope": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["kioskId", "sectionId", "timeRange"],
+                    "properties": {
+                        "kioskId": {"type": "string"},
+                        "sectionId": {"type": "string"},
+                        "timeRange": {"type": "string", "enum": ["today", "week", "month", "custom"]},
+                    },
+                },
+                "requiredDataPacks": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": data_pack_ids},
+                },
+                "components": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["componentId", "size", "mode", "dataBinding", "title"],
+                        "properties": {
+                            "componentId": {"type": "string", "enum": component_ids},
+                            "size": {"type": "string", "enum": ["small", "medium", "wide", "full"]},
+                            "mode": {"type": "string", "enum": ["read-only", "proposal-only"]},
+                            "dataBinding": {"type": "string", "enum": data_pack_ids},
+                            "title": {"type": "string"},
+                        },
+                    },
+                },
+                "sourceRefsRequired": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": source_refs},
+                },
+                "explanationStyle": {"type": "string", "enum": ["brief", "diagnostic", "audit"]},
+                "summary": {"type": "string"},
+                "claims": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["text", "numericValues", "sourceRefs"],
+                        "properties": {
+                            "text": {"type": "string"},
+                            "numericValues": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["label", "value", "unit"],
+                                    "properties": {
+                                        "label": {"type": "string"},
+                                        "value": {"type": "number"},
+                                        "unit": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "sourceRefs": {
+                                "type": "array",
+                                "items": {"type": "string", "enum": source_refs},
+                            },
+                        },
+                    },
+                },
+                "visualizations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["id", "type", "title", "reason", "series", "sourceRefs"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "type": {"type": "string", "enum": list(self._ai_visualization_types())},
+                            "title": {"type": "string"},
+                            "reason": {"type": "string"},
+                            "series": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["label", "value", "unit", "category"],
+                                    "properties": {
+                                        "label": {"type": "string"},
+                                        "value": {"type": "number"},
+                                        "unit": {"type": "string"},
+                                        "category": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "sourceRefs": {
+                                "type": "array",
+                                "items": {"type": "string", "enum": source_refs},
+                            },
+                        },
+                    },
+                },
+            },
+        }
+
+    def _ai_openai_stream_schema(self):
+        schema = dict(self._ai_openai_schema())
+        properties = schema.get("properties") or {}
+        ordered_properties = {}
+        if "summary" in properties:
+            ordered_properties["summary"] = properties["summary"]
+        for key, value in properties.items():
+            if key != "summary":
+                ordered_properties[key] = value
+        required = schema.get("required") or []
+        schema["required"] = ["summary"] + [key for key in required if key != "summary"]
+        schema["properties"] = ordered_properties
+        return schema
+
+    def _ai_deterministic_claims(self, report_pack, plan):
+        metrics = report_pack.get("metrics") or {}
+        totals = metrics.get("totals") or {}
+        alerts = metrics.get("alerts") or {}
+        source_refs = set(plan.get("sourceRefsRequired") or [])
+        claims = []
+
+        def append(text, label, value, unit, refs):
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                return
+            allowed_refs = [ref for ref in refs if ref in source_refs or ref == "report.pack"]
+            if not allowed_refs:
+                return
+            claims.append({
+                "text": text,
+                "numericValues": [{
+                    "label": label,
+                    "value": numeric_value,
+                    "unit": unit,
+                }],
+                "sourceRefs": allowed_refs,
+            })
+
+        append(
+            "Sales today comes from the compact Bayaan/Odoo report pack.",
+            "salesToday",
+            totals.get("salesToday"),
+            "currency",
+            ["pos.order", "report.pack"],
+        )
+        append(
+            "Order count is sourced from official POS orders.",
+            "ordersToday",
+            totals.get("ordersToday"),
+            "orders",
+            ["pos.order"],
+        )
+        append(
+            "Unresolved variance alerts come from close and recipe posting evidence.",
+            "unresolvedVariances",
+            alerts.get("unresolvedVariances"),
+            "alerts",
+            ["bayaan.shift.close", "bayaan.consumption.ledger"],
+        )
+        append(
+            "Low stock alerts come from scoped stock quant evidence.",
+            "lowStockItems",
+            alerts.get("lowStockItems"),
+            "items",
+            ["stock.quant"],
+        )
+        if not claims:
+            evidence_count = sum(int(ref.get("rowCount") or 0) for ref in report_pack.get("sourceEvidence") or [])
+            append(
+                "The AI report pack was built from deterministic source evidence rows.",
+                "sourceEvidenceRows",
+                evidence_count,
+                "rows",
+                ["report.pack"],
+            )
+        return claims[:4]
+
+    def _ai_validate_provider_claims(self, candidate_claims, report_pack, plan, fallback=True):
+        allowed_refs = {ref.get("model") for ref in report_pack.get("sourceEvidence") or []}
+        allowed_refs.update(plan.get("sourceRefsRequired") or [])
+        claims = []
+        for claim in candidate_claims or []:
+            if not isinstance(claim, dict):
+                continue
+            numeric_values = []
+            for numeric in claim.get("numericValues") or []:
+                if not isinstance(numeric, dict):
+                    continue
+                try:
+                    value = float(numeric.get("value"))
+                except (TypeError, ValueError):
+                    continue
+                numeric_values.append({
+                    "label": str(numeric.get("label") or "value")[:80],
+                    "value": value,
+                    "unit": str(numeric.get("unit") or "")[:32],
+                })
+            source_refs = [
+                str(ref)
+                for ref in claim.get("sourceRefs") or []
+                if str(ref) in allowed_refs
+            ]
+            text = str(claim.get("text") or "").strip()
+            if not text or (numeric_values and not source_refs):
+                continue
+            claims.append({
+                "text": text[:280],
+                "numericValues": numeric_values[:4],
+                "sourceRefs": source_refs[:6],
+            })
+        if claims:
+            return claims[:6]
+        return self._ai_deterministic_claims(report_pack, plan) if fallback else []
+
+    def _ai_validate_provider_visualizations(self, candidate_visualizations, report_pack):
+        allowed_refs = {
+            str(ref.get("model"))
+            for ref in report_pack.get("sourceEvidence") or []
+            if ref.get("model")
+        }
+        allowed_refs.add("report.pack")
+        allowed_types = set(self._ai_visualization_types())
+        visualizations = []
+        for candidate in candidate_visualizations or []:
+            if not isinstance(candidate, dict):
+                continue
+            visual_type = str(candidate.get("type") or "").strip()
+            if visual_type not in allowed_types:
+                continue
+            title = str(candidate.get("title") or "").strip()
+            reason = str(candidate.get("reason") or "").strip()
+            if not title:
+                continue
+            source_refs = [
+                str(ref)
+                for ref in candidate.get("sourceRefs") or []
+                if str(ref) in allowed_refs
+            ]
+            series = []
+            for item in candidate.get("series") or []:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    value = float(item.get("value"))
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(value):
+                    continue
+                series.append({
+                    "label": str(item.get("label") or "value")[:80],
+                    "value": value,
+                    "unit": str(item.get("unit") or "")[:32],
+                    "category": str(item.get("category") or "")[:48],
+                })
+            if series and not source_refs:
+                continue
+            visualizations.append({
+                "id": str(candidate.get("id") or "visual-%d" % (len(visualizations) + 1))[:80],
+                "type": visual_type,
+                "title": title[:120],
+                "reason": reason[:220],
+                "series": series[:12],
+                "sourceRefs": source_refs[:6],
+            })
+        return visualizations[:4]
+
+    def _ai_openai_output_text(self, response_json):
+        if response_json.get("output_text"):
+            return response_json["output_text"]
+        chunks = []
+        for item in response_json.get("output", []) or []:
+            if item.get("type") != "message":
+                continue
+            for content in item.get("content", []) or []:
+                if content.get("type") == "output_text":
+                    chunks.append(content.get("text", ""))
+        return "\n".join(chunk for chunk in chunks if chunk)
+
+    def _ai_openai_instructions(self, language):
+        return (
+            "You are Bayaan's live conversational AI assistant for an F&B kiosk operating system. "
+            "%s "
+            "Answer the user's actual message first, like a helpful human assistant, not like a canned dashboard scene. "
+            "For greetings, capability questions, or general non-operational questions, respond conversationally and do not force an executive operations brief unless the user asks for one. "
+            "When answerMode is conversation, do not summarize operational metrics unless the user specifically asks for them. "
+            "Official numbers come only from the supplied deterministic reportPack. "
+            "For Bayaan operational questions, ground the answer in the supplied reportPack and cite numeric claims through the claims array. "
+            "You, the model, author the visualizations array. Choose only visuals that directly help the user's question; return an empty visualizations array for greetings, capability questions, or when the reportPack does not contain enough evidence. "
+            "Every visualization series value must be copied or derived directly from reportPack metrics or rows, and every numeric visualization must include matching sourceRefs from reportPack.sourceEvidence. "
+            "The draftPlan and components are compatibility hints only; do not force a dashboard template when the user's question needs a different focused chart, table, ranking, or no visual at all. "
+            "Return ONLY valid JSON. Do not create, approve, update, delete, or execute actions. "
+            "If the user asks you to execute a business action, explain what you can prepare or inspect, but keep action-looking items in proposal-only mode. "
+            "Do not make numeric claims unless they are traceable to reportPack.metrics, reportPack.rows, or reportPack.sourceEvidence. "
+            "Keep action-looking items in proposal-only mode."
+        ) % language["systemInstruction"]
+
+    def _ai_openai_body(self, query, report_pack, plan, language, answer_mode, stream=False, model=None):
+        body = {
+            "model": model or self._ai_provider_config()["model"],
+            "instructions": self._ai_openai_instructions(language),
+            "input": json.dumps({
+                "query": query,
+                "locale": language["locale"],
+                "responseLanguage": language["language"],
+                "answerMode": answer_mode,
+                "draftPlan": plan,
+                "reportPack": report_pack,
+                "outputContract": {
+                    "intent": "string",
+                    "scope": "object",
+                    "requiredDataPacks": "array",
+                    "components": "array",
+                    "sourceRefsRequired": "array",
+                    "explanationStyle": "brief|diagnostic|audit",
+                    "claims": "array of numeric claims, each with sourceRefs from reportPack.sourceEvidence",
+                    "visualizations": "model-authored array of focused visuals: metric-card, metric-grid, bar-chart, pie-chart, table, rank-list, callout, timeline, or proposal-list. Use empty array when no visual is useful or supported by source evidence.",
+                    "summary": "natural assistant response in responseLanguage; for operations, ground it in sourceEvidence",
+                },
+            }, ensure_ascii=False, default=str),
+            "max_output_tokens": 2400,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "bayaan_ai_dashboard_plan",
+                    "strict": True,
+                    "schema": self._ai_openai_stream_schema() if stream else self._ai_openai_schema(),
+                },
+            },
+        }
+        if stream:
+            body["stream"] = True
+        return body
+
+    def _ai_language_contract(self, locale):
+        normalized = str(locale or "en").lower()
+        if normalized.startswith("ar"):
+            return {
+                "locale": "ar",
+                "language": "Arabic",
+                "systemInstruction": (
+                    "Respond to the user in Arabic. Keep JSON keys, componentId values, source model names, "
+                    "record IDs, currency codes, and technical identifiers in English exactly as provided. "
+                    "The summary and claim text must be natural Arabic unless the user explicitly asks for another language."
+                ),
+            }
+        return {
+            "locale": "en",
+            "language": "English",
+            "systemInstruction": (
+                "Respond to the user in English. Keep JSON keys, componentId values, source model names, "
+                "record IDs, currency codes, and technical identifiers exactly as provided."
+            ),
+        }
+
+    def _ai_call_openai(self, query, report_pack, plan, locale="en"):
+        guard_result = self._ai_provider_guard(query, report_pack, plan)
+        if guard_result:
+            return guard_result
+        config = self._ai_provider_config()
+        feature = self._ai_feature_config()
+        estimate = self._ai_estimate_request_tokens(query, report_pack, plan)
+        budget = self._ai_budget_snapshot(estimate)
+        answer_mode = self._ai_answer_mode(query, plan)
+        language = self._ai_language_contract(locale)
+        if not config["configured"]:
+            return {
+                "status": "missing_credentials",
+                "provider": config["provider"],
+                "model": config["model"],
+                "plan": plan,
+                "answerMode": answer_mode,
+                "locale": language["locale"],
+                "featureTier": feature,
+                "budget": budget,
+                "claims": self._ai_deterministic_claims(report_pack, plan),
+                "visualizations": [],
+                "explanation": "Server-side AI provider credentials are not configured. The backend built a source-backed report pack, but no LLM-authored answer or visualization was made.",
+            }
+        body = self._ai_openai_body(query, report_pack, plan, language, answer_mode, model=config["model"])
+        response = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": "Bearer %s" % config["api_key"],
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+        text = self._ai_openai_output_text(data)
+        parsed = json.loads(text)
+        merged_plan = self._ai_validate_provider_plan(parsed, plan)
+        claims = self._ai_validate_provider_claims(parsed.get("claims"), report_pack, merged_plan, fallback=answer_mode != "conversation")
+        visualizations = self._ai_validate_provider_visualizations(parsed.get("visualizations"), report_pack)
+        final_budget = self._ai_record_usage(data.get("usage", {}), estimate)
+        return {
+            "status": "llm_called",
+            "provider": config["provider"],
+            "model": config["model"],
+            "responseId": data.get("id"),
+            "requestId": response.headers.get("x-request-id"),
+            "usage": data.get("usage", {}),
+            "plan": merged_plan,
+            "answerMode": answer_mode,
+            "locale": language["locale"],
+            "featureTier": feature,
+            "budget": final_budget,
+            "claims": claims,
+            "visualizations": visualizations,
+            "explanation": parsed.get("summary") or parsed.get("explanation") or "",
+        }
+
+    def _ai_validate_provider_plan(self, candidate, fallback_plan):
+        if not isinstance(candidate, dict):
+            return fallback_plan
+        templates = self._ai_plan_templates()
+        intent = candidate.get("intent") if candidate.get("intent") in templates else fallback_plan["intent"]
+        template = templates[intent]
+        allowed_components = {component["componentId"] for component in template["components"]}
+        components = []
+        for component in candidate.get("components") or []:
+            if not isinstance(component, dict):
+                continue
+            if component.get("componentId") not in allowed_components:
+                continue
+            if component.get("mode") == "human-action":
+                continue
+            data_binding = component.get("dataBinding")
+            if data_binding not in template["dataPacks"]:
+                data_binding = template["dataPacks"][0]
+            components.append({
+                "componentId": component.get("componentId"),
+                "size": component.get("size") if component.get("size") in ("small", "medium", "wide", "full") else "wide",
+                "mode": component.get("mode") if component.get("mode") in ("read-only", "proposal-only") else "read-only",
+                "dataBinding": data_binding,
+                "title": str(component.get("title") or "")[:120],
+            })
+        scope = dict(fallback_plan["scope"])
+        candidate_scope = candidate.get("scope")
+        if isinstance(candidate_scope, dict):
+            if candidate_scope.get("timeRange") in ("today", "week", "month", "custom"):
+                scope["timeRange"] = candidate_scope.get("timeRange")
+            if candidate_scope.get("sectionId"):
+                scope["sectionId"] = str(candidate_scope.get("sectionId"))[:64]
+            if candidate_scope.get("kioskId"):
+                scope["kioskId"] = str(candidate_scope.get("kioskId"))[:64]
+        return {
+            "intent": intent,
+            "query": fallback_plan["query"],
+            "scope": scope,
+            "requiredDataPacks": template["dataPacks"],
+            "components": components or template["components"],
+            "sourceRefsRequired": template["sourceRefsRequired"],
+            "explanationStyle": candidate.get("explanationStyle") if candidate.get("explanationStyle") in ("brief", "diagnostic", "audit") else template["explanationStyle"],
+        }
+
+    def _ai_dashboard_response(self, query, locale, plan, report_pack, provider_result, audit=True, event_name="ai_dashboard_plan"):
+        if audit:
+            self._audit_event(
+                "ai",
+                event_name,
+                "AI dashboard insight requested",
+                detail=query[:240],
+                severity="info",
+                payload={
+                    "query": query,
+                    "provider": provider_result.get("provider"),
+                    "model": provider_result.get("model"),
+                    "status": provider_result.get("status"),
+                    "answerMode": provider_result.get("answerMode"),
+                    "intent": provider_result.get("plan", plan).get("intent"),
+                    "featureTier": (provider_result.get("featureTier") or {}).get("tier"),
+                    "budgetPeriod": (provider_result.get("budget") or {}).get("period"),
+                    "claimCount": len(provider_result.get("claims") or []),
+                },
+            )
+        return {
+            "engine": "odoo_pos",
+            "readonly": True,
+            "query": query,
+            "locale": provider_result.get("locale") or self._ai_language_contract(locale)["locale"],
+            "plan": provider_result.get("plan", plan),
+            "answerMode": provider_result.get("answerMode") or self._ai_answer_mode(query, provider_result.get("plan", plan)),
+            "explanation": provider_result.get("explanation") or "",
+            "llm": {
+                "status": provider_result.get("status"),
+                "provider": provider_result.get("provider"),
+                "model": provider_result.get("model"),
+                "responseId": provider_result.get("responseId"),
+                "requestId": provider_result.get("requestId"),
+                "usage": provider_result.get("usage", {}),
+                "error": provider_result.get("error", ""),
+            },
+            "featureTier": provider_result.get("featureTier") or self._ai_feature_config(),
+            "budget": provider_result.get("budget") or self._ai_budget_snapshot(),
+            "claims": provider_result["claims"] if "claims" in provider_result else self._ai_deterministic_claims(report_pack, provider_result.get("plan", plan)),
+            "visualizations": provider_result.get("visualizations") or [],
+            "reportPack": report_pack,
+            "sourceEvidence": report_pack["sourceEvidence"],
+        }
+
+    def _ai_sse(self, event, payload):
+        message = (
+            "event: %s\n"
+            "data: %s\n\n"
+        ) % (event, json.dumps(payload, ensure_ascii=False, default=str))
+        return message.encode("utf-8")
+
+    def _ai_json_string_field_delta(self, json_text, field, emitted_length):
+        marker = '"%s"' % field
+        marker_index = json_text.find(marker)
+        if marker_index < 0:
+            return "", emitted_length
+        colon_index = json_text.find(":", marker_index + len(marker))
+        if colon_index < 0:
+            return "", emitted_length
+        quote_index = json_text.find('"', colon_index + 1)
+        if quote_index < 0:
+            return "", emitted_length
+        decoded = []
+        index = quote_index + 1
+        escape_map = {
+            '"': '"',
+            "\\": "\\",
+            "/": "/",
+            "b": "\b",
+            "f": "\f",
+            "n": "\n",
+            "r": "\r",
+            "t": "\t",
+        }
+        while index < len(json_text):
+            char = json_text[index]
+            if char == '"':
+                break
+            if char == "\\":
+                index += 1
+                if index >= len(json_text):
+                    break
+                escaped = json_text[index]
+                if escaped == "u":
+                    sequence = json_text[index + 1:index + 5]
+                    if len(sequence) < 4:
+                        break
+                    try:
+                        decoded.append(chr(int(sequence, 16)))
+                    except ValueError:
+                        decoded.append("\\u%s" % sequence)
+                    index += 5
+                    continue
+                decoded.append(escape_map.get(escaped, escaped))
+                index += 1
+                continue
+            decoded.append(char)
+            index += 1
+        summary = "".join(decoded)
+        if len(summary) <= emitted_length:
+            return "", emitted_length
+        return summary[emitted_length:], len(summary)
+
+    def _ai_provider_error_result(self, query, locale, plan, report_pack, error, provider_config=None, feature=None, budget=None, claims=None):
+        provider_config = provider_config or self._ai_provider_config()
+        return {
+            "status": "provider_error",
+            "provider": provider_config["provider"],
+            "model": provider_config["model"],
+            "plan": plan,
+            "answerMode": self._ai_answer_mode(query, plan),
+            "locale": self._ai_language_contract(locale)["locale"],
+            "featureTier": feature or self._ai_feature_config(),
+            "budget": budget or self._ai_budget_snapshot(),
+            "claims": claims if claims is not None else self._ai_deterministic_claims(report_pack, plan),
+            "visualizations": [],
+            "error": str(error),
+            "explanation": "The server-side AI provider failed, so Bayaan did not invent an LLM-authored answer or visualization.",
+        }
+
+    def _ai_dashboard_stream_events(self, query, locale, plan, report_pack, stream_context):
+        guard_result = stream_context.get("guardResult")
+        if guard_result:
+            yield "final", self._ai_dashboard_response(query, locale, plan, report_pack, guard_result, audit=False)
+            return
+
+        config = stream_context["config"]
+        feature = stream_context["feature"]
+        estimate = stream_context["estimate"]
+        budget = stream_context["budget"]
+        answer_mode = stream_context["answerMode"]
+        language = stream_context["language"]
+        claims = stream_context["claims"]
+        if not config["configured"]:
+            provider_result = {
+                "status": "missing_credentials",
+                "provider": config["provider"],
+                "model": config["model"],
+                "plan": plan,
+                "answerMode": answer_mode,
+                "locale": language["locale"],
+                "featureTier": feature,
+                "budget": budget,
+                "claims": claims,
+                "visualizations": [],
+                "explanation": "Server-side AI provider credentials are not configured. The backend built a source-backed report pack, but no LLM-authored answer or visualization was made.",
+            }
+            yield "final", self._ai_dashboard_response(query, locale, plan, report_pack, provider_result, audit=False)
+            return
+
+        body = stream_context["body"]
+        output_text = ""
+        emitted_summary_length = 0
+        completed_response = {}
+        with requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": "Bearer %s" % config["api_key"],
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=45,
+            stream=True,
+        ) as response:
+            response.raise_for_status()
+            request_id = response.headers.get("x-request-id")
+            for line in response.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                raw = line[6:].strip()
+                if raw == "[DONE]":
+                    break
+                event = json.loads(raw)
+                event_type = event.get("type")
+                if event_type == "response.output_text.delta":
+                    output_text += event.get("delta") or ""
+                    delta, emitted_summary_length = self._ai_json_string_field_delta(output_text, "summary", emitted_summary_length)
+                    if delta:
+                        yield "text_delta", {"text": delta}
+                elif event_type == "response.completed":
+                    completed_response = event.get("response") or {}
+                elif event_type == "error":
+                    raise UserError(event.get("message") or "OpenAI stream failed.")
+
+        if not output_text and completed_response:
+            output_text = self._ai_openai_output_text(completed_response)
+        parsed = json.loads(output_text)
+        merged_plan = self._ai_validate_provider_plan(parsed, plan)
+        claims = self._ai_validate_provider_claims(parsed.get("claims"), report_pack, merged_plan, fallback=answer_mode != "conversation")
+        visualizations = self._ai_validate_provider_visualizations(parsed.get("visualizations"), report_pack)
+        usage = completed_response.get("usage", {}) if isinstance(completed_response, dict) else {}
+        try:
+            final_budget = self._ai_record_usage_from_registry(
+                stream_context["registry"],
+                stream_context["userId"],
+                stream_context["envContext"],
+                budget["period"],
+                budget["monthlyTokenBudget"],
+                usage,
+                estimate,
+            )
+        except Exception:
+            _logger.exception("Could not record Bayaan AI stream usage.")
+            final_budget = budget
+        provider_result = {
+            "status": "llm_called",
+            "provider": config["provider"],
+            "model": config["model"],
+            "responseId": completed_response.get("id") if isinstance(completed_response, dict) else None,
+            "requestId": request_id,
+            "usage": usage,
+            "plan": merged_plan,
+            "answerMode": answer_mode,
+            "locale": language["locale"],
+            "featureTier": feature,
+            "budget": final_budget,
+            "claims": claims,
+            "visualizations": visualizations,
+            "explanation": parsed.get("summary") or parsed.get("explanation") or "",
+        }
+        yield "final", self._ai_dashboard_response(query, locale, plan, report_pack, provider_result, audit=False)
+
+    @http.route("/bayaan/api/ai_dashboard_plan", type="jsonrpc", auth="user")
+    def ai_dashboard_plan(self, **kwargs):
+        self._require_chain_read_scope("use AI dashboard insights")
+        payload = self._payload(kwargs)
+        query = (payload.get("query") or payload.get("question") or "").strip()
+        if not query:
+            raise UserError("AI dashboard query is required.")
+        locale = payload.get("locale") or payload.get("lang") or "en"
+        plan = self._ai_template_plan(query, payload)
+        report_pack = self._ai_compact_report_pack(query, payload)
+        try:
+            provider_result = self._ai_call_openai(query, report_pack, plan, locale)
+        except Exception as error:
+            _logger.exception("Bayaan AI provider call failed.")
+            provider_result = self._ai_provider_error_result(query, locale, plan, report_pack, error)
+        return self._ai_dashboard_response(query, locale, plan, report_pack, provider_result)
+
+    @http.route("/bayaan/api/ai_dashboard_stream", type="http", auth="user", methods=["POST"], csrf=False)
+    def ai_dashboard_stream(self, **kwargs):
+        self._require_chain_read_scope("use AI dashboard insights")
+        payload = self._payload(self._http_payload())
+        query = (payload.get("query") or payload.get("question") or "").strip()
+        locale = payload.get("locale") or payload.get("lang") or "en"
+
+        def stream_error(message):
+            yield self._ai_sse("error", {"error": message})
+
+        if not query:
+            return Response(
+                stream_error("AI dashboard query is required."),
+                headers=[
+                    ("Content-Type", "text/event-stream; charset=utf-8"),
+                    ("Cache-Control", "no-cache, no-transform"),
+                ],
+                direct_passthrough=True,
+            )
+
+        plan = self._ai_template_plan(query, payload)
+        report_pack = self._ai_compact_report_pack(query, payload)
+        guard_result = self._ai_provider_guard(query, report_pack, plan)
+        config = self._ai_provider_config()
+        feature = self._ai_feature_config()
+        estimate = self._ai_estimate_request_tokens(query, report_pack, plan)
+        budget = self._ai_budget_snapshot(estimate)
+        answer_mode = self._ai_answer_mode(query, plan)
+        language = self._ai_language_contract(locale)
+        claims = self._ai_deterministic_claims(report_pack, plan)
+        stream_context = {
+            "guardResult": guard_result,
+            "config": config,
+            "feature": feature,
+            "estimate": estimate,
+            "budget": budget,
+            "answerMode": answer_mode,
+            "language": language,
+            "claims": claims,
+            "body": None if guard_result or not config["configured"] else self._ai_openai_body(
+                query,
+                report_pack,
+                plan,
+                language,
+                answer_mode,
+                stream=True,
+                model=config["model"],
+            ),
+            "registry": request.env.registry,
+            "userId": request.env.user.id,
+            "envContext": dict(request.env.context),
+        }
+        self._audit_event(
+            "ai",
+            "ai_dashboard_stream",
+            "AI dashboard insight stream requested",
+            detail=query[:240],
+            severity="info",
+            payload={
+                "query": query,
+                "provider": config.get("provider"),
+                "model": config.get("model"),
+                "status": "started",
+                "answerMode": answer_mode,
+                "intent": plan.get("intent"),
+                "featureTier": feature.get("tier"),
+                "budgetPeriod": budget.get("period"),
+                "claimCount": len(claims),
+            },
+        )
+
+        def generate():
+            yield self._ai_sse("open", {"engine": "odoo_pos", "readonly": True})
+            try:
+                for event, data in self._ai_dashboard_stream_events(query, locale, plan, report_pack, stream_context):
+                    yield self._ai_sse(event, data)
+            except Exception as error:
+                _logger.exception("Bayaan AI provider stream failed.")
+                provider_result = self._ai_provider_error_result(
+                    query,
+                    locale,
+                    plan,
+                    report_pack,
+                    error,
+                    provider_config=config,
+                    feature=feature,
+                    budget=budget,
+                    claims=claims,
+                )
+                yield self._ai_sse("final", self._ai_dashboard_response(
+                    query,
+                    locale,
+                    plan,
+                    report_pack,
+                    provider_result,
+                    audit=False,
+                ))
+
+        return Response(
+            generate(),
+            headers=[
+                ("Content-Type", "text/event-stream; charset=utf-8"),
+                ("Cache-Control", "no-cache, no-transform"),
+                ("X-Accel-Buffering", "no"),
+            ],
+            direct_passthrough=True,
+        )
+
     @http.route("/bayaan/api/auth_status", type="jsonrpc", auth="public")
     def auth_status(self, **kwargs):
         return self._role_payload()
@@ -1567,17 +3034,31 @@ class BayaanKioskApi(http.Controller):
         if employee.kiosk_id:
             self._require_kiosk_scope(employee.kiosk_id, "shift_close")
         Attendance = request.env["bayaan.attendance"].sudo()
-        attendance = Attendance.create({
-            "employee_id": employee.id,
-            "check_in": payload.get("check_in") or payload.get("checkIn") or fields.Datetime.now(),
-            "check_out": payload.get("check_out") or payload.get("checkOut"),
-            "manual_hours": self._float_value(payload.get("manual_hours") or payload.get("manualHours"), 0.0),
-            "note": payload.get("note"),
-        })
+        check_in = payload.get("check_in") or payload.get("checkIn") or fields.Datetime.now()
+        check_out = payload.get("check_out") or payload.get("checkOut")
+        manual_hours = self._float_value(payload.get("manual_hours") or payload.get("manualHours"), 0.0)
+        note = payload.get("note")
+        attendance = Attendance.search([
+            ("company_id", "=", request.env.company.id),
+            ("employee_id", "=", employee.id),
+            ("check_in", "=", check_in),
+            ("check_out", "=", check_out or False),
+            ("manual_hours", "=", manual_hours),
+            ("note", "=", note or False),
+        ], limit=1)
+        created = not bool(attendance)
+        if not attendance:
+            attendance = Attendance.create({
+                "employee_id": employee.id,
+                "check_in": check_in,
+                "check_out": check_out,
+                "manual_hours": manual_hours,
+                "note": note,
+            })
         self._audit_event(
             "hr",
-            "attendance.created",
-            "Attendance logged: %s" % employee.name,
+            "attendance.created" if created else "attendance.reused",
+            "Attendance %s: %s" % ("logged" if created else "reused", employee.name),
             "Worked hours %.2f" % attendance.worked_hours,
             record=attendance,
             kiosk=employee.kiosk_id,
@@ -1592,6 +3073,47 @@ class BayaanKioskApi(http.Controller):
             "checkOut": fields.Datetime.to_string(attendance.check_out) if attendance.check_out else False,
             "odooAttendanceId": attendance.hr_attendance_id.id,
         }
+
+    @http.route("/bayaan/api/operating_expense", type="jsonrpc", auth="user")
+    def operating_expense(self, **kwargs):
+        self._require_manager_scope("record operating expenses")
+        payload = self._payload(kwargs)
+        name = (payload.get("name") or "").strip()
+        category = (payload.get("category") or "General").strip()
+        amount = self._float_value(payload.get("amount"), 0.0)
+        expense_date = payload.get("date") or fields.Date.context_today(request.env.user)
+        note = payload.get("note")
+        if not name or amount <= 0:
+            raise UserError("Operating expense requires a name and positive amount.")
+        Expense = request.env["bayaan.operating.expense"].sudo()
+        expense = Expense.search([
+            ("company_id", "=", request.env.company.id),
+            ("name", "=", name),
+            ("category", "=", category),
+            ("amount", "=", amount),
+            ("date", "=", expense_date),
+            ("note", "=", note or False),
+        ], limit=1)
+        created = not bool(expense)
+        if not expense:
+            expense = Expense.create({
+                "name": name,
+                "category": category,
+                "amount": amount,
+                "date": expense_date,
+                "note": note,
+                "company_id": request.env.company.id,
+            })
+        self._audit_event(
+            "hr",
+            "operating_expense.created" if created else "operating_expense.reused",
+            "Operating expense %s: %s" % ("created" if created else "reused", expense.name),
+            "%s %.2f" % (expense.category, expense.amount),
+            record=expense,
+            severity="warning",
+            payload=payload,
+        )
+        return self._serialize_operating_expense(expense)
 
     @http.route("/bayaan/api/hr_schedule", type="jsonrpc", auth="user")
     def hr_schedule(self, **kwargs):
@@ -1660,6 +3182,44 @@ class BayaanKioskApi(http.Controller):
             )
             return self._serialize_hr_shift(shift)
 
+        if action in ("update_shift", "edit_shift", "reschedule_shift"):
+            shift_ref = payload.get("id") or payload.get("shift_id") or payload.get("shiftId")
+            if not shift_ref:
+                raise UserError("Shift reference is required.")
+            ShiftPlan = request.env["bayaan.shift.plan"].sudo()
+            shift = ShiftPlan.browse(int(shift_ref)) if str(shift_ref).isdigit() else ShiftPlan.browse()
+            if not shift.exists() or shift.company_id != request.env.company:
+                raise UserError("Shift not found: %s" % shift_ref)
+            employee = self._employee(payload.get("employee") or payload.get("employee_id") or payload.get("employeeId"))
+            kiosk = self._require_kiosk(payload.get("kiosk") or employee.kiosk_id.kiosk_code or shift.kiosk_id.kiosk_code)
+            role = str(payload.get("role") or employee.role or shift.role or "cashier").lower()
+            if role not in ("manager", "supervisor", "warehouse", "cashier", "barista", "accountant", "other"):
+                raise UserError("Unsupported shift role: %s" % role)
+            state = payload.get("state") or shift.state or "planned"
+            if state not in ("planned", "confirmed", "cancelled"):
+                raise UserError("Unsupported shift state: %s" % state)
+            shift.write({
+                "employee_id": employee.id,
+                "kiosk_id": kiosk.id,
+                "date": payload.get("date") or shift.date,
+                "role": role,
+                "start_hour": self._hour_value(payload.get("start_hour") or payload.get("startHour"), shift.start_hour),
+                "end_hour": self._hour_value(payload.get("end_hour") or payload.get("endHour"), shift.end_hour),
+                "state": state,
+                "note": payload.get("note"),
+            })
+            self._audit_event(
+                "hr",
+                "shift.updated",
+                "Shift updated: %s" % employee.name,
+                "%s %s %.2f-%.2f" % (kiosk.kiosk_code, shift.date, shift.start_hour, shift.end_hour),
+                record=shift,
+                kiosk=kiosk,
+                severity="info",
+                payload=payload,
+            )
+            return self._serialize_hr_shift(shift)
+
         raise UserError("Unsupported HR schedule action: %s" % action)
 
     @http.route("/bayaan/api/payroll_adjustment", type="jsonrpc", auth="user")
@@ -1674,20 +3234,34 @@ class BayaanKioskApi(http.Controller):
         amount = self._float_value(payload.get("amount"), 0.0)
         if amount <= 0:
             raise UserError("Payroll adjustment amount must be greater than zero.")
-        adjustment = request.env["bayaan.payroll.adjustment"].sudo().create({
-            "employee_id": employee.id,
-            "date": payload.get("date") or fields.Date.context_today(request.env.user),
-            "type": adjustment_type,
-            "amount": amount,
-            "reason": payload.get("reason") or "Payroll adjustment",
-        })
+        adjustment_date = payload.get("date") or fields.Date.context_today(request.env.user)
+        self._ensure_payroll_adjustment_period_open(adjustment_date)
+        reason = payload.get("reason") or "Payroll adjustment"
+        Adjustment = request.env["bayaan.payroll.adjustment"].sudo()
+        adjustment = Adjustment.search([
+            ("company_id", "=", request.env.company.id),
+            ("employee_id", "=", employee.id),
+            ("date", "=", adjustment_date),
+            ("type", "=", adjustment_type),
+            ("amount", "=", amount),
+            ("reason", "=", reason),
+        ], limit=1)
+        created = not bool(adjustment)
+        if not adjustment:
+            adjustment = Adjustment.create({
+                "employee_id": employee.id,
+                "date": adjustment_date,
+                "type": adjustment_type,
+                "amount": amount,
+                "reason": reason,
+            })
         if payload.get("approve"):
             self._require_manager_scope("approve payroll adjustments")
             adjustment.action_approve()
         self._audit_event(
             "payroll",
-            "adjustment.created",
-            "Payroll adjustment created: %s" % employee.name,
+            "adjustment.created" if created else "adjustment.reused",
+            "Payroll adjustment %s: %s" % ("created" if created else "reused", employee.name),
             "%s %.2f" % (adjustment_type, amount),
             record=adjustment,
             kiosk=employee.kiosk_id,
@@ -1705,6 +3279,7 @@ class BayaanKioskApi(http.Controller):
         )
         if not adjustment.exists() or adjustment.company_id != request.env.company:
             raise UserError("Payroll adjustment not found.")
+        self._ensure_payroll_adjustment_period_open(adjustment.date)
         action = (payload.get("action") or "").lower()
         if action in ("approve", "approved"):
             adjustment.action_approve()
@@ -1733,19 +3308,28 @@ class BayaanKioskApi(http.Controller):
         date_to = payload.get("date_to") or payload.get("dateTo")
         if not date_from or not date_to:
             raise UserError("Payroll run needs date_from and date_to.")
-        payroll_run = PayrollRun.create({
-            "name": payload.get("name") or "Payroll %s - %s" % (date_from, date_to),
-            "date_from": date_from,
-            "date_to": date_to,
-            "company_id": request.env.company.id,
-            "currency_id": request.env.company.currency_id.id,
-        })
-        if payload.get("compute", True):
+        run_name = payload.get("name") or "Payroll %s - %s" % (date_from, date_to)
+        payroll_run = PayrollRun.search([
+            ("company_id", "=", request.env.company.id),
+            ("name", "=", run_name),
+            ("date_from", "=", date_from),
+            ("date_to", "=", date_to),
+        ], limit=1)
+        created = not bool(payroll_run)
+        if not payroll_run:
+            payroll_run = PayrollRun.create({
+                "name": run_name,
+                "date_from": date_from,
+                "date_to": date_to,
+                "company_id": request.env.company.id,
+                "currency_id": request.env.company.currency_id.id,
+            })
+        if payload.get("compute", True) and payroll_run.state in ("draft", "review"):
             payroll_run.action_compute_lines()
         self._audit_event(
             "payroll",
-            "run.created",
-            "Payroll run created: %s" % payroll_run.name,
+            "run.created" if created else "run.reused",
+            "Payroll run %s: %s" % ("created" if created else "reused", payroll_run.name),
             "%s to %s" % (date_from, date_to),
             record=payroll_run,
             severity="info",
@@ -1762,7 +3346,8 @@ class BayaanKioskApi(http.Controller):
             raise UserError("Payroll run not found.")
         action = (payload.get("action") or "").lower()
         if action in ("compute", "recompute"):
-            payroll_run.action_compute_lines()
+            if payroll_run.state in ("draft", "review"):
+                payroll_run.action_compute_lines()
         elif action in ("approve", "approved"):
             payroll_run.action_approve()
         elif action in ("paid", "mark_paid"):
@@ -2008,6 +3593,7 @@ class BayaanKioskApi(http.Controller):
             "bayaan_consumption_mode": mode,
             "company_id": request.env.company.id,
         }
+        template_vals.update(self._stock_plan_payload_values(payload, include_defaults=True))
         if category:
             template_vals["categ_id"] = category.id
 
@@ -2080,6 +3666,7 @@ class BayaanKioskApi(http.Controller):
             "uom_id": uom.id,
             "uom_po_id": uom.id,
         }
+        values.update(self._stock_plan_payload_values(payload, include_defaults=not bool(product)))
         if category:
             values["categ_id"] = category.id
 
@@ -2132,12 +3719,18 @@ class BayaanKioskApi(http.Controller):
         Picking = request.env["stock.picking"].sudo()
         Partner = request.env["res.partner"].sudo()
         RecurringPurchase = request.env["bayaan.recurring.purchase"].sudo()
+        PayrollRun = request.env["bayaan.payroll.run"].sudo()
+        Attendance = request.env["bayaan.attendance"].sudo()
+        Adjustment = request.env["bayaan.payroll.adjustment"].sudo()
+        Expense = request.env["bayaan.operating.expense"].sudo()
+        Employee = request.env["bayaan.employee"].sudo()
+        can_read_chain = self._is_chain_read_user()
 
         kiosk_domain = [
             ("active", "=", True),
             ("company_id", "=", company.id),
         ]
-        if not self._is_chain_read_user():
+        if not can_read_chain:
             user = request.env.user
             kiosk_domain += [
                 "|", "|",
@@ -2203,7 +3796,7 @@ class BayaanKioskApi(http.Controller):
 
         kiosks = Kiosk.search(kiosk_domain, order="kiosk_code", limit=500)
         kiosk_location_ids = kiosks.mapped("stock_location_id").ids
-        if not self._is_chain_read_user():
+        if not can_read_chain:
             kiosk_ids = kiosks.ids or [0]
             kiosk_location_ids_for_domain = kiosk_location_ids or [0]
             pos_config_ids = kiosks.mapped("pos_config_id").ids or [0]
@@ -2222,14 +3815,35 @@ class BayaanKioskApi(http.Controller):
             ]
             closing_domain += [("kiosk_id", "in", kiosk_ids)]
             transfer_domain += [("location_dest_id", "in", kiosk_location_ids_for_domain)]
+        payroll_employee_domain = [
+            ("active", "=", True),
+            ("company_id", "=", company.id),
+        ]
+        if not can_read_chain:
+            payroll_employee_domain += [("kiosk_id", "in", kiosks.ids or [0])]
+        payroll_employees = Employee.search(payroll_employee_domain, order="name", limit=1000)
+        payroll_employee_ids = payroll_employees.ids or [0]
         quant_domain = [
             ("location_id", "in", kiosk_location_ids),
             ("quantity", "!=", 0),
         ]
 
         products = Product.search(product_domain, order="default_code,name", limit=500)
+        warehouses = request.env["stock.warehouse"].sudo().search([("company_id", "=", company.id)], order="sequence,id")
+        warehouse_stock_location_ids = warehouses.mapped("lot_stock_id").ids
         recipes = Recipe.search(recipe_domain, order="product_id, effective_from desc, id desc", limit=500)
         purchases = Purchase.search(purchase_domain, order="date_order desc, id desc", limit=200)
+        warehouse_quants = Quant.search([
+            ("location_id", "in", warehouse_stock_location_ids or [0]),
+            ("product_id", "in", products.ids or [0]),
+            ("quantity", "!=", 0),
+        ], order="location_id, product_id", limit=2000)
+        warehouse_stock_by_product = {}
+        warehouse_reserved_by_product = {}
+        for quant in warehouse_quants:
+            product_id = quant.product_id.id
+            warehouse_stock_by_product[product_id] = warehouse_stock_by_product.get(product_id, 0.0) + quant.quantity
+            warehouse_reserved_by_product[product_id] = warehouse_reserved_by_product.get(product_id, 0.0) + quant.reserved_quantity
         quants = Quant.search(quant_domain, order="location_id, product_id", limit=2000)
         consumption = Consumption.search(consumption_domain, order="consumed_at desc, id desc", limit=1000)
         waste = Waste.search(waste_domain, order="create_date desc, id desc", limit=1000)
@@ -2297,6 +3911,70 @@ class BayaanKioskApi(http.Controller):
 
         def payment_category(payment):
             return payment_category_method(payment.payment_method_id)
+
+        def first_day_next_month(date_value):
+            if date_value.month == 12:
+                return date_value.replace(year=date_value.year + 1, month=1, day=1)
+            return date_value.replace(month=date_value.month + 1, day=1)
+
+        def days_in_month(date_value):
+            return (first_day_next_month(date_value) - date_value.replace(day=1)).days
+
+        def prorated_salary_accrual(start_date, end_inclusive):
+            if end_inclusive < start_date:
+                return 0.0
+            monthly_salary_total = sum(payroll_employees.mapped("monthly_salary"))
+            if not monthly_salary_total:
+                return 0.0
+            total = 0.0
+            cursor = start_date
+            while cursor <= end_inclusive:
+                month_end = first_day_next_month(cursor) - timedelta(days=1)
+                chunk_end = min(month_end, end_inclusive)
+                chunk_days = max((chunk_end - cursor).days + 1, 0)
+                total += monthly_salary_total * (chunk_days / max(days_in_month(cursor), 1))
+                cursor = chunk_end + timedelta(days=1)
+            return total
+
+        def approved_adjustment_impact(adjustments):
+            bonus = sum(adjustments.filtered(lambda adj: adj.type == "bonus").mapped("amount"))
+            deductions = sum(adjustments.filtered(lambda adj: adj.type != "bonus").mapped("amount"))
+            return bonus - deductions
+
+        def uncovered_date_ranges(start_date, end_inclusive, covered_ranges):
+            cursor = start_date
+            uncovered = []
+            normalized_ranges = []
+            for range_start, range_end in covered_ranges:
+                clipped_start = max(range_start, start_date)
+                clipped_end = min(range_end, end_inclusive)
+                if clipped_end >= clipped_start:
+                    normalized_ranges.append((clipped_start, clipped_end))
+            for range_start, range_end in sorted(normalized_ranges):
+                if range_end < cursor:
+                    continue
+                if range_start > cursor:
+                    uncovered.append((cursor, range_start - timedelta(days=1)))
+                cursor = max(cursor, range_end + timedelta(days=1))
+                if cursor > end_inclusive:
+                    break
+            if cursor <= end_inclusive:
+                uncovered.append((cursor, end_inclusive))
+            return uncovered
+
+        def salary_accrual_for_ranges(date_ranges):
+            return sum(prorated_salary_accrual(range_start, range_end) for range_start, range_end in date_ranges)
+
+        def approved_adjustment_impact_for_ranges(base_domain, date_ranges):
+            total = 0.0
+            for range_start, range_end in date_ranges:
+                adjustments = Adjustment.search(base_domain + [
+                    ("state", "=", "approved"),
+                    ("date", ">=", range_start),
+                    ("date", "<=", range_end),
+                ])
+                total += approved_adjustment_impact(adjustments)
+            return total
 
         def payment_gateway(payment):
             return payment_gateway_method(payment.payment_method_id)
@@ -2404,6 +4082,7 @@ class BayaanKioskApi(http.Controller):
         kiosk_stock_rows = []
         for quant in quants:
             kiosk = kiosk_by_location.get(quant.location_id.id)
+            stock_plan = self._product_stock_plan(quant.product_id, quant.quantity)
             row = {
                 "kiosk": kiosk.kiosk_code if kiosk else quant.location_id.complete_name,
                 "item": quant.product_id.default_code or quant.product_id.display_name,
@@ -2412,6 +4091,13 @@ class BayaanKioskApi(http.Controller):
                 "uom": quant.product_id.uom_id.name,
                 "mode": quant.product_id.product_tmpl_id.bayaan_consumption_mode,
                 "category": quant.product_id.categ_id.display_name,
+                "target_qty": stock_plan["target_qty"],
+                "reorder_qty": stock_plan["reorder_qty"],
+                "critical_qty": stock_plan["critical_qty"],
+                "max_qty": stock_plan["max_qty"],
+                "stock_percent": stock_plan["stock_percent"],
+                "stock_status": stock_plan["status"],
+                "target_source": stock_plan["target_source"],
             }
             kiosk_stock_rows.append(row)
         kiosk_stock_grouped = {}
@@ -2455,14 +4141,18 @@ class BayaanKioskApi(http.Controller):
                 } for move in transfer.move_ids],
             })
 
+        target_low_stock_count = 0
         suggested_transfer_rows = []
         for quant in quants:
-            if quant.quantity > 5:
-                continue
+            stock_plan = self._product_stock_plan(quant.product_id, quant.quantity)
             kiosk = kiosk_by_location.get(quant.location_id.id)
+            if stock_plan["status"] in ("empty", "critical", "low"):
+                target_low_stock_count += 1
+            if stock_plan["status"] not in ("empty", "critical", "low"):
+                continue
             if not kiosk:
                 continue
-            target_qty = 10.0
+            target_qty = stock_plan["target_qty"] or max(stock_plan["reorder_qty"] * 2, quant.quantity, 1.0)
             suggested_qty = max(1.0, target_qty - quant.quantity)
             suggested_transfer_rows.append({
                 "kiosk": kiosk.kiosk_code,
@@ -2471,7 +4161,12 @@ class BayaanKioskApi(http.Controller):
                 "qty": round(suggested_qty, 2),
                 "uom": quant.product_id.uom_id.name,
                 "cover": "out" if quant.quantity <= 0 else "<1 day",
-                "reason": "below safety stock",
+                "reason": "below configured reorder target",
+                "actual_qty": quant.quantity,
+                "target_qty": stock_plan["target_qty"],
+                "reorder_qty": stock_plan["reorder_qty"],
+                "critical_qty": stock_plan["critical_qty"],
+                "stock_percent": stock_plan["stock_percent"],
             })
             if len(suggested_transfer_rows) >= 25:
                 break
@@ -2485,12 +4180,15 @@ class BayaanKioskApi(http.Controller):
         order_count = PosOrder.search_count(sale_domain)
         expected_cash_total = read_group_sum(ShiftClose, closing_domain, "expected_cash")
         cash_expected = expected_cash_total or today_payments["cash"]
+        cash_variance_total = read_group_sum(ShiftClose, closing_domain, "cash_variance")
+        stock_variance_value = read_group_sum(ShiftClose, closing_domain, "ingredient_variance_value")
+        variance_impact = cash_variance_total + stock_variance_value
         closed_kiosk_ids = {
             kiosk.id
             for kiosk, in ShiftClose._read_group(closing_domain + [("closed_at", "!=", False)], ["kiosk_id"], [])
             if kiosk
         }
-        low_stock_count = Quant.search_count(quant_domain + [("quantity", "<=", 5)])
+        low_stock_count = target_low_stock_count
         variance_issue_count = sum(1 for close in closings if close_status(close) == "issue")
         recipe_issue_count = PosOrder.search_count(
             sale_domain + [("bayaan_consumption_state", "in", ["missing_recipe", "failed"])]
@@ -2506,6 +4204,9 @@ class BayaanKioskApi(http.Controller):
         year_start = today_start.replace(month=1, day=1)
 
         def report_period_summary(start, end):
+            start_date = start.date()
+            end_date = end.date()
+            end_inclusive = end_date - timedelta(days=1)
             period_sale_domain = [
                 ("company_id", "=", company.id),
                 ("state", "in", ["paid", "done", "invoiced"]),
@@ -2533,6 +4234,35 @@ class BayaanKioskApi(http.Controller):
                 ("opened_at", ">=", start),
                 ("opened_at", "<", end),
             ]
+            period_attendance_domain = [
+                ("company_id", "=", company.id),
+                ("check_in", ">=", start),
+                ("check_in", "<", end),
+            ]
+            period_adjustment_domain = [
+                ("company_id", "=", company.id),
+                ("date", ">=", start_date),
+                ("date", "<", end_date),
+            ]
+            period_adjustment_scope_domain = [
+                ("company_id", "=", company.id),
+            ]
+            period_expense_domain = [
+                ("company_id", "=", company.id),
+                ("date", ">=", start_date),
+                ("date", "<", end_date),
+            ]
+            period_payroll_domain = [
+                ("company_id", "=", company.id),
+                ("state", "in", ["review", "approved", "paid"]),
+                ("date_from", "<=", end_inclusive),
+                ("date_to", ">=", start_date),
+            ]
+            if not can_read_chain:
+                period_attendance_domain += [("employee_id", "in", payroll_employee_ids)]
+                period_adjustment_domain += [("employee_id", "in", payroll_employee_ids)]
+                period_adjustment_scope_domain += [("employee_id", "in", payroll_employee_ids)]
+                period_payroll_domain += [("id", "=", 0)]
             period_payments = payment_split_from_groups(
                 Payment._read_group(period_payment_domain, ["payment_method_id"], ["amount:sum"])
             )
@@ -2540,12 +4270,42 @@ class BayaanKioskApi(http.Controller):
             period_cogs = read_group_sum(Consumption, period_consumption_domain, "total_cost")
             period_waste = read_group_sum(Waste, period_waste_domain, "estimated_cost")
             period_cash_expected = read_group_sum(ShiftClose, period_closing_domain, "expected_cash") or period_payments["cash"]
+            period_cash_variance = read_group_sum(ShiftClose, period_closing_domain, "cash_variance")
+            period_stock_variance = read_group_sum(ShiftClose, period_closing_domain, "ingredient_variance_value")
+            period_variance_impact = period_cash_variance + period_stock_variance
+            period_expenses = read_group_sum(Expense, period_expense_domain, "amount")
+            payroll_runs = PayrollRun.search(period_payroll_domain)
+            period_payroll = 0.0
+            payroll_covered_ranges = []
+            for payroll_run in payroll_runs:
+                run_days = max((payroll_run.date_to - payroll_run.date_from).days + 1, 1)
+                overlap_from = max(payroll_run.date_from, start_date)
+                overlap_to = min(payroll_run.date_to, end_inclusive)
+                overlap_days = max((overlap_to - overlap_from).days + 1, 0)
+                period_payroll += payroll_run.total_net * (overlap_days / run_days)
+                if overlap_days:
+                    payroll_covered_ranges.append((overlap_from, overlap_to))
+            uncovered_payroll_ranges = uncovered_date_ranges(start_date, end_inclusive, payroll_covered_ranges)
+            if uncovered_payroll_ranges:
+                period_payroll += salary_accrual_for_ranges(uncovered_payroll_ranges)
+                period_payroll += approved_adjustment_impact_for_ranges(
+                    period_adjustment_scope_domain,
+                    uncovered_payroll_ranges,
+                )
+            period_payroll = max(period_payroll, 0.0)
+            period_net_profit = period_revenue - period_cogs - period_waste + period_variance_impact
             return {
                 "revenue": period_revenue,
                 "orders": PosOrder.search_count(period_sale_domain),
                 "cogs": period_cogs,
                 "wasteCost": period_waste,
-                "netProfit": period_revenue - period_cogs - period_waste,
+                "cashVariance": period_cash_variance,
+                "stockVarianceValue": period_stock_variance,
+                "varianceImpact": period_variance_impact,
+                "netProfit": period_net_profit,
+                "payrollExpense": period_payroll,
+                "operatingExpenses": period_expenses,
+                "netProfitAfterPayroll": period_net_profit - period_payroll - period_expenses,
                 "cashExpected": period_cash_expected,
                 "digitalPayments": period_payments["digital"],
                 "payments": period_payments,
@@ -2555,6 +4315,10 @@ class BayaanKioskApi(http.Controller):
                     "consumptionRows": Consumption.search_count(period_consumption_domain),
                     "wasteRows": Waste.search_count(period_waste_domain),
                     "closingRows": ShiftClose.search_count(period_closing_domain),
+                    "hrAttendanceRows": Attendance.search_count(period_attendance_domain),
+                    "payrollAdjustmentRows": Adjustment.search_count(period_adjustment_domain),
+                    "payrollRunRows": len(payroll_runs),
+                    "operatingExpenseRows": Expense.search_count(period_expense_domain),
                 },
             }
 
@@ -2577,6 +4341,8 @@ class BayaanKioskApi(http.Controller):
                 "stockItems": 0,
                 "lowStockItems": 0,
                 "zeroStockItems": 0,
+                "_stockHealthWeightedTotal": 0.0,
+                "_stockHealthWeight": 0.0,
                 "cashVariance": 0.0,
                 "stockVarianceLines": 0,
                 "closingStatus": "open",
@@ -2600,10 +4366,14 @@ class BayaanKioskApi(http.Controller):
             row = kiosk_summaries.get(kiosk.id if kiosk else False)
             if not row:
                 continue
+            stock_plan = self._product_stock_plan(quant.product_id, quant.quantity)
             row["stockItems"] += 1
-            if quant.quantity <= 5:
+            if stock_plan["target_qty"] > 0:
+                row["_stockHealthWeightedTotal"] += stock_plan["stock_percent"] * stock_plan["priority_weight"]
+                row["_stockHealthWeight"] += stock_plan["priority_weight"]
+            if stock_plan["status"] in ("empty", "critical", "low"):
                 row["lowStockItems"] += 1
-            if quant.quantity <= 0:
+            if stock_plan["target_qty"] > 0 and quant.quantity <= 0:
                 row["zeroStockItems"] += 1
         for entry in waste:
             row = kiosk_summaries.get(entry.kiosk_id.id)
@@ -2619,7 +4389,9 @@ class BayaanKioskApi(http.Controller):
 
         by_kiosk_summary = []
         for row in kiosk_summaries.values():
-            stock_health = max(0, 100 - row["lowStockItems"] * 12 - row["zeroStockItems"] * 24)
+            stock_weight = row.pop("_stockHealthWeight", 0.0)
+            stock_weighted_total = row.pop("_stockHealthWeightedTotal", 0.0)
+            stock_health = round(stock_weighted_total / stock_weight) if stock_weight else 0
             if row["cashVariance"] or row["stockVarianceLines"]:
                 status = "variance_issue"
             elif row["lowStockItems"]:
@@ -2637,6 +4409,8 @@ class BayaanKioskApi(http.Controller):
         hr_payroll_snapshot = self._serialize_hr_snapshot()
         hr_snapshot["adjustments"] = hr_payroll_snapshot["adjustments"]
         hr_snapshot["payrollRuns"] = hr_payroll_snapshot["payrollRuns"]
+        hr_snapshot["expenses"] = hr_payroll_snapshot["expenses"]
+        hr_snapshot["summary"]["operatingExpenses"] = hr_payroll_snapshot["summary"]["operatingExpenses"]
 
         return {
             "engine": "odoo_pos",
@@ -2660,6 +4434,7 @@ class BayaanKioskApi(http.Controller):
                     "hr_employees": 500,
                     "hr_shifts": 1000,
                     "hr_coverage_rules": 1000,
+                    "operating_expenses": 500,
                 },
                 "rows_returned": {
                     "products": len(products),
@@ -2678,15 +4453,19 @@ class BayaanKioskApi(http.Controller):
                     "hr_coverage_gaps": len(hr_snapshot["coverageGaps"]),
                     "payroll_adjustments": len(hr_snapshot["adjustments"]),
                     "payroll_runs": len(hr_snapshot["payrollRuns"]),
+                    "operating_expenses": len(hr_snapshot["expenses"]),
                 },
             },
             "summary": {
                 "totals": {
                     "salesToday": revenue_total,
                     "ordersToday": order_count,
-                    "profitEstimate": revenue_total - consumption_cost - waste_cost,
+                    "profitEstimate": revenue_total - consumption_cost - waste_cost + variance_impact,
                     "cogs": consumption_cost,
                     "wasteCost": waste_cost,
+                    "cashVariance": cash_variance_total,
+                    "stockVarianceValue": stock_variance_value,
+                    "varianceImpact": variance_impact,
                     "cashExpected": cash_expected,
                     "digitalPayments": today_payments["digital"],
                     "openKiosks": max(len(kiosks) - len(closed_kiosk_ids), 0),
@@ -2714,9 +4493,17 @@ class BayaanKioskApi(http.Controller):
                     "purchaseOrders": Purchase.search_count(purchase_domain),
                     "recurringPurchases": len(recurring_purchases),
                     "hrEmployees": len(hr_snapshot["employees"]),
+                    "hrEmployeeRows": len(hr_snapshot["employees"]),
+                    "hrShiftRows": len(hr_snapshot["shifts"]),
+                    "hrCoverageRuleRows": len(hr_snapshot["coverageRules"]),
+                    "hrAttendanceRows": len(hr_payroll_snapshot["attendance"]),
                     "hrCoverageGaps": len(hr_snapshot["coverageGaps"]),
                     "payrollAdjustments": len(hr_snapshot["adjustments"]),
+                    "payrollAdjustmentRows": len(hr_snapshot["adjustments"]),
                     "payrollRuns": len(hr_snapshot["payrollRuns"]),
+                    "payrollRunRows": len(hr_snapshot["payrollRuns"]),
+                    "operatingExpenses": len(hr_snapshot["expenses"]),
+                    "operatingExpenseRows": len(hr_snapshot["expenses"]),
                 },
                 "byKiosk": sorted(by_kiosk_summary, key=lambda row: (-row["sales"], row["kioskId"])),
             },
@@ -2735,7 +4522,8 @@ class BayaanKioskApi(http.Controller):
             } for kiosk in kiosks],
             "warehouse_stock": [{
                 "item": product.default_code or product.display_name,
-                "actual_qty": product.qty_available,
+                "actual_qty": warehouse_stock_by_product.get(product.id, 0.0),
+                "reserved_qty": warehouse_reserved_by_product.get(product.id, 0.0),
                 "uom": product.uom_id.name,
                 "mode": product.product_tmpl_id.bayaan_consumption_mode,
                 "category": product.categ_id.display_name,

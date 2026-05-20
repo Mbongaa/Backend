@@ -98,6 +98,8 @@ export function buildKioskSalePayload(input: BuildPosSaleInput): KioskSalePayloa
 
   const externalId = input.externalId ?? generateExternalId(input.kiosk);
   const postingDate = input.postingDate ?? new Date().toISOString().slice(0, 10);
+  const subtotal = input.cart.reduce((sum, line) => sum + line.price * line.qty, 0);
+  const totalRatio = subtotal > 0 && input.total > 0 ? input.total / subtotal : 1;
 
   return {
     external_id: externalId,
@@ -109,7 +111,7 @@ export function buildKioskSalePayload(input: BuildPosSaleInput): KioskSalePayloa
       product: odooProductRef(line),
       name: line.name,
       qty: line.qty,
-      price_unit: line.price,
+      price_unit: Number((line.price * totalRatio).toFixed(6)),
     })),
     payments: [
       {
@@ -123,6 +125,9 @@ export function buildKioskSalePayload(input: BuildPosSaleInput): KioskSalePayloa
 export function odooProductRef(line: Pick<CartItem, "id" | "name" | "image">): string | number {
   if (typeof line.id === "string" && line.id.toUpperCase().startsWith("MENU-")) {
     return line.id.toUpperCase();
+  }
+  if (typeof line.id === "string" && /^[A-Z0-9]+(?:-[A-Z0-9]+)+$/.test(line.id)) {
+    return line.id;
   }
   const imageCode = line.image ? ODOO_PRODUCT_CODE_BY_UI_KEY[line.image] : undefined;
   if (imageCode) return imageCode;

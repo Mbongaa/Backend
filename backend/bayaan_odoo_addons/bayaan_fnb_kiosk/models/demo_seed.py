@@ -234,6 +234,14 @@ class BayaanDemoSeed(models.AbstractModel):
             "purchase_ok": purchase_ok,
             "sale_ok": sale_ok,
         }
+        if kiosk_qty:
+            vals.update({
+                "bayaan_stock_target_qty": kiosk_qty,
+                "bayaan_stock_reorder_qty": kiosk_qty * 0.5,
+                "bayaan_stock_critical_qty": kiosk_qty * 0.2,
+                "bayaan_stock_max_qty": kiosk_qty * 1.25,
+                "bayaan_stock_priority_weight": 1.0,
+            })
         if product:
             vals.update(self._safe_uom_vals(product, uom))
             product.write(vals)
