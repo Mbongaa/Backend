@@ -24,6 +24,7 @@ import { buildAccountAllocationRows } from "./accountAllocation";
 import { createSourceOfTruthGateway } from "../services/sourceOfTruth";
 import { getDashboardComponent } from "../ai-dashboard/componentRegistry";
 import { BayaanProvider, useBayaan } from "../bayaan/BayaanProvider";
+import { printPosReceipt } from "../bayaan/receipt";
 import {
   clearCatalog,
   loadCatalog,
@@ -1102,6 +1103,12 @@ const ProductImage = ({ slug, name, size = 36, radius = 8, fill = false, useOver
   const override = useOverride && slug && catalog?.state.imagesBySlug?.[slug];
   // Reset error state when the source changes (override added or slug swapped).
   React.useEffect(() => { setErrored(false); }, [override, slug]);
+  const directSrc = typeof slug === "string" && (
+    slug.startsWith("data:image/")
+    || slug.startsWith("http://")
+    || slug.startsWith("https://")
+    || slug.startsWith("/")
+  );
   const baseStyle = fill
     ? { width: "100%", height: "100%", borderRadius: radius, background: "var(--surface-sunk)" }
     : { width: size, height: size, borderRadius: radius, flexShrink: 0, background: "var(--surface-sunk)" };
@@ -1118,7 +1125,7 @@ const ProductImage = ({ slug, name, size = 36, radius = 8, fill = false, useOver
       }}>{letter}</div>
     );
   }
-  const src = override || `/products/${slug}.webp`;
+  const src = override || (directSrc ? slug : `/products/${slug}.webp`);
   return (
     <img
       src={src}
@@ -3218,7 +3225,7 @@ const odooTransferRows = (bootstrap) => {
   const snapshot = unwrapOdoo(bootstrap);
   const rows = snapshot?.transfers || [];
   if (!rows.length) return canUseDemoFallback(bootstrap) ? MOCK.pendingTransfers : [];
-  return rows.slice(0, 12).map((transfer) => ({
+  return rows.map((transfer) => ({
     id: transfer.name || `PICK-${transfer.id}`,
     from: transfer.from || "Central Warehouse",
     to: transfer.toKioskId || transfer.to || "Kiosk",
@@ -3318,7 +3325,7 @@ const odooProductCatalogRows = (bootstrap) => {
       code: product.default_code || "",
       category: productCategoryLabel(product.category, product.consumption_mode),
       name: cleanDisplayName(product.name || product.default_code || "Product"),
-      image: slugify(product.default_code || product.name || `product-${product.id || index}`),
+      image: product.image_data_url || slugify(product.default_code || product.name || `product-${product.id || index}`),
       price: Number(product.list_price || 0),
       standardPrice: Number(product.standard_price || 0),
       sizes: ["S"],
@@ -4018,7 +4025,7 @@ const odooReportMetrics = (bootstrap, period = "Daily") => {
       digital: Number(periodSummary.digitalPayments || payments.digital || 0),
       paymentSignal: paymentMethodSignal(payments),
       paymentRows: paymentMethodRows(payments),
-      gatewayRows: paymentGatewayRows(payments, !sourceDriven),
+      gatewayRows: paymentGatewayRows(payments, true),
       sourceCounts: periodSummary.sourceCounts || {},
     };
   }
@@ -4046,7 +4053,7 @@ const odooReportMetrics = (bootstrap, period = "Daily") => {
       digital: Number(payments.digital || 0),
       paymentSignal: paymentMethodSignal(payments),
       paymentRows: paymentMethodRows(payments),
-      gatewayRows: paymentGatewayRows(payments, !sourceDriven),
+      gatewayRows: paymentGatewayRows(payments, true),
       sourceCounts: summary.sourceCounts || {},
     };
   }
@@ -4065,7 +4072,7 @@ const odooReportMetrics = (bootstrap, period = "Daily") => {
       digital: 0,
       paymentSignal: "no verified payments",
       paymentRows: paymentMethodRows(emptyPayments),
-      gatewayRows: paymentGatewayRows(emptyPayments, false),
+      gatewayRows: paymentGatewayRows(emptyPayments, true),
       sourceCounts: { orders: 0, payments: 0, consumptionRows: 0, wasteRows: 0, closingRows: 0 },
     };
   }
@@ -4106,7 +4113,7 @@ const odooReportMetrics = (bootstrap, period = "Daily") => {
     digital: payments.digital,
     paymentSignal: paymentMethodSignal(payments),
     paymentRows: paymentMethodRows(payments),
-    gatewayRows: paymentGatewayRows(payments, !sourceDriven),
+    gatewayRows: paymentGatewayRows(payments, true),
     sourceCounts: {
       orders: orders.length,
       payments: (snapshot.today?.payments || []).length,
@@ -13552,8 +13559,8 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
   const onPickFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (sourceDriven) {
-      setError("Browser image uploads are demo-only until a source media endpoint is wired.");
+    if (sourceDriven && !sourceOfTruth?.enabled) {
+      setError("Connect the source engine before uploading catalog images.");
       e.target.value = "";
       return;
     }
@@ -13561,7 +13568,16 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
     setError("");
     try {
       const dataUrl = await resizeToWebp(file, 256, 0.82);
-      catalog.setImage(draft.image, dataUrl);
+      if (sourceDriven) {
+        setDraft((current) => ({
+          ...current,
+          image: dataUrl,
+          imageBase64: dataUrl,
+          imageMimeType: "image/webp",
+        }));
+      } else {
+        catalog.setImage(draft.image, dataUrl);
+      }
     } catch (err) {
       setError(String(err?.message ?? err));
     } finally {
@@ -13587,6 +13603,8 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
         standardPrice: trimmed.standardPrice || 0,
         consumptionMode: validLines.length ? "recipe" : (trimmed.consumptionMode || "finished"),
         availableInPos: true,
+        imageBase64: trimmed.imageBase64 || (String(trimmed.image || "").startsWith("data:image/") ? trimmed.image : undefined),
+        imageMimeType: trimmed.imageMimeType,
       }));
       const productRef = saved?.product?.default_code || trimmed.code || trimmed.name;
       if (validLines.length) {
@@ -13672,8 +13690,8 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
           </div>
           <label className="btn btn-ghost" style={{ height: 30, fontSize: 12, cursor: "pointer" }}>
             <Icon name="download" size={12} style={{ transform: "rotate(180deg)" }}/>
-            {sourceDriven ? "Demo-only image upload" : uploading ? (ar ? "جارٍ الرفع…" : "Uploading…") : (ar ? "رفع صورة" : "Upload image")}
-            <input type="file" accept="image/*" onChange={onPickFile} disabled={uploading || sourceDriven}
+            {uploading ? (ar ? "جارٍ الرفع…" : "Uploading…") : sourceDriven ? "Upload source image" : (ar ? "رفع صورة" : "Upload image")}
+            <input type="file" accept="image/*" onChange={onPickFile} disabled={uploading || (sourceDriven && !sourceOfTruth?.enabled)}
               style={{ display: "none" }}/>
           </label>
           {!sourceDriven && catalog.state.imagesBySlug[draft.image] && (
@@ -17508,6 +17526,7 @@ function POSLogin({ lang, onIn }) {
   const [picked, setPicked] = useStatePOS(null);
   const [pin, setPin] = useStatePOS("");
   const [error, setError] = useStatePOS("");
+  const [busy, setBusy] = useStatePOS(false);
 
   React.useEffect(() => {
     if (!sourceEngineMissing) return;
@@ -17516,7 +17535,7 @@ function POSLogin({ lang, onIn }) {
     setError("");
   }, [sourceEngineMissing]);
 
-  const tryStartShift = () => {
+  const tryStartShift = async () => {
     if (sourceEngineMissing) {
       setError(ar ? "اربط محرك المصدر قبل فتح وردية POS." : "Connect the source engine before opening a source POS shift.");
       showToast(ar ? "محرك المصدر غير متصل" : "Source engine is not connected", "warn");
@@ -17533,11 +17552,18 @@ function POSLogin({ lang, onIn }) {
       showToast(ar ? "رمز الدخول غير صحيح" : "Incorrect PIN", "warn");
       return;
     }
-    bayaan.startShift({
+    setBusy(true);
+    const result = await bayaan.startShift({
       kioskId: bayaan.kioskId,
       cashier: picked.name,
       openingCash: sourceBackedShift ? 0 : picked.openingCash,
     });
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error);
+      showToast(result.error, "warn");
+      return;
+    }
     setError("");
     onIn();
   };
@@ -17633,8 +17659,8 @@ function POSLogin({ lang, onIn }) {
             {error && (
               <div style={{ marginTop: 10, fontSize: 12, color: "var(--crit, #C04A38)", textAlign: "center" }}>{error}</div>
             )}
-            <button onClick={tryStartShift} disabled={!sourceBackedShift && pin.length !== 4} className="btn btn-primary btn-xl" style={{ marginTop: 14, justifyContent: "center", opacity: sourceBackedShift || pin.length === 4 ? 1 : 0.4 }}>
-              {ar ? "ابدأ الوردية" : "Start shift"} <Icon name="arrowRight" size={14}/>
+            <button onClick={tryStartShift} disabled={busy || (!sourceBackedShift && pin.length !== 4)} className="btn btn-primary btn-xl" style={{ marginTop: 14, justifyContent: "center", opacity: sourceBackedShift || pin.length === 4 ? 1 : 0.4 }}>
+              {busy ? (ar ? "جارٍ الفتح..." : "Opening...") : (ar ? "ابدأ الوردية" : "Start shift")} <Icon name="arrowRight" size={14}/>
             </button>
             <div style={{ marginTop: 14, fontSize: 11.5, color: "var(--ink-3)", textAlign: "center" }}>
               {sourceBackedShift
@@ -18131,11 +18157,11 @@ function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, on
     const delayPromise = new Promise((resolve) => setTimeout(resolve, minProcessingMs));
     Promise.all([submitPromise, delayPromise]).then(([result]) => {
       if (result.ok) {
-        const externalId = result.result?.external_id || result.result?.id || null;
+        const externalId = result.externalId || result.result?.external_id || result.result?.id || null;
         setSubmitState({ status: "ok", externalId, queued: false, error: "" });
       } else if (result.queued) {
         const blocked = result.queueStatus === "blocked";
-        setSubmitState({ status: blocked ? "blocked" : "queued", externalId: null, queued: true, error: result.error });
+        setSubmitState({ status: blocked ? "blocked" : "queued", externalId: result.externalId || null, queued: true, error: result.error });
         showToast(
           ar ? `تم حفظ البيع محلياً وسيتم الإرسال عند رجوع الاتصال` : `Sale queued offline · will sync when online`,
           "warn",
@@ -18159,6 +18185,26 @@ function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, on
     const isQueued = submitState.status === "queued";
     const isBlocked = submitState.status === "blocked";
     const isOk = submitState.status === "ok";
+    const isCashPayment = tender === "cash" || cashTender?.id === tender || normalizePaymentText(tender) === "cash";
+    const handlePrintReceipt = () => {
+      const tenderOption = tenderOptions.find((option) => option.id === tender);
+      printPosReceipt({
+        id: submitState.externalId,
+        kioskId: bayaan.shift?.kioskId || bayaan.kioskId,
+        cashier: bayaan.shift?.cashier || "",
+        tender: tenderOption?.label || tender,
+        status: isBlocked ? "blocked" : isQueued ? "queued" : "recorded",
+        total,
+        cashGiven: isCashPayment && cashNum > 0 ? cashNum : null,
+        change: isCashPayment && cashNum > 0 ? change : null,
+        lines: cart.map((line) => ({
+          name: line.name,
+          size: line.size,
+          qty: line.qty,
+          price: line.price,
+        })),
+      });
+    };
     const titleAr = isError ? "فشل البيع" : isBlocked ? "محفوظ للمراجعة" : isQueued ? "تم الحفظ بانتظار الاتصال" : "تم الدفع";
     const titleEn = isError ? "Sale failed" : isBlocked ? "Saved for review" : isQueued ? "Saved offline" : "Payment complete";
     const subAr = isError
@@ -18205,7 +18251,7 @@ function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, on
               </div>
             )}
             <div className="row" style={{ gap: 8, justifyContent: "center", marginTop: 32 }}>
-              {!isError && <button className="btn btn-ghost btn-lg"><Icon name="receipt" size={14}/>{ar ? "اطبع" : "Print"}</button>}
+              {!isError && <button onClick={handlePrintReceipt} className="btn btn-ghost btn-lg"><Icon name="receipt" size={14}/>{ar ? "اطبع" : "Print"}</button>}
               {!isError && <button className="btn btn-ghost btn-lg">{ar ? "أرسل عبر SMS" : "Send SMS"}</button>}
               {isError
                 ? <button onClick={onBack} className="btn btn-primary btn-lg">{ar ? "إعادة المحاولة" : "Retry"} <Icon name="arrowRight" size={13}/></button>

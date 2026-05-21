@@ -69,6 +69,52 @@ class TestKioskSaleApi(BayaanTestBase, HttpCase):
         self.assertEqual(result.get("consumption_state"), "posted")
         self.assertEqual(len(result.get("consumption_lines") or []), 3)
 
+    def test_kiosk_sale_rejects_price_tamper_underpayment(self):
+        response = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-PRICE-TAMPER",
+            "cashier": self.env.user.name,
+            "items": [{"product": "MENU-OJ", "name": "Orange Juice", "qty": 1, "price_unit": 1.0}],
+            "payments": [{"method": "cash", "amount": 1.0}],
+        })
+        self.assertIn("error", response)
+        self.assertIn("Payment total", str(response["error"]))
+        order = self.env["pos.order"].sudo().search([("pos_reference", "=", "EXT-PRICE-TAMPER")], limit=1)
+        self.assertFalse(order, "Tampered underpayment must not create a POS order")
+
+    def test_kiosk_sale_uses_server_pricelist_when_client_price_is_stale(self):
+        pricelist = self.env["product.pricelist"].sudo().create({
+            "name": "K-TEST Branch Price",
+            "currency_id": self.company.currency_id.id,
+            "company_id": self.company.id,
+        })
+        self.env["product.pricelist.item"].sudo().create({
+            "pricelist_id": pricelist.id,
+            "applied_on": "0_product_variant",
+            "product_id": self.product_orange_juice.id,
+            "compute_price": "fixed",
+            "fixed_price": 6500.0,
+        })
+        self.pos_config.write({
+            "use_pricelist": True,
+            "pricelist_id": pricelist.id,
+            "available_pricelist_ids": [(6, 0, [pricelist.id])],
+        })
+
+        response = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-STALE-PRICE",
+            "cashier": self.env.user.name,
+            "items": [{"product": "MENU-OJ", "name": "Orange Juice", "qty": 1, "price_unit": 5500.0}],
+            "payments": [{"method": "cash", "amount": 6500.0}],
+        })
+        if "error" in response:
+            self.fail("stale client price should use server pricelist: %s" % response["error"])
+        order = self.env["pos.order"].sudo().browse(response["result"]["id"])
+        self.assertAlmostEqual(order.lines.price_unit, 6500.0)
+        self.assertAlmostEqual(order.amount_total, 6500.0)
+        self.assertEqual(order.pricelist_id, pricelist)
+
     def test_kiosk_sale_is_idempotent_on_external_id(self):
         payload = {
             "kiosk": "K-TEST",
@@ -81,6 +127,48 @@ class TestKioskSaleApi(BayaanTestBase, HttpCase):
         second = self._jsonrpc("/bayaan/api/kiosk_sale", payload)["result"]
         self.assertEqual(first["id"], second["id"], "Same external_id must return the same order")
         self.assertTrue(second.get("idempotent"), "Second call must report idempotent: true")
+
+    def test_peak_hour_report_groups_item_sales_by_hour(self):
+        self.env.ref("base.user_admin").tz = "Asia/Baghdad"
+        for external_id, posting_date, qty in (
+            ("EXT-PEAK-0815", "2026-05-20 05:15:00", 2),
+            ("EXT-PEAK-0840", "2026-05-20 05:40:00", 1),
+            ("EXT-PEAK-1510", "2026-05-20 12:10:00", 3),
+            ("EXT-PEAK-NEXTDAY", "2026-05-20 21:05:00", 4),
+        ):
+            response = self._jsonrpc("/bayaan/api/kiosk_sale", {
+                "kiosk": "K-TEST",
+                "external_id": external_id,
+                "cashier": self.env.user.name,
+                "posting_date": posting_date,
+                "items": [{
+                    "product": "MENU-OJ",
+                    "name": "Orange Juice",
+                    "qty": qty,
+                    "price_unit": 5500.0,
+                }],
+                "payments": [{"method": "cash", "amount": qty * 5500.0}],
+            })
+            if "error" in response:
+                self.fail("peak-hour seed sale errored: %s" % response["error"])
+
+        report = self._jsonrpc("/bayaan/api/peak_hour_report", {
+            "date_from": "2026-05-20",
+            "date_to": "2026-05-20",
+            "kiosk": "K-TEST",
+            "product": "MENU-OJ",
+        })
+        if "error" in report:
+            self.fail("peak_hour_report errored: %s" % report["error"])
+        rows_by_hour = {row["hour"]: row for row in report["result"]["rows"]}
+        self.assertEqual(rows_by_hour[8]["qty"], 3)
+        self.assertEqual(rows_by_hour[8]["orders"], 2)
+        self.assertEqual(rows_by_hour[8]["revenue"], 16500.0)
+        self.assertEqual(rows_by_hour[15]["qty"], 3)
+        self.assertEqual(rows_by_hour[15]["orders"], 1)
+        self.assertNotIn(0, rows_by_hour)
+        self.assertEqual(report["result"]["hourlyTotals"][0]["hour"], 8)
+        self.assertEqual(report["result"]["topProducts"][0]["product"], "MENU-OJ")
 
     def test_kiosk_sale_rejects_empty_cart(self):
         response = self._jsonrpc("/bayaan/api/kiosk_sale", {

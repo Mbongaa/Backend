@@ -52,13 +52,14 @@ async function main() {
     await nav(page, "Sales & POS");
     await expectText(page, "Source POS orders");
     const streamMode = await waitForAnyText(page, ["Stream live", "Bus fallback"], 30_000);
-    const sale = await postKioskSale(sessionId);
+    const bootstrap = await readLiveBootstrap(sessionId);
+    const saleItem = pickLiveSaleItem(bootstrap);
+    const sale = await postKioskSale(sessionId, saleItem);
     await waitForBodyIncludes(page, sale.name || sale.external_id, 30_000);
-    await waitForBodyIncludes(page, "IQD 4,000", 30_000);
+    await waitForBodyIncludes(page, formatIqd(saleItem.amount), 30_000);
     await waitForBodyIncludes(page, "paid", 30_000);
     await capture(page, "live-odoo-sales-pos", screenshots);
 
-    const bootstrap = await readLiveBootstrap(sessionId);
     const transferItem = pickLiveTransferItem(bootstrap);
 
     await nav(page, "Stock & Allocation");
@@ -68,6 +69,9 @@ async function main() {
     await dispatchStockTransfer(sessionId, transfer.name);
     await waitForBodyIncludes(page, "dispatched", 30_000);
     await capture(page, "live-odoo-stock-transfer-dispatched", screenshots);
+    await receiveStockTransfer(sessionId, transfer.name);
+    await waitForBodyIncludes(page, "received", 30_000);
+    await capture(page, "live-odoo-stock-transfer-received", screenshots);
 
     await nav(page, "Purchases & Suppliers");
     await waitForBodyIncludes(page, "Purchases & Suppliers", 10_000);
@@ -79,13 +83,13 @@ async function main() {
 
     await nav(page, "Waste & Loss");
     await waitForBodyIncludes(page, "Waste entries", 10_000);
-    const waste = await postWaste(sessionId);
+    const waste = await postWaste(sessionId, saleItem);
     await waitForBodyIncludes(page, waste.reason, 30_000);
     await waitForBodyIncludes(page, "K-04", 30_000);
     await capture(page, "live-odoo-waste-posted", screenshots);
 
     await nav(page, "Daily Close");
-    const close = await postShiftClose(sessionId, sale);
+    const close = await postShiftClose(sessionId, sale, saleItem);
     await waitForBodyIncludes(page, "Zayouna Plaza", 30_000);
     await openCloseById(page, close.id);
     await expectText(page, "Stock lines - expected vs counted");
@@ -99,8 +103,8 @@ async function main() {
     await expectText(page, "FIB");
     await capture(page, "live-odoo-reports", screenshots);
 
-    const fallbackSale = await verifyBusFallbackRealtime(context, sessionId, consoleErrors, screenshots);
-    const websocketCloseSale = await verifyWebSocketCloseFallbackRealtime(context, sessionId, consoleErrors, screenshots);
+    const fallbackSale = await verifyBusFallbackRealtime(context, sessionId, consoleErrors, screenshots, saleItem);
+    const websocketCloseSale = await verifyWebSocketCloseFallbackRealtime(context, sessionId, consoleErrors, screenshots, saleItem);
 
     if (consoleErrors.length) {
       throw new Error(`Console/request errors: ${consoleErrors.join(" | ")}`);
@@ -121,6 +125,7 @@ async function main() {
         "K-04 live kiosk",
         `realtime ${streamMode}: backend sale appeared without manual refresh`,
         "realtime stock transfer appeared without manual refresh",
+        "realtime stock transfer receive appeared without manual refresh",
         "realtime purchase receiving appeared without manual refresh",
         "realtime waste appeared without manual refresh",
         "realtime shift close appeared without manual refresh",
@@ -188,19 +193,46 @@ async function authenticateOdoo() {
   return match[1];
 }
 
-async function postKioskSale(sessionId, prefix = "SMOKE-REALTIME") {
+function pickLiveSaleItem(bootstrap) {
+  const products = Array.isArray(bootstrap?.products) ? bootstrap.products : [];
+  const eligible = (product) => product
+    && product.available_in_pos !== false
+    && product.default_code
+    && Number(product.list_price || 0) > 0;
+  const preferredCodes = ["MENU-CROISSANT-PLAIN", "MENU-ESPRESSO", "MENU-LATTE"];
+  const product = preferredCodes
+    .map((code) => products.find((row) => String(row.default_code || "").toUpperCase() === code))
+    .find(eligible)
+    || products.find(eligible);
+  if (!product) {
+    throw new Error("Live bootstrap did not include a POS product with a positive price for kiosk_sale smoke.");
+  }
+  const amount = Number(product.list_price);
+  return {
+    product: String(product.default_code),
+    name: String(product.name || product.default_code),
+    priceUnit: amount,
+    amount,
+  };
+}
+
+function formatIqd(amount) {
+  return `IQD ${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(Math.round(Number(amount || 0)))}`;
+}
+
+async function postKioskSale(sessionId, saleItem, prefix = "SMOKE-REALTIME") {
   const externalId = `${prefix}-${Date.now()}`;
   const result = await odooJsonRpc("/bayaan/api/kiosk_sale", sessionId, {
     kiosk: "K-04",
     external_id: externalId,
     cashier: odooLogin,
     items: [{
-      product: "MENU-CROISSANT",
-      name: "Croissant Plain",
+      product: saleItem.product,
+      name: saleItem.name,
       qty: 1,
-      price_unit: 4000.0,
+      price_unit: saleItem.priceUnit,
     }],
-    payments: [{ method: "cash", amount: 4000.0 }],
+    payments: [{ method: "cash", amount: saleItem.amount }],
   });
   if (!result?.name && !result?.external_id) {
     throw new Error(`kiosk_sale did not return an order reference: ${JSON.stringify(result)}`);
@@ -276,13 +308,18 @@ function pickLiveTransferItem(bootstrap) {
 }
 
 async function postStockTransfer(sessionId, item) {
+  const origin = `BAYAAN-LIVE-SMOKE-${Date.now()}`;
   const result = await odooJsonRpc("/bayaan/api/stock_transfer", sessionId, {
     kiosk: "K-04",
     item,
     qty: 1,
+    origin,
   });
   if (!result?.name) {
     throw new Error(`stock_transfer did not return a transfer reference: ${JSON.stringify(result)}`);
+  }
+  if (result.origin !== origin) {
+    throw new Error(`stock_transfer did not preserve smoke origin ${origin}: ${JSON.stringify(result)}`);
   }
   return result;
 }
@@ -294,6 +331,17 @@ async function dispatchStockTransfer(sessionId, transferName) {
   });
   if (String(result?.bayaan_state || "").toLowerCase() !== "dispatched") {
     throw new Error(`stock_transfer_action did not dispatch ${transferName}: ${JSON.stringify(result)}`);
+  }
+  return result;
+}
+
+async function receiveStockTransfer(sessionId, transferName) {
+  const result = await odooJsonRpc("/bayaan/api/stock_transfer_action", sessionId, {
+    transfer: transferName,
+    action: "receive",
+  });
+  if (String(result?.bayaan_state || "").toLowerCase() !== "received") {
+    throw new Error(`stock_transfer_action did not receive ${transferName}: ${JSON.stringify(result)}`);
   }
   return result;
 }
@@ -324,12 +372,12 @@ async function receivePurchaseOrder(sessionId, poName) {
   return result;
 }
 
-async function postWaste(sessionId) {
+async function postWaste(sessionId, saleItem) {
   const reason = `live smoke waste ${Date.now()}`;
   const result = await odooJsonRpc("/bayaan/api/waste", sessionId, {
     kiosk: "K-04",
-    item: "MENU-CROISSANT",
-    name: "Croissant Plain",
+    item: saleItem.product,
+    name: saleItem.name,
     qty: 1,
     reason,
   });
@@ -339,15 +387,16 @@ async function postWaste(sessionId) {
   return { ...result, reason };
 }
 
-async function postShiftClose(sessionId, sale) {
+async function postShiftClose(sessionId, sale, saleItem) {
+  const cashAmount = Number(sale?.amount_total || saleItem.amount || 0);
   const result = await odooJsonRpc("/bayaan/api/shift_close", sessionId, {
     kiosk: "K-04",
     opened_at: odooDateTime(new Date(Date.now() - 10 * 60 * 1000)),
-    expected_cash: 4000.0,
-    actual_cash: 4000.0,
+    expected_cash: cashAmount,
+    actual_cash: cashAmount,
     pos_invoices: [sale.name],
     stock_counts: [{
-      item: "MENU-CROISSANT-PLAIN",
+      item: saleItem.product,
       expected_qty: 0.0,
       actual_qty: 0.0,
     }],
@@ -491,7 +540,7 @@ function formatFetchCause(error) {
   return `Cause: ${parts.join(" ")}`;
 }
 
-async function verifyBusFallbackRealtime(context, sessionId, consoleErrors, screenshots) {
+async function verifyBusFallbackRealtime(context, sessionId, consoleErrors, screenshots, saleItem) {
   const page = await context.newPage();
   collectPageDiagnostics(page, consoleErrors);
   try {
@@ -502,9 +551,9 @@ async function verifyBusFallbackRealtime(context, sessionId, consoleErrors, scre
     await waitForBodyIncludes(page, "Engine synced", 20_000);
     await nav(page, "Sales & POS");
     await waitForBodyIncludes(page, "Bus fallback", 30_000);
-    const sale = await postKioskSale(sessionId, "SMOKE-BUS-FALLBACK");
+    const sale = await postKioskSale(sessionId, saleItem, "SMOKE-BUS-FALLBACK");
     await waitForBodyIncludes(page, sale.name || sale.external_id, 30_000);
-    await waitForBodyIncludes(page, "IQD 4,000", 30_000);
+    await waitForBodyIncludes(page, formatIqd(saleItem.amount), 30_000);
     await waitForBodyIncludes(page, "paid", 30_000);
     await capture(page, "live-odoo-bus-fallback-sale", screenshots);
     return sale;
@@ -513,7 +562,7 @@ async function verifyBusFallbackRealtime(context, sessionId, consoleErrors, scre
   }
 }
 
-async function verifyWebSocketCloseFallbackRealtime(context, sessionId, consoleErrors, screenshots) {
+async function verifyWebSocketCloseFallbackRealtime(context, sessionId, consoleErrors, screenshots, saleItem) {
   const page = await context.newPage();
   collectPageDiagnostics(page, consoleErrors);
   if (typeof page.routeWebSocket !== "function") {
@@ -534,9 +583,9 @@ async function verifyWebSocketCloseFallbackRealtime(context, sessionId, consoleE
     await waitForBodyIncludes(page, "Engine synced", 20_000);
     await nav(page, "Sales & POS");
     await waitForBodyIncludes(page, "Bus fallback", 30_000);
-    const sale = await postKioskSale(sessionId, "SMOKE-WS-CLOSE");
+    const sale = await postKioskSale(sessionId, saleItem, "SMOKE-WS-CLOSE");
     await waitForBodyIncludes(page, sale.name || sale.external_id, 30_000);
-    await waitForBodyIncludes(page, "IQD 4,000", 30_000);
+    await waitForBodyIncludes(page, formatIqd(saleItem.amount), 30_000);
     await waitForBodyIncludes(page, "paid", 30_000);
     await capture(page, "live-odoo-websocket-close-fallback-sale", screenshots);
     return sale;

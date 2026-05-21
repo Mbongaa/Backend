@@ -128,7 +128,8 @@ assert(productsScreen.includes("Source-backed catalog"), "Products screen must l
 assert(productsScreen.includes("/bayaan/api/product_catalog"), "Products screen must name the real product catalog route");
 assert(!productsScreen.includes("/bayaan/api/products"), "Products screen must not reference the stale /bayaan/api/products route");
 assert(productsScreen.includes("useOverride={!sourceDriven}"), "Products screen must hide browser image overrides in source-driven mode");
-assert(productsScreen.includes("Browser image uploads are demo-only"), "Product editor must block browser-only image uploads in source-driven mode");
+assert(productsScreen.includes("imageBase64: dataUrl"), "Product editor must persist source-mode image uploads through source payloads");
+assert(productsScreen.includes("Upload source image"), "Product editor must label source-driven uploads as source image uploads");
 assert(productsScreen.includes("Connect the source engine before creating live catalog rows"), "Products screen must not write local catalog rows in live-only mode without a backend");
 assert(!/function ProductCreateDialog[\s\S]*?MOCK\.inventory\.map/.test(productsScreen), "Product create dialog must not hard-code MOCK.inventory for recipe ingredients");
 assert(!/function ProductEditor[\s\S]*?MOCK\.inventory\.map/.test(productsScreen), "Product editor must not hard-code MOCK.inventory for recipe ingredients");
@@ -157,6 +158,7 @@ assert(studioInventory.includes("border-border/15"), "Stock allocation table row
 assert(studioInventory.includes("Kiosk stock needs"), "Studio inventory screen must use source-neutral kiosk stock-needs wording");
 assert(!studioInventory.includes("Kiosk live stock needs"), "Studio inventory screen must not label stock-needs rows as live");
 assert(exact.includes('normalized === "dispatched"'), "Stock transfer actions must expose a dispatched receive step");
+assert(!exact.includes("return rows.slice(0, 12).map((transfer) => ({"), "Odoo transfer rows must not cap outstanding POS/admin transfers at 12");
 assert(smoke.includes("assertStockAllocationReleaseGate"), "Smoke release gate must protect Stock & Allocation table/chart layout");
 assert(smoke.includes(".recharts-surface"), "Smoke release gate must protect the Studio/Recharts inventory health pie");
 assert(smoke.includes("stock transfer did not expose and persist the receive action"), "Smoke release gate must protect the transfer receive action");
@@ -449,6 +451,13 @@ assert(liveSmoke.includes("verifyLiveAiDashboard"), "Live Odoo smoke must prove 
 assert(liveSmoke.includes("ensureOdooReachable"), "Live Odoo smoke must preflight Odoo reachability before browser work");
 assert(liveSmoke.includes("Live Odoo smoke blocked: Odoo is not reachable"), "Live Odoo smoke must report an explicit Odoo-unreachable release blocker");
 assert(liveSmoke.includes("/bayaan/api/ai_dashboard_plan"), "Live Odoo smoke must call the live AI dashboard route");
+assert(liveSmoke.includes("receiveStockTransfer"), "Live Odoo smoke must receive its own stock transfer so the expected-transfer queue is not polluted");
+assert(liveSmoke.includes("live-odoo-stock-transfer-received"), "Live Odoo smoke must capture proof that its stock transfer was received");
+assert(liveSmoke.includes("BAYAAN-LIVE-SMOKE-"), "Live Odoo smoke stock transfers must carry a traceable origin");
+assert(liveSmoke.includes("did not preserve smoke origin"), "Live Odoo smoke must fail if the backend drops transfer origin traceability");
+assert(liveSmoke.includes("pickLiveSaleItem"), "Live Odoo smoke must derive sale item pricing from live bootstrap data");
+assert(!liveSmoke.includes('"IQD 4,000"'), "Live Odoo smoke must not hardcode stale demo sale totals");
+assert(!liveSmoke.includes('"MENU-CROISSANT"'), "Live Odoo smoke must not use ambiguous stale croissant product codes");
 assert(liveSmoke.includes('result?.llm?.status !== "llm_called"'), "Live Odoo smoke must fail unless the provider is actually called");
 assert(liveSmoke.includes("api[_-]?key|authorization|bearer"), "Live Odoo smoke must guard against provider credential leakage");
 assert(liveSmoke.includes("live-odoo-ai-insights"), "Live Odoo smoke must capture the AI Insights live proof screenshot");

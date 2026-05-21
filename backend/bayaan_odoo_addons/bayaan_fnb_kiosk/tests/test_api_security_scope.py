@@ -99,6 +99,70 @@ class TestApiSecurityScope(BayaanTestBase, HttpCase):
             self.fail("assigned cashier sale errored: %s" % response["error"])
         self.assertEqual(response["result"]["state"], "paid")
 
+    def test_cashier_cannot_apply_pos_discount(self):
+        self.authenticate("bayaan_cashier_scope", "test")
+        response = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-CASHIER-DISCOUNT",
+            "items": [{
+                "product": "MENU-OJ",
+                "name": "Orange Juice",
+                "qty": 1,
+                "price_unit": 5500.0,
+                "discount_percent": 10.0,
+                "discount_reason": "Not allowed",
+            }],
+            "payments": [{"method": "cash", "amount": 4950.0}],
+        })
+        self.assertIn("error", response)
+        self.assertIn("Only Bayaan managers", str(response["error"]))
+        order = self.env["pos.order"].sudo().search([("pos_reference", "=", "EXT-CASHIER-DISCOUNT")], limit=1)
+        self.assertFalse(order, "Cashier discount attempt must not create a POS order")
+
+    def test_manager_discount_requires_reason_and_writes_audit_event(self):
+        self.authenticate("bayaan_manager_scope", "test")
+        missing_reason = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-MANAGER-DISCOUNT-NO-REASON",
+            "items": [{
+                "product": "MENU-OJ",
+                "name": "Orange Juice",
+                "qty": 1,
+                "price_unit": 5500.0,
+                "discount_percent": 10.0,
+            }],
+            "payments": [{"method": "cash", "amount": 4950.0}],
+        })
+        self.assertIn("error", missing_reason)
+        self.assertIn("reason", str(missing_reason["error"]).lower())
+
+        response = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-MANAGER-DISCOUNT",
+            "items": [{
+                "product": "MENU-OJ",
+                "name": "Orange Juice",
+                "qty": 1,
+                "price_unit": 5500.0,
+                "discount_percent": 10.0,
+                "discount_reason": "Manager launch promo",
+            }],
+            "payments": [{"method": "cash", "amount": 4950.0}],
+        })
+        if "error" in response:
+            self.fail("manager discount sale errored: %s" % response["error"])
+        order = self.env["pos.order"].sudo().browse(response["result"]["id"])
+        self.assertAlmostEqual(order.lines.discount, 10.0)
+        self.assertAlmostEqual(order.amount_total, 4950.0)
+        event = self.env["bayaan.audit.event"].sudo().search([
+            ("action", "=", "sale.discount.approved"),
+            ("model_name", "=", "pos.order"),
+            ("res_id", "=", order.id),
+        ], limit=1)
+        self.assertTrue(event, "Manager discount must write an audit event")
+        self.assertEqual(event.actor_id, self.manager)
+        self.assertIn("Manager launch promo", event.payload_json)
+
     def test_cashier_cannot_post_sale_for_unassigned_kiosk(self):
         self.authenticate("bayaan_cashier_scope", "test")
         response = self._jsonrpc("/bayaan/api/kiosk_sale", {

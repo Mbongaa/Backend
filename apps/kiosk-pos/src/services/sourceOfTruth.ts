@@ -102,6 +102,8 @@ export type CreateStockItemPayload = {
   criticalQty?: number;
   maxQty?: number;
   priorityWeight?: number;
+  imageBase64?: string;
+  imageMimeType?: string;
 };
 
 export type ProductCatalogPayload = {
@@ -119,6 +121,8 @@ export type ProductCatalogPayload = {
   criticalQty?: number;
   maxQty?: number;
   priorityWeight?: number;
+  imageBase64?: string;
+  imageMimeType?: string;
 };
 
 export type CreateSupplierPayload = {
@@ -613,6 +617,8 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
           critical_qty: payload.criticalQty,
           max_qty: payload.maxQty,
           priority_weight: payload.priorityWeight,
+          image_base64: payload.imageBase64,
+          image_mimetype: payload.imageMimeType,
         },
       });
     },
@@ -633,6 +639,8 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
           critical_qty: payload.criticalQty,
           max_qty: payload.maxQty,
           priority_weight: payload.priorityWeight,
+          image_base64: payload.imageBase64,
+          image_mimetype: payload.imageMimeType,
         },
       });
     },

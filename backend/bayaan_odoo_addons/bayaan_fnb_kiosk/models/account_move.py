@@ -1,14 +1,47 @@
 from odoo import _, models
-from odoo.exceptions import ValidationError
+from odoo.exceptions import UserError, ValidationError
 
 
 class AccountMove(models.Model):
     _inherit = "account.move"
 
+    def _bayaan_break_glass_account_delete_allowed(self):
+        return (
+            self.env.context.get("bayaan_break_glass_account_delete")
+            and self.env.user.has_group("base.group_system")
+        )
+
+    def _bayaan_check_lock_dates_before_post(self):
+        for move in self:
+            journal = move.journal_id
+            violated_lock_dates = move.company_id._get_lock_date_violations(
+                move.date,
+                fiscalyear=True,
+                sale=journal and journal.type == "sale",
+                purchase=journal and journal.type == "purchase",
+                tax=any(move.line_ids.mapped("tax_ids")),
+                hard=True,
+            )
+            if violated_lock_dates:
+                raise UserError(_(
+                    "Bayaan policy prohibits posting journal entries prior to and inclusive of: %(lock_date_info)s."
+                ) % {
+                    "lock_date_info": self.env["res.company"]._format_lock_dates(violated_lock_dates),
+                })
+
     def _post(self, soft=True):
+        self._bayaan_check_lock_dates_before_post()
         if self.env.context.get("validate_analytic", True):
             self._bayaan_validate_branch_analytic_distribution()
         return super()._post(soft=soft)
+
+    def unlink(self):
+        if self and not self._bayaan_break_glass_account_delete_allowed():
+            raise UserError(_(
+                "Bayaan policy prohibits deleting invoices or journal entries. "
+                "Use reversal/cancellation workflows so the audit trail remains intact."
+            ))
+        return super().unlink()
 
     def _bayaan_validate_branch_analytic_distribution(self):
         missing_lines = self.env["account.move.line"]

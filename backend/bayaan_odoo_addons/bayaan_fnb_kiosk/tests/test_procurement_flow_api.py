@@ -20,6 +20,44 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
     def _qty(self, product, location):
         return self.env["stock.quant"].sudo()._get_available_quantity(product, location)
 
+    def _account(self, code, account_type):
+        account = self.env["account.account"].sudo().search([
+            ("code", "=", code),
+            ("company_ids", "in", [self.company.id]),
+        ], limit=1)
+        if account:
+            return account
+        return self.env["account.account"].sudo().create({
+            "name": code,
+            "code": code,
+            "account_type": account_type,
+            "company_ids": [(6, 0, [self.company.id])],
+        })
+
+    def _landed_cost_fifo_category(self):
+        return self.env["product.category"].sudo().create({
+            "name": "Bayaan Landed Cost FIFO",
+            "property_valuation": "real_time",
+            "property_cost_method": "fifo",
+            "property_stock_valuation_account_id": self._account("BLCVAL", "asset_current").id,
+        })
+
+    def _deliver_to_customer(self, product, qty):
+        move = self.env["stock.move"].sudo().create({
+            "product_id": product.id,
+            "location_id": self.warehouse.lot_stock_id.id,
+            "location_dest_id": self.env.ref("stock.stock_location_customers").id,
+            "product_uom": product.uom_id.id,
+            "product_uom_qty": qty,
+            "picking_type_id": self.warehouse.out_type_id.id,
+        })
+        move._action_confirm()
+        move._action_assign()
+        move._set_quantity_done(qty)
+        move.picked = True
+        move._action_done()
+        return move
+
     def _create_cashier_user(self):
         group = self.env.ref("bayaan_fnb_kiosk.group_bayaan_cashier")
         return self.env["res.users"].sudo().create({
@@ -156,6 +194,37 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
         plan_ids = {row["id"] for row in bootstrap["result"]["recurring_purchases"]}
         self.assertIn(plan["id"], plan_ids)
 
+    def test_product_catalog_persists_source_image(self):
+        image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        created = self._jsonrpc("/bayaan/api/product_catalog", {
+            "name": "Source Image Latte",
+            "code": "SRC-IMG-LATTE",
+            "category": "Hot Coffee",
+            "list_price": 7500.0,
+            "standard_price": 2500.0,
+            "consumption_mode": "recipe",
+            "available_in_pos": True,
+            "image_base64": "data:image/png;base64,%s" % image,
+        })
+        if "error" in created:
+            self.fail("product_catalog image create errored: %s" % created["error"])
+        product_row = created["result"]["product"]
+        self.assertTrue(product_row["image_128"])
+        self.assertTrue(product_row["image_data_url"].startswith("data:image/"))
+
+        product = self.env["product.product"].sudo().search([("default_code", "=", "SRC-IMG-LATTE")], limit=1)
+        self.assertTrue(product.product_tmpl_id.image_1920)
+
+        bootstrap = self._jsonrpc("/bayaan/api/chain_bootstrap", {})
+        if "error" in bootstrap:
+            self.fail("chain_bootstrap after product image errored: %s" % bootstrap["error"])
+        rows = [
+            row for row in bootstrap["result"]["products"]
+            if row["default_code"] == "SRC-IMG-LATTE"
+        ]
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["image_data_url"].startswith("data:image/"))
+
     def test_purchase_order_partial_receive_records_shortage(self):
         before = self._qty(self.ingredient_orange, self.warehouse.lot_stock_id)
         created = self._jsonrpc("/bayaan/api/purchase_order", {
@@ -191,6 +260,83 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
         self.assertAlmostEqual(discrepancies[0]["receivedQty"], 92.0)
         self.assertAlmostEqual(discrepancies[0]["shortageQty"], 8.0)
         self.assertIn("8 kg short", discrepancies[0]["note"])
+
+    def test_landed_cost_allocates_after_partial_sale(self):
+        category = self._landed_cost_fifo_category()
+        green_beans_template = self.env["product.template"].sudo().create({
+            "name": "FIFO Green Beans",
+            "default_code": "LC-BEANS",
+            "type": "consu",
+            "is_storable": True,
+            "uom_id": self.uom_kgm.id,
+            "standard_price": 10.0,
+            "categ_id": category.id,
+            "bayaan_consumption_mode": "none",
+        })
+        green_beans = green_beans_template.product_variant_id
+        customs = self.env["product.product"].sudo().create({
+            "name": "Customs Duty",
+            "default_code": "LC-CUSTOMS",
+            "type": "service",
+            "landed_cost_ok": True,
+            "split_method_landed_cost": "by_quantity",
+            "property_account_expense_id": self._account("BLCEXP", "expense").id,
+            "company_id": self.company.id,
+        })
+
+        created = self._jsonrpc("/bayaan/api/purchase_order", {
+            "supplier": "Baghdad Customs Beans",
+            "warehouse": self.warehouse.name,
+            "items": [{
+                "item": "LC-BEANS",
+                "qty": 10.0,
+                "rate": 10.0,
+            }],
+        })
+        if "error" in created:
+            self.fail("purchase_order errored: %s" % created["error"])
+        received = self._jsonrpc("/bayaan/api/purchase_order_action", {
+            "po": created["result"]["name"],
+            "action": "receive",
+        })
+        if "error" in received:
+            self.fail("purchase_order_action receive errored: %s" % received["error"])
+
+        self._deliver_to_customer(green_beans, 4.0)
+        green_beans.invalidate_recordset()
+        self.assertAlmostEqual(green_beans.qty_available, 6.0)
+        self.assertAlmostEqual(green_beans.total_value, 60.0)
+
+        landed = self._jsonrpc("/bayaan/api/landed_cost", {
+            "po": created["result"]["name"],
+            "description": "Customs invoice arrived after partial sale",
+            "costs": [{
+                "product": "LC-CUSTOMS",
+                "name": "Customs",
+                "amount": 100.0,
+                "split_method": "by_quantity",
+            }],
+        })
+        if "error" in landed:
+            self.fail("landed_cost errored: %s" % landed["error"])
+
+        result = landed["result"]
+        self.assertEqual(result["state"], "done")
+        self.assertAlmostEqual(result["amountTotal"], 100.0)
+        self.assertEqual(len(result["valuationAdjustments"]), 1)
+        self.assertAlmostEqual(result["valuationAdjustments"][0]["additionalCost"], 100.0)
+
+        green_beans.invalidate_recordset()
+        self.assertAlmostEqual(green_beans.qty_available, 6.0)
+        self.assertAlmostEqual(green_beans.total_value, 120.0)
+
+        landed_cost = self.env["stock.landed.cost"].sudo().browse(result["id"])
+        self.assertTrue(landed_cost.account_move_id)
+        self.assertEqual(landed_cost.account_move_id.state, "posted")
+        product_lines = landed_cost.account_move_id.line_ids.filtered(lambda line: line.display_type == "product")
+        self.assertTrue(product_lines)
+        self.assertTrue(all(line.analytic_distribution for line in product_lines))
+        self.assertEqual(landed_cost.cost_lines.product_id, customs)
 
     def test_stock_transfer_receive_moves_stock_from_warehouse_to_kiosk(self):
         Quant = self.env["stock.quant"].sudo()
@@ -234,6 +380,60 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
         self.assertEqual(received["result"]["state"], "done")
         self.assertAlmostEqual(self._qty(self.ingredient_orange, self.warehouse.lot_stock_id), warehouse_before - 4.0)
         self.assertAlmostEqual(self._qty(self.ingredient_orange, self.kiosk_location), kiosk_before + 4.0)
+
+    def test_stock_transfer_persists_external_origin_reference(self):
+        Quant = self.env["stock.quant"].sudo()
+        Quant._update_available_quantity(self.ingredient_orange, self.warehouse.lot_stock_id, 2.0)
+        created = self._jsonrpc("/bayaan/api/stock_transfer", {
+            "kiosk": "K-TEST",
+            "item": "ING-ORANGE",
+            "qty": 1.0,
+            "from_warehouse": self.warehouse.name,
+            "origin": "BAYAAN-LIVE-SMOKE-TRACE",
+        })
+        if "error" in created:
+            self.fail("stock_transfer errored: %s" % created["error"])
+
+        picking = self.env["stock.picking"].sudo().search([("name", "=", created["result"]["name"])], limit=1)
+        self.assertEqual(picking.origin, "BAYAAN-LIVE-SMOKE-TRACE")
+        self.assertEqual(created["result"]["origin"], "BAYAAN-LIVE-SMOKE-TRACE")
+
+    def test_chain_bootstrap_keeps_old_dispatched_transfer_visible_for_pos_receive(self):
+        Quant = self.env["stock.quant"].sudo()
+        Quant._update_available_quantity(self.ingredient_orange, self.warehouse.lot_stock_id, 10.0)
+        created = self._jsonrpc("/bayaan/api/stock_transfer", {
+            "kiosk": "K-TEST",
+            "item": "ING-ORANGE",
+            "qty": 1.0,
+            "from_warehouse": self.warehouse.name,
+        })
+        if "error" in created:
+            self.fail("stock_transfer errored: %s" % created["error"])
+        dispatched = self._jsonrpc("/bayaan/api/stock_transfer_action", {
+            "transfer": created["result"]["name"],
+            "action": "dispatch",
+        })
+        if "error" in dispatched:
+            self.fail("stock_transfer_action dispatch errored: %s" % dispatched["error"])
+
+        picking = self.env["stock.picking"].sudo().browse(dispatched["result"]["id"])
+        old_date = fields.Datetime.now() - timedelta(days=2)
+        self.env.cr.execute(
+            "UPDATE stock_picking SET scheduled_date = %s, create_date = %s WHERE id = %s",
+            (old_date, old_date, picking.id),
+        )
+        picking.invalidate_recordset()
+
+        bootstrap = self._jsonrpc("/bayaan/api/chain_bootstrap", {})
+        if "error" in bootstrap:
+            self.fail("chain_bootstrap errored: %s" % bootstrap["error"])
+        transfer_rows = bootstrap["result"]["transfers"]
+        transfer_row = next(
+            row for row in transfer_rows
+            if row["name"] == created["result"]["name"]
+        )
+        self.assertEqual(transfer_row["bayaan_state"], "dispatched")
+        self.assertEqual(transfer_row["toKioskId"], "K-TEST")
 
     def test_multiline_transfer_partial_receive_records_shortage(self):
         Quant = self.env["stock.quant"].sudo()

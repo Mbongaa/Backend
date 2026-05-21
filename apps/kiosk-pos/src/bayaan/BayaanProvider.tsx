@@ -29,8 +29,14 @@ export type ShiftSession = {
   sessionId?: number | string;
 };
 
-export type SubmitOk = { ok: true; result: unknown; queued?: false };
-export type SubmitFail = { ok: false; error: string; queued: boolean; queueStatus?: QueueEntry["status"] };
+export type SubmitOk = { ok: true; result: unknown; queued?: false; externalId?: string };
+export type SubmitFail = {
+  ok: false;
+  error: string;
+  queued: boolean;
+  queueStatus?: QueueEntry["status"];
+  externalId?: string;
+};
 export type SubmitResult = SubmitOk | SubmitFail;
 export type AuthState = BayaanAuthStatus & {
   checked: boolean;
@@ -49,7 +55,7 @@ export type BayaanContextValue = {
   kioskId: string;
   setKioskId: (id: string) => void;
   shift: ShiftSession | null;
-  startShift: (s: Omit<ShiftSession, "openedAt"> & { openedAt?: string }) => void;
+  startShift: (s: Omit<ShiftSession, "openedAt"> & { openedAt?: string }) => Promise<SubmitResult>;
   endShift: () => void;
   pending: QueueEntry[];
   pendingCount: number;
@@ -145,13 +151,13 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
   const [shift, setShift] = React.useState<ShiftSession | null>(null);
   const [pending, setPending] = React.useState<QueueEntry[]>([]);
   const [online, setOnline] = React.useState<boolean>(() => browserOnline());
+  const isLive = mode === "live" && hasBackend;
+  const sourceOnlyWithoutBackend = mode === "live" && !hasBackend;
   const [auth, setAuth] = React.useState<AuthState>(() =>
-    hasBackend
+    isLive
       ? { checked: false, busy: false, authenticated: false, user: EMPTY_AUTH_USER }
       : DEMO_AUTH,
   );
-  const isLive = mode === "live" && hasBackend;
-  const sourceOnlyWithoutBackend = mode === "live" && !hasBackend;
 
   const queueRef = React.useRef<SaleQueue | null>(null);
   if (queueRef.current === null) {
@@ -173,7 +179,7 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
 
   React.useEffect(() => {
     let alive = true;
-    if (!hasBackend) {
+    if (!isLive) {
       setAuth(DEMO_AUTH);
       return () => {
         alive = false;
@@ -206,7 +212,7 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
     return () => {
       alive = false;
     };
-  }, [gateway, hasBackend]);
+  }, [gateway, isLive]);
 
   const setMode = React.useCallback((next: BayaanMode) => {
     setModeState(next);
@@ -223,7 +229,7 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = React.useCallback<BayaanContextValue["login"]>(async (payload) => {
-    if (!hasBackend) {
+    if (!isLive) {
       setAuth(DEMO_AUTH);
       return { ok: true, result: DEMO_AUTH };
     }
@@ -245,37 +251,48 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       });
       return { ok: false, error: message, queued: false };
     }
-  }, [gateway, hasBackend, kioskId, setKioskId]);
+  }, [gateway, isLive, kioskId, setKioskId]);
 
   const logout = React.useCallback<BayaanContextValue["logout"]>(async () => {
-    if (!hasBackend) {
+    if (!isLive) {
       setAuth(DEMO_AUTH);
       return;
     }
     await gateway.logout().catch(() => undefined);
     setShift(null);
     setAuth({ checked: true, busy: false, authenticated: false, user: EMPTY_AUTH_USER });
-  }, [gateway, hasBackend]);
+  }, [gateway, isLive]);
 
-  const startShift = React.useCallback<BayaanContextValue["startShift"]>((s) => {
-    if (sourceOnlyWithoutBackend) return;
+  const startShift = React.useCallback<BayaanContextValue["startShift"]>(async (s) => {
+    if (sourceOnlyWithoutBackend) {
+      return { ok: false, error: "Connect the source engine before opening a source POS shift", queued: false };
+    }
     const next = {
       ...s,
       openedAt: s.openedAt ?? new Date().toISOString(),
     };
-    setShift(next);
-    if (!isLive) return;
-    void gateway.openSession({
-      kiosk: next.kioskId,
-      opening_cash: next.openingCash,
-    }).then((session) => {
-      if (!session.id) return;
-      setShift((current) =>
-        current && current.openedAt === next.openedAt
-          ? { ...current, sessionId: session.id }
-          : current,
-      );
-    }).catch(() => undefined);
+    if (!isLive) {
+      setShift(next);
+      return { ok: true, result: { demo: true } };
+    }
+    if (!browserOnline()) {
+      return { ok: false, error: "Network offline; opening shift requires source engine connection", queued: false };
+    }
+    try {
+      const session = await gateway.openSession({
+        kiosk: next.kioskId,
+        opening_cash: next.openingCash,
+      });
+      if (!session.id) {
+        return { ok: false, error: "Source engine did not return an open POS session", queued: false };
+      }
+      const liveShift = { ...next, sessionId: session.id };
+      setShift(liveShift);
+      return { ok: true, result: session };
+    } catch (error) {
+      setShift(null);
+      return { ok: false, error: errorMessage(error), queued: false };
+    }
   }, [gateway, isLive, sourceOnlyWithoutBackend]);
 
   const endShift = React.useCallback(() => setShift(null), []);
@@ -350,7 +367,7 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (!isLive) {
-        return { ok: true, result: { demo: true, external_id: payload.external_id } };
+        return { ok: true, result: { demo: true, external_id: payload.external_id }, externalId: payload.external_id };
       }
 
       let entry: QueueEntry;
@@ -367,13 +384,19 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (!browserOnline()) {
-        return { ok: false, error: "Network offline; sale saved locally", queued: true, queueStatus: "pending" };
+        return {
+          ok: false,
+          error: "Network offline; sale saved locally",
+          queued: true,
+          queueStatus: "pending",
+          externalId: payload.external_id,
+        };
       }
 
       try {
         const result = await gateway.submitKioskSale(payload);
         await queue.remove(entry.id);
-        return { ok: true, result };
+        return { ok: true, result, externalId: payload.external_id };
       } catch (error) {
         const retryable = shouldQueue(error);
         const updated = await queue.markFailed(entry.id, error, { retryable });
@@ -382,6 +405,7 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
           error: retryable ? errorMessage(error) : `Server rejected sale; saved for reconciliation: ${errorMessage(error)}`,
           queued: true,
           queueStatus: updated?.status ?? (retryable ? "pending" : "blocked"),
+          externalId: payload.external_id,
         };
       }
     },

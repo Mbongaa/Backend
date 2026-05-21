@@ -31,4 +31,20 @@ class StockMove(models.Model):
             return distribution
         self.ensure_one()
         kiosk = self._bayaan_kiosk_for_analytic()
-        return kiosk._bayaan_analytic_distribution() if kiosk else {}
+        if kiosk:
+            return kiosk._bayaan_analytic_distribution()
+        hq_account = self.env["bayaan.kiosk"].sudo()._bayaan_hq_analytic_account(self.company_id)
+        return {str(hq_account.id): 100.0} if hq_account else {}
+
+    def _prepare_analytic_line_values(self, account_field_values, amount, unit_amount):
+        values = super()._prepare_analytic_line_values(account_field_values, amount, unit_amount)
+        if not values.get("name"):
+            self.ensure_one()
+            values["name"] = (
+                self.reference
+                or self.description_picking
+                or self.origin
+                or self.product_id.display_name
+                or "Stock Move"
+            )
+        return values

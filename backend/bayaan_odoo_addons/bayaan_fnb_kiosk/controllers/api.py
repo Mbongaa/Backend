@@ -1,3 +1,5 @@
+import base64
+import binascii
 import json
 import logging
 import math
@@ -6,6 +8,7 @@ from datetime import datetime, time, timedelta
 from uuid import uuid4
 
 import requests
+import pytz
 
 from odoo import SUPERUSER_ID, api, fields, http
 from odoo.exceptions import UserError
@@ -18,6 +21,7 @@ from ..payment_gateways import (
     serialize_payment_gateway_catalog,
 )
 from ..models.bayaan_payment_transaction import normalize_provider_status
+from .landed_cost_service import BayaanLandedCostService
 
 
 _logger = logging.getLogger(__name__)
@@ -495,6 +499,20 @@ class BayaanKioskApi(http.Controller):
             return float(hours) + (float(minutes) / 60.0)
         return self._float_value(value, default)
 
+    def _report_datetime(self, value, default, end_of_day=False):
+        if value in (None, ""):
+            return default
+        text = str(value)
+        if len(text) <= 10 and "T" not in text and ":" not in text:
+            date_value = fields.Date.to_date(text)
+            local_dt = datetime.combine(date_value, time.min) + (timedelta(days=1) if end_of_day else timedelta())
+            try:
+                timezone = pytz.timezone(request.env.user.tz or "UTC")
+            except pytz.UnknownTimeZoneError:
+                timezone = pytz.UTC
+            return timezone.localize(local_dt).astimezone(pytz.UTC).replace(tzinfo=None)
+        return fields.Datetime.to_datetime(text)
+
     def _hr_week_window(self, payload=None):
         payload = payload or {}
         today = fields.Date.context_today(request.env.user)
@@ -526,6 +544,8 @@ class BayaanKioskApi(http.Controller):
 
     def _serialize_stock_item(self, product):
         plan = self._product_stock_plan(product, product.qty_available)
+        image = product.product_tmpl_id.image_128
+        image_base64 = image.decode() if isinstance(image, bytes) else (image or "")
         return {
             "id": product.id,
             "name": product.display_name,
@@ -535,6 +555,9 @@ class BayaanKioskApi(http.Controller):
             "uom": product.uom_id.name,
             "standard_price": product.standard_price,
             "list_price": product.lst_price,
+            "available_in_pos": product.available_in_pos,
+            "image_128": image_base64,
+            "image_data_url": "data:image/webp;base64,%s" % image_base64 if image_base64 else "",
             "consumption_mode": product.product_tmpl_id.bayaan_consumption_mode,
             "qty_available": product.qty_available,
             "target_qty": plan["target_qty"],
@@ -543,6 +566,30 @@ class BayaanKioskApi(http.Controller):
             "max_qty": plan["max_qty"],
             "stock_priority_weight": plan["priority_weight"],
         }
+
+    def _product_image_value(self, payload):
+        image = (
+            payload.get("image_1920")
+            or payload.get("image1920")
+            or payload.get("image_base64")
+            or payload.get("imageBase64")
+        )
+        if not image:
+            return False if payload.get("clear_image") or payload.get("clearImage") else None
+        if not isinstance(image, str):
+            raise UserError("Product image must be a base64 string.")
+        image = image.strip()
+        if image.startswith("data:"):
+            if "," not in image:
+                raise UserError("Product image data URL is malformed.")
+            header, image = image.split(",", 1)
+            if not header.lower().startswith("data:image/"):
+                raise UserError("Product image must be an image data URL.")
+        try:
+            base64.b64decode(image, validate=True)
+        except binascii.Error as exc:
+            raise UserError("Product image must be valid base64.") from exc
+        return image
 
     def _serialize_supplier_partner(self, partner, spend30=0.0, last_order="-"):
         return {
@@ -1264,6 +1311,7 @@ class BayaanKioskApi(http.Controller):
         return {
             "id": picking.id,
             "name": picking.name,
+            "origin": picking.origin or "",
             "state": picking.state,
             "bayaan_state": picking.bayaan_transfer_state,
             "from": picking.location_id.complete_name,
@@ -3586,7 +3634,6 @@ class BayaanKioskApi(http.Controller):
             "type": "consu",
             "is_storable": True,
             "uom_id": uom.id,
-            "uom_po_id": uom.id,
             "standard_price": self._float_value(payload.get("unit_cost") or payload.get("standard_price"), 0.0),
             "list_price": self._float_value(payload.get("list_price"), 0.0),
             "available_in_pos": bool(payload.get("available_in_pos") or payload.get("availableInPos")),
@@ -3596,6 +3643,9 @@ class BayaanKioskApi(http.Controller):
         template_vals.update(self._stock_plan_payload_values(payload, include_defaults=True))
         if category:
             template_vals["categ_id"] = category.id
+        image_value = self._product_image_value(payload)
+        if image_value is not None:
+            template_vals["image_1920"] = image_value
 
         template = request.env["product.template"].sudo().create(template_vals)
         product = template.product_variant_id
@@ -3664,11 +3714,13 @@ class BayaanKioskApi(http.Controller):
             "available_in_pos": payload.get("available_in_pos", payload.get("availableInPos", True)),
             "bayaan_consumption_mode": mode,
             "uom_id": uom.id,
-            "uom_po_id": uom.id,
         }
         values.update(self._stock_plan_payload_values(payload, include_defaults=not bool(product)))
         if category:
             values["categ_id"] = category.id
+        image_value = self._product_image_value(payload)
+        if image_value is not None:
+            values["image_1920"] = image_value
 
         if product:
             product.product_tmpl_id.sudo().write(values)
@@ -3784,8 +3836,11 @@ class BayaanKioskApi(http.Controller):
             ("picking_type_id.code", "=", "internal"),
             ("state", "not in", ["cancel"]),
             "|",
+            ("state", "!=", "done"),
+            "|", "|",
             ("scheduled_date", ">=", today_start),
             ("create_date", ">=", today_start),
+            ("date_done", ">=", today_start),
         ]
         supplier_domain = [
             ("supplier_rank", ">", 0),
@@ -4528,18 +4583,7 @@ class BayaanKioskApi(http.Controller):
                 "mode": product.product_tmpl_id.bayaan_consumption_mode,
                 "category": product.categ_id.display_name,
             } for product in products],
-            "products": [{
-                "id": product.id,
-                "name": product.display_name,
-                "default_code": product.default_code,
-                "barcode": product.barcode,
-                "category": product.categ_id.display_name,
-                "list_price": product.lst_price,
-                "standard_price": product.standard_price,
-                "uom": product.uom_id.name,
-                "consumption_mode": product.product_tmpl_id.bayaan_consumption_mode,
-                "available_in_pos": product.available_in_pos,
-            } for product in products],
+            "products": [self._serialize_stock_item(product) for product in products],
             "recipes": [{
                 "id": recipe.id,
                 "product": recipe.product_id.display_name,
@@ -4697,6 +4741,110 @@ class BayaanKioskApi(http.Controller):
             },
         }
 
+    @http.route("/bayaan/api/peak_hour_report", type="jsonrpc", auth="user")
+    def peak_hour_report(self, **kwargs):
+        self._require_chain_read_scope("read peak-hour item sales")
+        payload = self._payload(kwargs)
+        today = fields.Date.context_today(request.env.user)
+        start = self._report_datetime(payload.get("date_from") or payload.get("dateFrom"), datetime.combine(today, time.min))
+        end = self._report_datetime(payload.get("date_to") or payload.get("dateTo"), datetime.combine(today, time.min) + timedelta(days=1), end_of_day=True)
+        kiosk = self._require_kiosk(payload.get("kiosk")) if payload.get("kiosk") else False
+        product = self._product(payload.get("product") or payload.get("item")) if payload.get("product") or payload.get("item") else False
+        if payload.get("product") or payload.get("item"):
+            if not product:
+                raise UserError("Product not found for peak-hour report.")
+
+        line_domain = [
+            ("order_id.company_id", "=", request.env.company.id),
+            ("order_id.date_order", ">=", start),
+            ("order_id.date_order", "<", end),
+            ("order_id.state", "not in", ["draft", "cancel"]),
+        ]
+        if kiosk:
+            line_domain += [
+                "|",
+                ("order_id.bayaan_kiosk_id", "=", kiosk.id),
+                ("order_id.config_id", "=", kiosk.pos_config_id.id),
+            ]
+        if product:
+            line_domain += [("product_id", "=", product.id)]
+
+        OrderLine = request.env["pos.order.line"].sudo()
+        Kiosk = request.env["bayaan.kiosk"].sudo()
+        kiosk_by_config = {
+            row.pos_config_id.id: row
+            for row in Kiosk.search([
+                ("company_id", "=", request.env.company.id),
+                ("pos_config_id", "!=", False),
+            ])
+        }
+        grouped = {}
+        order_lines = OrderLine.search(line_domain, order="id", limit=20000)
+        for line in sorted(order_lines, key=lambda row: (row.order_id.date_order, row.order_id.id, row.id)):
+            order = line.order_id
+            order_kiosk = order.bayaan_kiosk_id or kiosk_by_config.get(order.config_id.id)
+            local_date = fields.Datetime.context_timestamp(request.env.user, order.date_order)
+            hour = local_date.hour
+            key = (
+                order_kiosk.kiosk_code if order_kiosk else "",
+                line.product_id.id,
+                hour,
+                order.user_id.id,
+                order.session_id.id,
+            )
+            row = grouped.setdefault(key, {
+                "kiosk": order_kiosk.kiosk_code if order_kiosk else "",
+                "kioskName": order_kiosk.name if order_kiosk else "",
+                "product": line.product_id.default_code or line.product_id.display_name,
+                "productName": line.product_id.display_name,
+                "hour": hour,
+                "hourLabel": "%02d:00" % hour,
+                "cashier": order.user_id.name,
+                "shift": order.session_id.name,
+                "qty": 0.0,
+                "revenue": 0.0,
+                "_orders": set(),
+            })
+            row["qty"] += line.qty
+            row["revenue"] += line.price_subtotal_incl
+            row["_orders"].add(order.id)
+
+        rows = []
+        hourly = {}
+        products = {}
+        for row in grouped.values():
+            order_count = len(row.pop("_orders"))
+            row["orders"] = order_count
+            row["qty"] = round(row["qty"], 4)
+            row["revenue"] = round(row["revenue"], 2)
+            rows.append(row)
+            hour_row = hourly.setdefault(row["hour"], {"hour": row["hour"], "hourLabel": row["hourLabel"], "qty": 0.0, "revenue": 0.0, "orders": 0})
+            hour_row["qty"] += row["qty"]
+            hour_row["revenue"] += row["revenue"]
+            hour_row["orders"] += order_count
+            product_row = products.setdefault(row["product"], {"product": row["product"], "productName": row["productName"], "qty": 0.0, "revenue": 0.0, "orders": 0})
+            product_row["qty"] += row["qty"]
+            product_row["revenue"] += row["revenue"]
+            product_row["orders"] += order_count
+
+        for collection in (hourly.values(), products.values()):
+            for row in collection:
+                row["qty"] = round(row["qty"], 4)
+                row["revenue"] = round(row["revenue"], 2)
+
+        return {
+            "engine": "odoo_pos",
+            "dateFrom": fields.Datetime.to_string(start),
+            "dateTo": fields.Datetime.to_string(end),
+            "filters": {
+                "kiosk": kiosk.kiosk_code if kiosk else "",
+                "product": product.default_code if product else "",
+            },
+            "rows": sorted(rows, key=lambda row: (row["kiosk"], row["productName"], row["hour"], row["cashier"], row["shift"])),
+            "hourlyTotals": sorted(hourly.values(), key=lambda row: row["hour"]),
+            "topProducts": sorted(products.values(), key=lambda row: (-row["qty"], -row["revenue"], row["productName"])),
+        }
+
     @http.route("/bayaan/api/recipe_version", type="jsonrpc", auth="user")
     def recipe_version(self, **kwargs):
         self._require_manager_scope("manage product recipes")
@@ -4777,6 +4925,32 @@ class BayaanKioskApi(http.Controller):
             "Payment method '%s' is not configured on POS %s. Configure it in Odoo first."
             % (method_name or "empty", session.config_id.display_name)
         )
+
+    def _resolve_kiosk_price_unit(self, kiosk, product, qty):
+        pricelist = kiosk.pos_config_id.pricelist_id
+        if pricelist:
+            return pricelist.sudo()._get_product_price(
+                product.sudo(),
+                qty,
+                currency=request.env.company.currency_id,
+                uom=product.uom_id,
+                date=fields.Datetime.now(),
+            )
+        return product.list_price
+
+    def _line_discount_percent(self, item, product):
+        discount_percent = None
+        for key in ("discount_percent", "discountPercent", "discount"):
+            if item.get(key) not in (None, ""):
+                discount_percent = self._float_value(item.get(key), 0.0)
+                break
+        discount_percent = discount_percent if discount_percent is not None else 0.0
+        if discount_percent < 0.0 or discount_percent > 100.0:
+            raise UserError("Discount for %s must be between 0 and 100 percent." % product.display_name)
+        return discount_percent
+
+    def _line_discount_reason(self, item):
+        return (item.get("discount_reason") or item.get("discountReason") or item.get("manager_note") or "").strip()
 
     def _waste_estimated_cost(self, product, qty):
         mode = product.product_tmpl_id.bayaan_consumption_mode
@@ -4868,6 +5042,7 @@ class BayaanKioskApi(http.Controller):
         order_lines = []
         amount_total = 0.0
         amount_tax = 0.0
+        discount_audit_rows = []
         for item in items:
             product = self._sale_product(
                 item.get("product") or item.get("item"),
@@ -4876,16 +5051,28 @@ class BayaanKioskApi(http.Controller):
             qty = self._float_value(item.get("qty"), 1.0)
             if qty <= 0:
                 raise UserError("Sale line for %s must have positive qty." % product.display_name)
-            price_unit = self._float_value(item.get("price_unit") or item.get("price"), product.list_price)
+            price_unit = self._resolve_kiosk_price_unit(kiosk, product, qty)
+            client_price_unit = self._float_value(
+                item.get("price_unit") if item.get("price_unit") not in (None, "") else item.get("price"),
+                price_unit,
+            )
+            discount_percent = self._line_discount_percent(item, product)
+            discount_reason = self._line_discount_reason(item)
+            if discount_percent:
+                if not self._is_bayaan_manager():
+                    raise UserError("Only Bayaan managers can authorize POS discounts.")
+                if not discount_reason:
+                    raise UserError("Manager discount reason is required.")
             tax_ids = product.taxes_id.filtered(lambda tax, c=request.env.company: tax.company_id == c)
-            line_subtotal = price_unit * qty
+            effective_price_unit = price_unit * (1.0 - (discount_percent / 100.0))
+            line_subtotal = effective_price_unit * qty
             line_total = line_subtotal
             line_tax = 0.0
             if tax_ids:
                 # Bayaan UI sends the customer-facing sticker price. Treat it
                 # as tax-included so payment totals stay equal to cashier total.
                 tax_calc = tax_ids.with_context(force_price_include=True).compute_all(
-                    price_unit,
+                    effective_price_unit,
                     request.env.company.currency_id,
                     qty,
                     product=product,
@@ -4898,10 +5085,23 @@ class BayaanKioskApi(http.Controller):
                 "product_id": product.id,
                 "qty": qty,
                 "price_unit": price_unit,
+                "discount": discount_percent,
                 "price_subtotal": line_subtotal,
                 "price_subtotal_incl": line_total,
                 "tax_ids": [(6, 0, tax_ids.ids)] if tax_ids else False,
             }))
+            if discount_percent:
+                discount_audit_rows.append({
+                    "product": product.default_code or product.display_name,
+                    "product_id": product.id,
+                    "qty": qty,
+                    "server_price_unit": price_unit,
+                    "client_price_unit": client_price_unit,
+                    "discount_percent": discount_percent,
+                    "discount_reason": discount_reason,
+                    "discounted_unit": effective_price_unit,
+                    "line_total": line_total,
+                })
             amount_total += line_total
             amount_tax += line_tax
 
@@ -4933,6 +5133,8 @@ class BayaanKioskApi(http.Controller):
             "lines": order_lines,
             "bayaan_kiosk_id": kiosk.id,
         }
+        if kiosk.pos_config_id.pricelist_id:
+            order_vals["pricelist_id"] = kiosk.pos_config_id.pricelist_id.id
         if external_id:
             order_vals["pos_reference"] = external_id
         if payload.get("posting_date"):
@@ -4958,6 +5160,30 @@ class BayaanKioskApi(http.Controller):
         order.write({"state": "paid"})
         order._process_saved_order(False)
 
+        for discount_row in discount_audit_rows:
+            self._audit_event(
+                "pos",
+                "sale.discount.approved",
+                "POS discount approved: %s" % order.name,
+                "%s approved %.2f%% on %s: %s"
+                % (
+                    cashier.name,
+                    discount_row["discount_percent"],
+                    discount_row["product"],
+                    discount_row["discount_reason"],
+                ),
+                record=order,
+                kiosk=kiosk,
+                severity="warning",
+                payload={
+                    "order": order.name,
+                    "external_id": external_id,
+                    "manager_id": cashier.id,
+                    "manager_login": cashier.login,
+                    **discount_row,
+                },
+            )
+
         self._audit_event(
             "pos",
             "sale.paid",
@@ -4971,6 +5197,8 @@ class BayaanKioskApi(http.Controller):
                 "items": items,
                 "payment_count": len(payments),
                 "amount_total": order.amount_total,
+                "pricelist": kiosk.pos_config_id.pricelist_id.display_name if kiosk.pos_config_id.pricelist_id else "",
+                "discount_count": len(discount_audit_rows),
             },
         )
         return self._serialize_kiosk_order(order)
@@ -5075,13 +5303,17 @@ class BayaanKioskApi(http.Controller):
         if not move_commands:
             raise UserError("Stock transfer needs at least one item.")
 
-        picking = request.env["stock.picking"].sudo().create({
+        transfer_origin = payload.get("origin") or payload.get("external_id") or payload.get("externalId")
+        picking_vals = {
             "picking_type_id": picking_type.id,
             "location_id": source_location.id,
             "location_dest_id": kiosk.stock_location_id.id,
             "bayaan_transfer_state": "draft",
             "move_ids": move_commands,
-        })
+        }
+        if transfer_origin:
+            picking_vals["origin"] = str(transfer_origin)[:255]
+        picking = request.env["stock.picking"].sudo().create(picking_vals)
         kiosk.last_stock_transfer_at = fields.Datetime.now()
         self._audit_event(
             "stock",
@@ -5344,6 +5576,23 @@ class BayaanKioskApi(http.Controller):
             ),
             "pickings": [self._serialize_picking_action(picking) for picking in order.picking_ids],
         }
+
+    @http.route("/bayaan/api/landed_cost", type="jsonrpc", auth="user")
+    def landed_cost(self, **kwargs):
+        self._require_procurement_scope()
+        payload = self._payload(kwargs)
+        service = BayaanLandedCostService(self)
+        landed_cost, pickings = service.create(payload)
+        self._audit_event(
+            "procurement",
+            "landed_cost.%s" % landed_cost.state,
+            "Landed cost %s: %s" % (landed_cost.state, landed_cost.name),
+            "%s on %s receipt(s)" % (landed_cost.amount_total, len(pickings)),
+            record=landed_cost,
+            severity="success" if landed_cost.state == "done" else "info",
+            payload=payload,
+        )
+        return service.serialize(landed_cost)
 
     @http.route("/bayaan/api/shift_close", type="jsonrpc", auth="user")
     def shift_close(self, **kwargs):

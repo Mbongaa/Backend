@@ -10,10 +10,12 @@
         "bus",
         "hr",
         "hr_attendance",
+        "mrp",
         "pos_hr",
         "point_of_sale",
         "purchase",
         "stock",
+        "stock_landed_costs",
     ],
     "data": [
         "security/bayaan_security.xml",

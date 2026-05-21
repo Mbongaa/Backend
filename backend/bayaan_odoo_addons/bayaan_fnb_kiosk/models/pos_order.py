@@ -1,6 +1,7 @@
 import logging
 
-from odoo import fields, models
+from odoo import _, fields, models
+from odoo.exceptions import UserError
 from odoo.tools import float_compare
 
 
@@ -42,6 +43,41 @@ class PosOrder(models.Model):
             "bayaan_consumption_error": False,
         })
         self._bayaan_post_recipe_consumption()
+
+    def _bayaan_break_glass_pos_void_allowed(self):
+        return (
+            self.env.context.get("bayaan_break_glass_pos_void")
+            and self.env.user.has_group("base.group_system")
+        )
+
+    def _bayaan_paid_orders_for_void_guard(self):
+        protected_orders = self.env["pos.order"]
+        for order in self:
+            if order.state not in ("paid", "done", "invoiced"):
+                continue
+            if order.bayaan_kiosk_id or order._bayaan_resolve_kiosk():
+                protected_orders |= order
+        return protected_orders
+
+    def _bayaan_guard_paid_void(self, action):
+        protected_orders = self._bayaan_paid_orders_for_void_guard()
+        if protected_orders and not protected_orders._bayaan_break_glass_pos_void_allowed():
+            raise UserError(_(
+                "Bayaan policy prohibits %(action)s paid kiosk POS orders. "
+                "Use the documented reversal workflow so the audit trail remains intact."
+            ) % {"action": action})
+
+    def action_pos_order_cancel(self):
+        self._bayaan_guard_paid_void("cancelling")
+        return super().action_pos_order_cancel()
+
+    def _refund(self):
+        self._bayaan_guard_paid_void("refunding")
+        return super()._refund()
+
+    def unlink(self):
+        self._bayaan_guard_paid_void("deleting")
+        return super().unlink()
 
     def _bayaan_resolve_kiosk(self):
         self.ensure_one()
@@ -238,6 +274,15 @@ class PosOrder(models.Model):
 
 class PosOrderLine(models.Model):
     _inherit = "pos.order.line"
+
+    def unlink(self):
+        protected_orders = self.mapped("order_id")._bayaan_paid_orders_for_void_guard()
+        if protected_orders and not protected_orders._bayaan_break_glass_pos_void_allowed():
+            raise UserError(_(
+                "Bayaan policy prohibits deleting lines from paid kiosk POS orders. "
+                "Use the documented reversal workflow so the audit trail remains intact."
+            ))
+        return super().unlink()
 
     def _prepare_base_line_for_taxes_computation(self):
         base_line = super()._prepare_base_line_for_taxes_computation()

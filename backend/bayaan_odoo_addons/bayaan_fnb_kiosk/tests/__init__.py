@@ -9,3 +9,5 @@ from . import test_hr_payroll_api
 from . import test_realtime_api
 from . import test_ai_dashboard_api
 from . import test_analytic_cost_centers
+from . import test_odoo_security_hardening
+from . import test_mrp_semifinished

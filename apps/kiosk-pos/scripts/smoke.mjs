@@ -49,6 +49,13 @@ async function main() {
         consoleErrors.push(`Request failed: ${url}`);
       }
     });
+    page.on("response", (response) => {
+      if (response.status() < 400) return;
+      const url = response.url();
+      if (!url.includes("fonts.gstatic.com") && !url.includes("fonts.googleapis.com")) {
+        consoleErrors.push(`HTTP ${response.status()}: ${url}`);
+      }
+    });
 
     // Realtime/bootstrap requests can keep the browser from reaching networkidle.
     // The visible text/image assertions below are the app readiness check.
@@ -76,6 +83,13 @@ async function main() {
     assert(await page.locator(".vite-error-overlay, [data-nextjs-dialog], #webpack-dev-server-client-overlay").count() === 0, "Framework error overlay is visible");
     await page.waitForTimeout(900);
     await page.screenshot({ path: filePath("exact-admin-overview.png"), fullPage: true });
+    await page.getByRole("button", { name: "Dark theme" }).click();
+    assert(await page.locator(".app-frame").getAttribute("data-theme") === "dark", "Dark theme did not apply to the app frame");
+    await expectText(page, "STREAM ACTIVE");
+    await page.waitForTimeout(900);
+    await page.screenshot({ path: filePath("exact-admin-overview-dark.png"), fullPage: true });
+    await page.getByRole("button", { name: "Light theme" }).click();
+    assert(await page.locator(".app-frame").getAttribute("data-theme") === "light", "Light theme did not restore after dark-mode proof");
 
     for (const [nav, expectedText, screenshotName] of [
       ["AI Insights", ["assistant-ui", "New Thread", /Local preview|Live LLM/, /orders\s+\d+/, /Daily summaries tier/], "exact-admin-ai-insights.png"],
@@ -244,6 +258,7 @@ async function main() {
       baseUrl,
       screenshots: [
         "verification/exact-admin-overview.png",
+        "verification/exact-admin-overview-dark.png",
         "verification/exact-admin-ai-insights.png",
         "verification/exact-admin-sales-pos.png",
         "verification/exact-admin-stock-allocation.png",

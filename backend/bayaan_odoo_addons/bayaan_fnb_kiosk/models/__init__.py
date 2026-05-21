@@ -12,6 +12,7 @@ from . import account_move
 from . import pos_order
 from . import stock_scrap
 from . import stock_picking
+from . import stock_landed_cost
 from . import bayaan_payment_transaction
 from . import bayaan_recurring_purchase
 from . import bayaan_hr_payroll
