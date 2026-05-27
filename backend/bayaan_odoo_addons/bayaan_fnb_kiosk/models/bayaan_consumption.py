@@ -19,6 +19,19 @@ class BayaanConsumptionLedger(models.Model):
     recipe_line_id = fields.Many2one("bayaan.recipe.line", required=True, index=True)
     ingredient_id = fields.Many2one("product.product", required=True, index=True)
     ingredient_qty = fields.Float(required=True)
+    base_ingredient_qty = fields.Float(
+        string="Base Ingredient Qty",
+        help="Recipe-line qty × sold qty before any modifier scaling. ingredient_qty = base × modifier_recipe_factor.",
+    )
+    modifier_signature = fields.Char(
+        index=True,
+        help="Modifier signature recorded against the POS line that triggered this consumption row.",
+    )
+    modifier_recipe_factor = fields.Float(
+        string="Modifier Recipe Factor",
+        default=1.0,
+        help="Modifier factor in effect when this row was posted. 1.0 means no scaling.",
+    )
     uom_id = fields.Many2one("uom.uom", required=True)
     unit_cost = fields.Monetary(currency_field="currency_id", readonly=True)
     total_cost = fields.Monetary(

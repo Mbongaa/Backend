@@ -11,3 +11,7 @@ from . import test_ai_dashboard_api
 from . import test_analytic_cost_centers
 from . import test_odoo_security_hardening
 from . import test_mrp_semifinished
+from . import test_spectator_role
+from . import test_data_import
+from . import test_modifier_consumption
+from . import test_alert_rules

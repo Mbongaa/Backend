@@ -21,6 +21,9 @@ import { ThreadListSidebar } from "../components/threadlist-sidebar";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "../components/ui/sidebar";
 import { Area, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Label, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { buildAccountAllocationRows } from "./accountAllocation";
+import ProductModifierSheet from "./ProductModifierSheet.jsx";
+import { productModifierBindings } from "../data";
+import { resolveModifierGroups, summarizeSelection } from "../domain/modifiers";
 import { createSourceOfTruthGateway } from "../services/sourceOfTruth";
 import { getDashboardComponent } from "../ai-dashboard/componentRegistry";
 import { BayaanProvider, useBayaan } from "../bayaan/BayaanProvider";
@@ -16491,6 +16494,18 @@ function ReportsScreen({ lang, bootstrap, mode = "reports" }) {
             <button className="btn btn-ghost" onClick={exportReport} style={{ height: 28, fontSize: 12 }}>
               <Icon name="download" size={12}/>{ar ? "تصدير" : "Export pack"}
             </button>
+            <button
+              className="btn btn-ghost"
+              data-testid="report-print-pdf"
+              onClick={() => {
+                if (typeof window === "undefined") return;
+                window.print();
+              }}
+              style={{ height: 28, fontSize: 12 }}
+              title={ar ? "اطبع كملف PDF — استخدم 'حفظ كـ PDF' في حوار الطباعة" : "Print → save as PDF from the browser dialog"}
+            >
+              <Icon name="fileText" size={12}/>{ar ? "طباعة / PDF" : "Print / PDF"}
+            </button>
             <button className="btn btn-ghost" onClick={() => reportAction("scheduled")} style={{ height: 28, fontSize: 12 }}>
               <Icon name="clock" size={12}/>{ar ? "جدولة" : "Schedule"}
             </button>
@@ -17336,12 +17351,22 @@ function POSPanel({ lang }) {
     setTender(null);
     setScreen("login");
   };
-  const addItem = (item, size) => {
+  const addItem = (item, size, modifiers) => {
     setCart(c => {
-      const key = item.id + ":" + size;
+      const signature = modifiers?.signature || "";
+      const key = item.id + ":" + size + (signature ? ":" + signature : "");
+      const lineDelta = modifiers?.priceDelta || 0;
+      const linePrice = (item.price || 0) + lineDelta;
       const existing = c.find(x => x.key === key);
       if (existing) return c.map(x => x === existing ? { ...x, qty: x.qty + 1 } : x);
-      return [...c, { key, id: item.id, name: item.name, image: item.image, size, price: item.price, qty: 1 }];
+      return [...c, {
+        key, id: item.id, name: item.name, image: item.image,
+        size, price: linePrice, qty: 1,
+        modifierSummary: modifiers?.summary || "",
+        modifierSignature: signature,
+        modifierRecipeFactor: typeof modifiers?.recipeFactor === "number" ? modifiers.recipeFactor : 1,
+        modifierPriceDelta: lineDelta,
+      }];
     });
   };
   const subTotal = cart.reduce((s, x) => s + x.price * x.qty, 0);
@@ -17350,10 +17375,12 @@ function POSPanel({ lang }) {
 
   // Track last added item for the "just added" flash on customer display
   const [lastAdded, setLastAdded] = useStatePOS(null);
-  const wrappedAdd = (item, size) => {
-    const key = item.id + ":" + size;
-    addItem(item, size);
-    setLastAdded({ key, name: item.name, price: item.price, t: Date.now() });
+  const wrappedAdd = (item, size, modifiers) => {
+    const signature = modifiers?.signature || "";
+    const key = item.id + ":" + size + (signature ? ":" + signature : "");
+    addItem(item, size, modifiers);
+    const lineDelta = modifiers?.priceDelta || 0;
+    setLastAdded({ key, name: item.name, price: (item.price || 0) + lineDelta, t: Date.now() });
   };
   const posKioskId = bayaan.shift?.kioskId || bayaan.kioskId;
   React.useEffect(() => {
@@ -17698,6 +17725,7 @@ function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total
   ), [bayaan.hasBackend, bayaan.mode, bootstrap, catalog.state.products]);
   const [activeCat, setActiveCat] = useStatePOS(0);
   const [search, setSearch] = useStatePOS("");
+  const [modifierTarget, setModifierTarget] = React.useState(null); // { item, groups }
   const cat = menu[activeCat] ?? menu[0] ?? { items: [] };
   const items = search
     ? menu.flatMap(c => c.items).filter(i => i.name.toLowerCase().includes(search.toLowerCase()))
@@ -17796,8 +17824,19 @@ function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total
 
           <div className="scroll" style={{ flex: 1, overflow: "auto", padding: "8px 18px 24px" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
-              {items.map(it => (
-                <button key={it.id} onClick={() => addItem(it, it.sizes[0])}
+              {items.map(it => {
+                const modGroups = resolveModifierGroups({ id: it.id, category: cat.cat }, productModifierBindings);
+                const handleClick = () => {
+                  if (modGroups.length > 0) {
+                    setModifierTarget({ item: it, groups: modGroups });
+                  } else {
+                    addItem(it, it.sizes[0]);
+                  }
+                };
+                return (
+                <button key={it.id} onClick={handleClick}
+                  data-product-id={it.id}
+                  data-has-modifiers={modGroups.length > 0 ? "true" : "false"}
                   className="card"
                   style={{
                     padding: 0, textAlign: "start", overflow: "hidden",
@@ -17813,10 +17852,11 @@ function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total
                   <div style={{ flex: 1, padding: "12px 14px", display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0, gap: 4 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 500, lineHeight: 1.3 }}>{it.name}</div>
                     <div className="t-num" style={{ fontSize: 13 }}>IQD {it.price.toLocaleString("en")}</div>
-                    <div className="t-small subtle">{it.sizes.join(" · ")}</div>
+                    <div className="t-small subtle">{it.sizes.join(" · ")}{modGroups.length > 0 ? (ar ? " · قابل للتخصيص" : " · customizable") : ""}</div>
                   </div>
                 </button>
-              ))}
+                );
+              })}
             </div>
             {sourceMenuMissing ? (
               <div style={{ textAlign: "center", padding: 60, color: "var(--ink-3)" }}>
@@ -17870,6 +17910,9 @@ function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 500 }}>{line.name}</div>
                     <div className="t-small subtle">{line.size}</div>
+                    {line.modifierSummary ? (
+                      <div className="t-small subtle" data-testid="cart-line-modifiers" style={{ marginTop: 2 }}>{line.modifierSummary}</div>
+                    ) : null}
                   </div>
                   <div className="t-num" style={{ fontSize: 13 }}>IQD {(line.price * line.qty).toLocaleString("en")}</div>
                 </div>
@@ -17902,6 +17945,18 @@ function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total
           </div>
         </div>
       </div>
+      {modifierTarget ? (
+        <ProductModifierSheet
+          item={modifierTarget.item}
+          groups={modifierTarget.groups}
+          lang={lang}
+          onCancel={() => setModifierTarget(null)}
+          onConfirm={(payload) => {
+            addItem(modifierTarget.item, modifierTarget.item.sizes[0], payload);
+            setModifierTarget(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

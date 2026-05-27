@@ -16,6 +16,10 @@ export type CartItem = {
   size?: string;
   price: number;
   qty: number;
+  modifierSummary?: string;
+  modifierSignature?: string;
+  modifierRecipeFactor?: number;
+  modifierPriceDelta?: number;
 };
 
 export type TenderId =
@@ -37,6 +41,10 @@ export type KioskSalePayload = {
     name: string;
     qty: number;
     price_unit: number;
+    modifier_signature?: string;
+    modifier_recipe_factor?: number;
+    modifier_price_delta?: number;
+    modifier_summary?: string;
   }>;
   payments: Array<{
     method: TenderId | string;
@@ -107,12 +115,23 @@ export function buildKioskSalePayload(input: BuildPosSaleInput): KioskSalePayloa
     cashier: input.cashier,
     posting_date: postingDate,
     session_id: input.sessionId,
-    items: input.cart.map((line) => ({
-      product: odooProductRef(line),
-      name: line.name,
-      qty: line.qty,
-      price_unit: Number((line.price * totalRatio).toFixed(6)),
-    })),
+    items: input.cart.map((line) => {
+      const item: KioskSalePayload["items"][number] = {
+        product: odooProductRef(line),
+        name: line.name,
+        qty: line.qty,
+        price_unit: Number((line.price * totalRatio).toFixed(6)),
+      };
+      if (line.modifierSignature) item.modifier_signature = line.modifierSignature;
+      if (typeof line.modifierRecipeFactor === "number" && line.modifierRecipeFactor > 0 && line.modifierRecipeFactor !== 1) {
+        item.modifier_recipe_factor = line.modifierRecipeFactor;
+      }
+      if (typeof line.modifierPriceDelta === "number" && line.modifierPriceDelta !== 0) {
+        item.modifier_price_delta = line.modifierPriceDelta;
+      }
+      if (line.modifierSummary) item.modifier_summary = line.modifierSummary;
+      return item;
+    }),
     payments: [
       {
         method: input.tender,

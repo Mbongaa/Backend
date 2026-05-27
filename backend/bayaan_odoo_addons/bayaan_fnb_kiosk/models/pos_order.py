@@ -192,8 +192,14 @@ class PosOrder(models.Model):
                         missing_recipes.append(order_line.product_id.display_name)
                         continue
 
+                    modifier_factor = order_line.bayaan_modifier_recipe_factor or 1.0
+                    if modifier_factor <= 0:
+                        modifier_factor = 1.0
+                    modifier_signature = order_line.bayaan_modifier_signature or ""
+
                     for recipe_line in recipe.line_ids:
-                        ingredient_qty = recipe_line.qty * order_line.qty
+                        base_qty = recipe_line.qty * order_line.qty
+                        ingredient_qty = base_qty * modifier_factor
                         if ingredient_qty <= 0:
                             continue
 
@@ -232,6 +238,9 @@ class PosOrder(models.Model):
                             "recipe_line_id": recipe_line.id,
                             "ingredient_id": recipe_line.ingredient_id.id,
                             "ingredient_qty": ingredient_qty,
+                            "base_ingredient_qty": base_qty,
+                            "modifier_signature": modifier_signature,
+                            "modifier_recipe_factor": modifier_factor,
                             "uom_id": recipe_line.uom_id.id,
                             "unit_cost": recipe_line.ingredient_id.standard_price,
                             "stock_scrap_id": scrap.id,
@@ -248,6 +257,19 @@ class PosOrder(models.Model):
                     })
                     order.message_post(body=message)
                     order._bayaan_publish_consumption_event(kiosk)
+                    try:
+                        self.env["bayaan.alert.rule"].sudo()._trigger_event_rules(
+                            "missing_recipe",
+                            dedup_key="missing_recipe:%s" % order.id,
+                            subject="Missing recipe — %s" % order.name,
+                            body_en="POS order %s posted without an active recipe for: %s. Variance loop cannot reconcile this sale until a recipe is created."
+                                % (order.name, ", ".join(sorted(set(missing_recipes)))),
+                            body_ar="طلب نقطة البيع %s سُجِّل بدون وصفة مفعّلة لـ: %s. لن يتم تسوية حلقة الفروقات حتى يتم إضافة الوصفة."
+                                % (order.name, ", ".join(sorted(set(missing_recipes)))),
+                            kiosk=kiosk,
+                        )
+                    except Exception:
+                        _logger.exception("Bayaan missing-recipe alert dispatch failed for %s", order.name)
                 elif posted_count:
                     order.write({
                         "bayaan_consumption_state": "posted",
@@ -274,6 +296,20 @@ class PosOrder(models.Model):
 
 class PosOrderLine(models.Model):
     _inherit = "pos.order.line"
+
+    bayaan_modifier_signature = fields.Char(
+        string="Bayaan Modifier Signature",
+        help="Deterministic key like 'milk:almond|size:large|temp:hot' written from the cashier's modifier picks. Drives variant-aware recipe consumption.",
+    )
+    bayaan_modifier_recipe_factor = fields.Float(
+        string="Bayaan Modifier Recipe Factor",
+        default=1.0,
+        help="Multiplier applied to every recipe line's qty when posting consumption. 1.25 for Large, 0.8 for Small, etc.",
+    )
+    bayaan_modifier_summary = fields.Char(
+        string="Bayaan Modifier Summary",
+        help="Human-readable summary of the variant for receipts and audit (e.g. 'Hot · Large · Almond').",
+    )
 
     def unlink(self):
         protected_orders = self.mapped("order_id")._bayaan_paid_orders_for_void_guard()

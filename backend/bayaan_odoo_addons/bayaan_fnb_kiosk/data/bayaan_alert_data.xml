@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <record id="mail_template_bayaan_alert" model="mail.template">
+            <field name="name">Bayaan Alert</field>
+            <field name="model_id" ref="model_bayaan_alert_dispatched"/>
+            <field name="subject">[Bayaan] {{ object.subject or 'Operational alert' }}</field>
+            <field name="email_from">{{ (object.rule_id.company_id.email or '') or user.email_formatted }}</field>
+            <field name="body_html" type="html">
+                <div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; font-size: 14px; line-height: 1.55; color: #1a1a1a;">
+                    <p><strong t-out="object.subject or 'Bayaan alert'"/></p>
+                    <p t-if="object.body_en" t-out="object.body_en"/>
+                    <p t-if="object.body_ar" style="direction:rtl; text-align:right;" t-out="object.body_ar"/>
+                    <p t-if="object.kiosk_id" style="color:#666;">Kiosk: <t t-out="object.kiosk_id.display_name"/></p>
+                    <p style="color:#999; font-size:12px; margin-top:18px;">
+                        Bayaan automated alert - rule "<t t-out="object.rule_id.name"/>" - fired <t t-out="object.fired_at"/>
+                    </p>
+                </div>
+            </field>
+            <field name="lang">{{ object.rule_id.recipient_user_ids[:1].lang or 'en_US' }}</field>
+            <field name="auto_delete" eval="True"/>
+        </record>
+
+        <record id="ir_cron_bayaan_alert_evaluate" model="ir.cron">
+            <field name="name">Bayaan: evaluate alert rules</field>
+            <field name="model_id" ref="model_bayaan_alert_rule"/>
+            <field name="state">code</field>
+            <field name="code">model._cron_evaluate_all()</field>
+            <field name="interval_number">5</field>
+            <field name="interval_type">minutes</field>
+            <field name="active" eval="True"/>
+        </record>
+    </data>
+</odoo>

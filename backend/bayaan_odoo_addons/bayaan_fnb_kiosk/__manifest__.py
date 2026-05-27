@@ -20,6 +20,7 @@
     "data": [
         "security/bayaan_security.xml",
         "security/ir.model.access.csv",
+        "data/bayaan_alert_data.xml",
         "views/product_template_views.xml",
         "views/pos_payment_method_views.xml",
         "views/bayaan_kiosk_views.xml",
@@ -27,6 +28,7 @@
         "views/bayaan_consumption_views.xml",
         "views/bayaan_waste_views.xml",
         "views/bayaan_shift_close_views.xml",
+        "views/bayaan_alert_views.xml",
     ],
     "demo": [
         "demo/bayaan_demo.xml",

@@ -196,6 +196,19 @@ async function main() {
     await page.getByRole("button", { name: /Start shift/ }).click();
     await expectText(page, "Current order");
     await page.waitForSelector('button.card img[src="/products/latte.webp"]', { timeout: 10_000 });
+    // Wait for every product img to either decode (complete + naturalWidth>0) or surface a load error.
+    await page.locator("button.card img").evaluateAll((imgs) =>
+      Promise.all(imgs.map((img) => {
+        if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+        return new Promise((resolve) => {
+          const done = () => { img.removeEventListener("load", done); img.removeEventListener("error", done); resolve(); };
+          img.addEventListener("load", done, { once: true });
+          img.addEventListener("error", done, { once: true });
+          // Safety bound so a stuck request can't hang the smoke.
+          setTimeout(done, 5000);
+        });
+      })),
+    );
     const brokenProductImages = await page.locator("button.card img").evaluateAll((imgs) =>
       imgs
         .filter((img) => img.naturalWidth === 0 || img.naturalHeight === 0)
@@ -204,8 +217,17 @@ async function main() {
     assert(brokenProductImages.length === 0, `Broken product images: ${brokenProductImages.join(", ")}`);
 
     await page.locator("button.card", { hasText: "Latte" }).first().click();
+    // Coffee items open the modifier sheet — pick a non-default option to prove the price delta lands in cart.
+    await page.locator("[data-testid='product-modifier-sheet']").waitFor({ state: "visible", timeout: 5_000 });
+    await page.locator("[data-testid='mod-size-large']").click();
+    await page.locator("[data-testid='mod-milk-almond']").click();
+    await page.locator("[data-testid='modifier-add-to-order']").click();
+    await page.locator("[data-testid='cart-line-modifiers']").first().waitFor({ state: "visible", timeout: 5_000 });
     await page.getByRole("button", { name: "Juice" }).click();
     await page.locator("button.card", { hasText: "Orange" }).first().click();
+    // Juice also has modifiers (size/sweetness) — accept defaults.
+    await page.locator("[data-testid='product-modifier-sheet']").waitFor({ state: "visible", timeout: 5_000 });
+    await page.locator("[data-testid='modifier-add-to-order']").click();
     await expectText(page, "Confirm with cashier when ready");
     await page.screenshot({ path: filePath("exact-pos-sale-with-customer-display.png"), fullPage: true });
 
@@ -245,10 +267,37 @@ async function main() {
       window.localStorage.setItem("bayaan.kiosk.v1", "K-01");
     });
     await mobile.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await mobile.locator("[data-testid='mobile-dashboard']").first().waitFor({ state: "visible", timeout: 10_000 });
     const mobileText = (await mobile.textContent("body"))?.trim() ?? "";
     assert(mobileText.length > 200, "Mobile render is blank or near blank");
+    // Owner mobile view is read-only and surfaces the branch ranking + watchlist.
+    const mobileTextLower = mobileText.toLowerCase();
+    assert(mobileTextLower.includes("sales today") || mobileText.includes("مبيعات اليوم"),
+      "Mobile dashboard KPI 'Sales today' missing");
+    assert(mobileTextLower.includes("best") || mobileText.includes("الأفضل"),
+      "Mobile dashboard branch ranking missing");
+    assert(mobileText.includes("Spectator") || mobileText.includes("مراقب"),
+      "Mobile dashboard role label missing");
     await mobile.screenshot({ path: filePath("exact-mobile-admin.png"), fullPage: true });
     await mobile.close();
+
+    // Force-desktop override on a phone viewport must still render the cashier admin shell.
+    const forcedDesktop = await browser.newPage({ viewport: { width: 414, height: 896 } });
+    await forcedDesktop.addInitScript(() => {
+      window.localStorage.setItem("bayaan.mode.v1", "demo");
+      window.localStorage.setItem("bayaan.kiosk.v1", "K-01");
+    });
+    await forcedDesktop.goto(`${baseUrl}/?bayaanView=desktop`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await forcedDesktop.waitForTimeout(2000);
+    const forcedText = (await forcedDesktop.textContent("body"))?.trim() ?? "";
+    assert(/command\s+center|today\s+command/i.test(forcedText) || /operations/i.test(forcedText),
+      "?bayaanView=desktop did not render the desktop admin shell on a narrow viewport");
+    // And the explicit mobile override on a desktop-class viewport must show the mobile shell.
+    const forcedMobile = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+    await forcedMobile.goto(`${baseUrl}/?bayaanView=mobile`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await forcedMobile.locator("[data-testid='mobile-dashboard']").first().waitFor({ state: "visible", timeout: 10_000 });
+    await forcedMobile.close();
+    await forcedDesktop.close();
 
     assert(consoleErrors.length === 0, `Console/request errors detected: ${consoleErrors.join(" | ")}`);
     assert(pageErrors.length === 0, `Page errors detected: ${pageErrors.join(" | ")}`);

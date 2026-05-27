@@ -127,8 +127,16 @@ class BayaanKioskApi(http.Controller):
     def _is_bayaan_accountant(self):
         return self._is_bayaan_manager() or request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_accountant")
 
+    def _is_bayaan_spectator(self):
+        return request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_spectator")
+
     def _is_chain_read_user(self):
-        return self._is_bayaan_manager() or self._is_bayaan_logistics() or self._is_bayaan_accountant()
+        return (
+            self._is_bayaan_manager()
+            or self._is_bayaan_logistics()
+            or self._is_bayaan_accountant()
+            or self._is_bayaan_spectator()
+        )
 
     def _is_bayaan_cashier(self):
         return self._is_bayaan_supervisor() or request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_cashier")
@@ -154,17 +162,23 @@ class BayaanKioskApi(http.Controller):
             roles.append("supervisor")
         if request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_cashier"):
             roles.append("cashier")
+        if request.env.user.has_group("bayaan_fnb_kiosk.group_bayaan_spectator"):
+            roles.append("spectator")
         return roles
 
     def _role_payload(self):
         user = request.env.user
         roles = self._bayaan_roles()
         primary = next(
-            (role for role in ("superadmin", "manager", "logistics", "accountant", "supervisor", "cashier") if role in roles),
+            (role for role in ("superadmin", "manager", "logistics", "accountant", "supervisor", "cashier", "spectator") if role in roles),
             None,
         )
         nav_by_role = {
             "cashier": [],
+            "spectator": [
+                "overview", "insights", "kiosks", "sales", "closing", "waste",
+                "products", "suppliers", "inventory", "staff", "finance", "reports",
+            ],
             "supervisor": ["overview", "kiosks", "sales", "closing", "waste", "inventory", "reports"],
             "logistics": ["overview", "warehouses", "items", "suppliers", "inventory", "reports"],
             "accountant": ["overview", "insights", "sales", "closing", "suppliers", "staff", "finance", "reports"],
@@ -185,7 +199,8 @@ class BayaanKioskApi(http.Controller):
         assigned_kiosks = []
         if roles:
             Kiosk = request.env["bayaan.kiosk"].sudo()
-            if "superadmin" in roles:
+            sees_full_chain = "superadmin" in roles or "spectator" in roles
+            if sees_full_chain:
                 kiosks = Kiosk.search([
                     ("company_id", "=", request.env.company.id),
                     ("active", "=", True),
@@ -205,7 +220,7 @@ class BayaanKioskApi(http.Controller):
                 "city": kiosk.city,
                 "area": kiosk.area,
             } for kiosk in kiosks]
-            if "superadmin" in roles:
+            if sees_full_chain:
                 pos_kiosk_count = Kiosk.search_count([
                     ("company_id", "=", request.env.company.id),
                     ("active", "=", True),
@@ -230,7 +245,9 @@ class BayaanKioskApi(http.Controller):
                 "allowedNav": allowed_nav,
                 "allowedPanels": {
                     "admin": bool(allowed_nav),
-                    "pos": bool(pos_kiosk_count),
+                    "pos": bool(pos_kiosk_count) and bool(
+                        {"superadmin", "manager", "supervisor", "cashier"} & set(roles)
+                    ),
                 },
                 "assignedKiosks": assigned_kiosks,
             },
@@ -2788,6 +2805,82 @@ class BayaanKioskApi(http.Controller):
             raise UserError("Only Bayaan users can subscribe to realtime events.")
         return request.env["bayaan.realtime"].sudo().realtime_config()
 
+    def _serialize_alert_rule(self, rule):
+        return {
+            "id": rule.id,
+            "name": rule.name,
+            "active": rule.active,
+            "trigger_type": rule.trigger_type,
+            "threshold": rule.threshold,
+            "cooldown_minutes": rule.cooldown_minutes,
+            "kiosk_codes": [k.kiosk_code for k in rule.kiosk_ids],
+            "product_codes": [p.default_code for p in rule.product_ids if p.default_code],
+            "recipients": [{"id": u.id, "name": u.name, "email": u.email or "", "lang": u.lang or ""} for u in rule.recipient_user_ids],
+            "last_fired_at": fields.Datetime.to_string(rule.last_fired_at) if rule.last_fired_at else "",
+            "fire_count": rule.fire_count,
+        }
+
+    @http.route("/bayaan/api/alert_rules", type="jsonrpc", auth="user")
+    def alert_rules(self, **kwargs):
+        """List + create + update + delete alert rules. Manager-only writes; chain-read for reads."""
+        payload = self._payload(kwargs)
+        action = (payload.get("action") or "list").strip().lower()
+        Rule = request.env["bayaan.alert.rule"].sudo()
+
+        if action == "list":
+            if not self._is_chain_read_user():
+                raise UserError("Only Bayaan managers/accountants/spectators can read alert rules.")
+            rules = Rule.search([("company_id", "=", request.env.company.id)], order="active desc, name")
+            return {"engine": "odoo_pos", "rules": [self._serialize_alert_rule(r) for r in rules]}
+
+        if action in ("create", "update", "delete", "toggle"):
+            if not self._is_bayaan_manager():
+                raise UserError("Only Bayaan managers can edit alert rules.")
+
+        if action == "create":
+            recipient_logins = payload.get("recipient_logins") or []
+            users = request.env["res.users"].sudo().search([
+                ("login", "in", recipient_logins),
+                ("company_ids", "in", [request.env.company.id]),
+            ])
+            if not users:
+                raise UserError("At least one valid recipient login is required.")
+            kiosk_codes = payload.get("kiosk_codes") or []
+            kiosks = request.env["bayaan.kiosk"].sudo().search([("kiosk_code", "in", kiosk_codes)]) if kiosk_codes else False
+            product_codes = payload.get("product_codes") or []
+            products = request.env["product.product"].sudo().search([("default_code", "in", product_codes)]) if product_codes else False
+            vals = {
+                "name": payload.get("name") or "Untitled rule",
+                "trigger_type": payload.get("trigger_type") or "low_stock",
+                "threshold": float(payload.get("threshold") or 1.0),
+                "cooldown_minutes": int(payload.get("cooldown_minutes") or 120),
+                "active": bool(payload.get("active", True)),
+                "recipient_user_ids": [(6, 0, users.ids)],
+                "company_id": request.env.company.id,
+            }
+            if kiosks:
+                vals["kiosk_ids"] = [(6, 0, kiosks.ids)]
+            if products:
+                vals["product_ids"] = [(6, 0, products.ids)]
+            rule = Rule.create(vals)
+            return {"engine": "odoo_pos", "rule": self._serialize_alert_rule(rule)}
+
+        if action == "toggle":
+            rule = Rule.browse(int(payload.get("id") or 0))
+            if not rule.exists():
+                raise UserError("Alert rule not found.")
+            rule.active = not rule.active
+            return {"engine": "odoo_pos", "rule": self._serialize_alert_rule(rule)}
+
+        if action == "delete":
+            rule = Rule.browse(int(payload.get("id") or 0))
+            if not rule.exists():
+                raise UserError("Alert rule not found.")
+            rule.unlink()
+            return {"engine": "odoo_pos", "deleted": True}
+
+        raise UserError("Unknown alert_rules action %r" % action)
+
     @http.route("/bayaan/api/warehouse_setup", type="jsonrpc", auth="user")
     def warehouse_setup(self, **kwargs):
         self._require_chain_read_scope("read warehouse setup")
@@ -5064,7 +5157,16 @@ class BayaanKioskApi(http.Controller):
                 if not discount_reason:
                     raise UserError("Manager discount reason is required.")
             tax_ids = product.taxes_id.filtered(lambda tax, c=request.env.company: tax.company_id == c)
-            effective_price_unit = price_unit * (1.0 - (discount_percent / 100.0))
+            try:
+                modifier_price_delta = float(item.get("modifier_price_delta") or 0.0)
+            except (TypeError, ValueError):
+                modifier_price_delta = 0.0
+            # Modifier delta adjusts the pricelist-resolved unit price; pricelist remains
+            # the source of truth for the base, the cashier just adds variant deltas.
+            modified_unit = price_unit + modifier_price_delta
+            if modified_unit < 0:
+                modified_unit = 0.0
+            effective_price_unit = modified_unit * (1.0 - (discount_percent / 100.0))
             line_subtotal = effective_price_unit * qty
             line_total = line_subtotal
             line_tax = 0.0
@@ -5080,16 +5182,33 @@ class BayaanKioskApi(http.Controller):
                 line_total = tax_calc["total_included"]
                 line_subtotal = tax_calc["total_excluded"]
                 line_tax = line_total - line_subtotal
-            order_lines.append((0, 0, {
+            modifier_signature = (item.get("modifier_signature") or "").strip()
+            try:
+                modifier_recipe_factor = float(item.get("modifier_recipe_factor") or 1.0)
+            except (TypeError, ValueError):
+                modifier_recipe_factor = 1.0
+            if modifier_recipe_factor <= 0:
+                modifier_recipe_factor = 1.0
+            modifier_summary = (item.get("modifier_summary") or "").strip()
+            line_vals = {
                 "name": item.get("name") or product.display_name,
                 "product_id": product.id,
                 "qty": qty,
-                "price_unit": price_unit,
+                # Persist the modified unit price so reports/receipts show the actual
+                # cashier-displayed amount, including modifier delta. The pricelist-
+                # resolved base remains in the audit row (server_price_unit) on discount.
+                "price_unit": modified_unit,
                 "discount": discount_percent,
                 "price_subtotal": line_subtotal,
                 "price_subtotal_incl": line_total,
                 "tax_ids": [(6, 0, tax_ids.ids)] if tax_ids else False,
-            }))
+                "bayaan_modifier_recipe_factor": modifier_recipe_factor,
+            }
+            if modifier_signature:
+                line_vals["bayaan_modifier_signature"] = modifier_signature
+            if modifier_summary:
+                line_vals["bayaan_modifier_summary"] = modifier_summary
+            order_lines.append((0, 0, line_vals))
             if discount_percent:
                 discount_audit_rows.append({
                     "product": product.default_code or product.display_name,

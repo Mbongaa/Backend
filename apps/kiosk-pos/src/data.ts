@@ -53,6 +53,27 @@ export type CartLine = {
   recipe: RecipeLine[];
 };
 
+export type ModifierValue = {
+  id: string;
+  name: LocalText;
+  priceDelta?: number;
+  recipeFactor?: number;
+  default?: boolean;
+};
+
+export type ModifierGroup = {
+  id: string;
+  name: LocalText;
+  selection: "single" | "multi";
+  required?: boolean;
+  values: ModifierValue[];
+};
+
+export type ProductModifierBinding = {
+  appliesTo: { categories?: string[]; productIds?: string[] };
+  groups: ModifierGroup[];
+};
+
 export const brand = {
   name: "Bayaan",
   product: "Kiosk Ops",
@@ -126,6 +147,82 @@ export const menuItems: MenuItem[] = [
   { id: "cheesecake", category: "cake", name: { en: "Cheesecake", ar: "تشيز كيك" }, price: 7000, sizes: ["slice"], recipe: [{ ingredientId: "cakeBox", qty: 1 }] },
   { id: "plain-croissant", category: "bakery", name: { en: "Plain croissant", ar: "كرواسون سادة" }, price: 3000, sizes: ["pc"], recipe: [{ ingredientId: "cakeBox", qty: 1 }] },
   { id: "choco-croissant", category: "bakery", name: { en: "Chocolate croissant", ar: "كرواسون شوكولاتة" }, price: 3500, sizes: ["pc"], recipe: [{ ingredientId: "cakeBox", qty: 1 }] },
+];
+
+// Modifier metadata applied per category. Cashier picks one value per single-select group,
+// any number from multi-select groups. priceDelta adjusts the line total. recipeFactor scales
+// ingredient consumption (Large = 1.25x means recipe qty × 1.25 at consumption time).
+export const productModifierBindings: ProductModifierBinding[] = [
+  {
+    appliesTo: { categories: ["coffee", "Hot Coffee", "Iced Coffee"] },
+    groups: [
+      {
+        id: "temp",
+        name: { en: "Temperature", ar: "درجة الحرارة" },
+        selection: "single",
+        required: true,
+        values: [
+          { id: "hot", name: { en: "Hot", ar: "حار" }, default: true },
+          { id: "iced", name: { en: "Iced", ar: "مثلج" }, priceDelta: 500 },
+        ],
+      },
+      {
+        id: "size",
+        name: { en: "Size", ar: "الحجم" },
+        selection: "single",
+        required: true,
+        values: [
+          { id: "small", name: { en: "Small", ar: "صغير" }, priceDelta: -500, recipeFactor: 0.8 },
+          { id: "medium", name: { en: "Medium", ar: "وسط" }, default: true, recipeFactor: 1.0 },
+          { id: "large", name: { en: "Large", ar: "كبير" }, priceDelta: 1000, recipeFactor: 1.25 },
+        ],
+      },
+      {
+        id: "milk",
+        name: { en: "Milk", ar: "الحليب" },
+        selection: "single",
+        values: [
+          { id: "whole", name: { en: "Whole", ar: "كامل الدسم" }, default: true },
+          { id: "lactose-free", name: { en: "Lactose-free", ar: "خالي اللاكتوز" }, priceDelta: 500 },
+          { id: "almond", name: { en: "Almond", ar: "حليب لوز" }, priceDelta: 1000 },
+        ],
+      },
+      {
+        id: "extras",
+        name: { en: "Extras", ar: "إضافات" },
+        selection: "multi",
+        values: [
+          { id: "extra-shot", name: { en: "Extra espresso shot", ar: "شوت إسبريسو إضافي" }, priceDelta: 800 },
+          { id: "decaf", name: { en: "Decaf", ar: "منزوع الكافيين" } },
+        ],
+      },
+    ],
+  },
+  {
+    appliesTo: { categories: ["juice", "Juice"] },
+    groups: [
+      {
+        id: "size",
+        name: { en: "Size", ar: "الحجم" },
+        selection: "single",
+        required: true,
+        values: [
+          { id: "medium", name: { en: "Medium 350ml", ar: "وسط 350مل" }, default: true, recipeFactor: 1.0 },
+          { id: "large", name: { en: "Large 500ml", ar: "كبير 500مل" }, priceDelta: 1500, recipeFactor: 1.4 },
+        ],
+      },
+      {
+        id: "sweetness",
+        name: { en: "Sweetness", ar: "التحلية" },
+        selection: "single",
+        values: [
+          { id: "no-sugar", name: { en: "No sugar", ar: "بدون سكر" } },
+          { id: "regular", name: { en: "Regular", ar: "عادي" }, default: true },
+          { id: "extra-sweet", name: { en: "Extra sweet", ar: "زيادة سكر" } },
+        ],
+      },
+    ],
+  },
 ];
 
 export const alerts = [

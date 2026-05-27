@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+        <record id="view_bayaan_alert_rule_tree" model="ir.ui.view">
+            <field name="name">bayaan.alert.rule.tree</field>
+            <field name="model">bayaan.alert.rule</field>
+            <field name="arch" type="xml">
+                <list string="Bayaan Alert Rules" multi_edit="0">
+                    <field name="active" widget="boolean_toggle"/>
+                    <field name="name"/>
+                    <field name="trigger_type"/>
+                    <field name="threshold"/>
+                    <field name="cooldown_minutes" string="Cooldown (min)"/>
+                    <field name="recipient_user_ids" widget="many2many_tags"/>
+                    <field name="kiosk_ids" widget="many2many_tags" optional="show"/>
+                    <field name="last_fired_at"/>
+                    <field name="fire_count" string="Fires"/>
+                </list>
+            </field>
+        </record>
+
+        <record id="view_bayaan_alert_rule_form" model="ir.ui.view">
+            <field name="name">bayaan.alert.rule.form</field>
+            <field name="model">bayaan.alert.rule</field>
+            <field name="arch" type="xml">
+                <form string="Bayaan Alert Rule">
+                    <sheet>
+                        <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" invisible="active"/>
+                        <div class="oe_title">
+                            <label for="name"/>
+                            <h1><field name="name" placeholder="e.g. Low milk &amp; large cups"/></h1>
+                        </div>
+                        <group>
+                            <group string="When to fire">
+                                <field name="active"/>
+                                <field name="trigger_type"/>
+                                <field name="threshold"/>
+                                <field name="cooldown_minutes"/>
+                            </group>
+                            <group string="Scope (empty = entire chain)">
+                                <field name="kiosk_ids" widget="many2many_tags"/>
+                                <field name="product_ids" widget="many2many_tags"/>
+                                <field name="company_id" groups="base.group_multi_company"/>
+                            </group>
+                        </group>
+                        <group string="Recipients">
+                            <field name="recipient_user_ids" widget="many2many_tags" nolabel="1"/>
+                        </group>
+                        <group string="History">
+                            <field name="last_fired_at" readonly="1"/>
+                            <field name="fire_count" readonly="1"/>
+                        </group>
+                    </sheet>
+                </form>
+            </field>
+        </record>
+
+        <record id="view_bayaan_alert_dispatched_tree" model="ir.ui.view">
+            <field name="name">bayaan.alert.dispatched.tree</field>
+            <field name="model">bayaan.alert.dispatched</field>
+            <field name="arch" type="xml">
+                <list string="Bayaan Alert Dispatch Log" create="false" delete="false">
+                    <field name="fired_at"/>
+                    <field name="rule_id"/>
+                    <field name="kiosk_id" optional="show"/>
+                    <field name="subject"/>
+                    <field name="send_state" widget="badge" decoration-success="send_state == 'sent'" decoration-danger="send_state == 'failed'"/>
+                    <field name="sent_at" optional="hide"/>
+                    <field name="send_error" optional="hide"/>
+                </list>
+            </field>
+        </record>
+
+        <record id="action_bayaan_alert_rule" model="ir.actions.act_window">
+            <field name="name">Alert Rules</field>
+            <field name="res_model">bayaan.alert.rule</field>
+            <field name="view_mode">list,form</field>
+        </record>
+
+        <record id="action_bayaan_alert_dispatched" model="ir.actions.act_window">
+            <field name="name">Alert Dispatch Log</field>
+            <field name="res_model">bayaan.alert.dispatched</field>
+            <field name="view_mode">list,form</field>
+            <field name="context">{'search_default_group_by_rule': 1}</field>
+        </record>
+
+        <menuitem id="menu_bayaan_alert_root"
+                  name="Alerts"
+                  parent="point_of_sale.menu_point_root"
+                  sequence="40"
+                  groups="bayaan_fnb_kiosk.group_bayaan_manager"/>
+        <menuitem id="menu_bayaan_alert_rules"
+                  name="Alert Rules"
+                  parent="menu_bayaan_alert_root"
+                  action="action_bayaan_alert_rule"
+                  sequence="10"/>
+        <menuitem id="menu_bayaan_alert_log"
+                  name="Dispatch Log"
+                  parent="menu_bayaan_alert_root"
+                  action="action_bayaan_alert_dispatched"
+                  sequence="20"/>
+
+</odoo>

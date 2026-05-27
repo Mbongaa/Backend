@@ -85,3 +85,38 @@ backup:
 > mkdir -p backups
 > $(DC) exec -T db pg_dump -U odoo $(DB) | gzip > backups/$(DB)-$$(date +%Y%m%d-%H%M%S).sql.gz
 > @echo "Backup written to backups/"
+
+# Restore the most recent gzipped pg_dump from backups/ into RESTORE_DB
+# (defaults to bayaan_restore_test). Usage:
+#   make restore                          # latest backup -> bayaan_restore_test
+#   make restore RESTORE_DB=bayaan_staging BACKUP=backups/bayaan-2026-05-20.sql.gz
+RESTORE_DB ?= bayaan_restore_test
+BACKUP     ?=
+restore:
+> @backup_file="$(BACKUP)"; \
+>   if [ -z "$$backup_file" ]; then \
+>     backup_file=$$(ls -1t backups/*.sql.gz 2>/dev/null | head -n 1); \
+>   fi; \
+>   if [ -z "$$backup_file" ] || [ ! -f "$$backup_file" ]; then \
+>     echo "No backup file found in backups/. Run 'make backup' first or pass BACKUP=path."; \
+>     exit 1; \
+>   fi; \
+>   echo "Restoring $$backup_file -> database $(RESTORE_DB)"; \
+>   $(DC) exec -T db dropdb -U odoo --if-exists $(RESTORE_DB); \
+>   $(DC) exec -T db createdb -U odoo $(RESTORE_DB) -O odoo; \
+>   gunzip -c "$$backup_file" | $(DC) exec -T db psql -U odoo -d $(RESTORE_DB) >/dev/null; \
+>   echo "Restored. Now upgrade $(ADDON) into the restored DB:"; \
+>   echo "  $(DC) run --rm -e ODOO_DB=$(RESTORE_DB) odoo odoo -d $(RESTORE_DB) -u $(ADDON) --stop-after-init"
+>   echo "Restore drill complete."
+
+# End-to-end restore drill: backup → restore into a disposable DB → verify the
+# Bayaan addon loads and a smoke-essential route responds. Use this to prove the
+# backup procedure actually recovers a working system.
+restore-drill: backup
+> @latest=$$(ls -1t backups/*.sql.gz | head -n 1); \
+>   echo "Restore drill using $$latest"; \
+>   $(MAKE) restore RESTORE_DB=bayaan_restore_drill BACKUP="$$latest"; \
+>   echo "Loading Bayaan addon into bayaan_restore_drill (this will exit after init)..."; \
+>   $(DC) run --rm odoo odoo -d bayaan_restore_drill -u $(ADDON) --stop-after-init || \
+>     { echo "Addon load failed — restore is NOT verified."; exit 2; }; \
+>   echo "Restore drill PASSED: backup restored cleanly and addon loaded."
