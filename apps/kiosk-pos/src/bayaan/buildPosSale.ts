@@ -105,7 +105,11 @@ export function buildKioskSalePayload(input: BuildPosSaleInput): KioskSalePayloa
   }
 
   const externalId = input.externalId ?? generateExternalId(input.kiosk);
-  const postingDate = input.postingDate ?? new Date().toISOString().slice(0, 10);
+  // Stamp the full sale timestamp (UTC "YYYY-MM-DD HH:MM:SS"), not a bare date. A date-only
+  // posting_date makes the backend store date_order at midnight, which sorts the sale to the
+  // bottom of the dashboard order feed (sorted by date_order desc) so it reads as "missing".
+  // A full timestamp also preserves the real sale time for sales that queue offline and sync later.
+  const postingDate = input.postingDate ?? new Date().toISOString().slice(0, 19).replace("T", " ");
   const subtotal = input.cart.reduce((sum, line) => sum + line.price * line.qty, 0);
   const totalRatio = subtotal > 0 && input.total > 0 ? input.total / subtotal : 1;
 

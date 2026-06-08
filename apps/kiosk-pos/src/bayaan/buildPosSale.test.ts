@@ -39,11 +39,12 @@ describe("buildKioskSalePayload", () => {
     expect(payload.external_id).toMatch(/^BAY-K-01-\d{14}-\d{6}$/);
   });
 
-  it("auto-generates posting_date when not provided", () => {
+  it("auto-generates a full posting_date timestamp when not provided", () => {
     const { postingDate, ...input } = baseInput;
     void postingDate;
     const payload = buildKioskSalePayload(input);
-    expect(payload.posting_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // Full "YYYY-MM-DD HH:MM:SS" timestamp, never a bare date (which would store at midnight).
+    expect(payload.posting_date).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
 
   it("rejects empty cart", () => {

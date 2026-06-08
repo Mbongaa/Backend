@@ -17,6 +17,7 @@ import { buildSimulationTransferSuggestions, createPeakSimulation } from "../sim
 
 export type ShiftCloseDraft = {
   actualCash: number;
+  actualCard?: number;
   stockCounts: Array<{
     item: string;
     uom: string;
@@ -57,6 +58,17 @@ export type StockTransferActionPayload = {
     itemId: string;
     qty: number;
   }>;
+};
+
+// A cashier's low-stock request to the warehouse (creates a draft transfer to approve).
+export type StockRequestPayload = {
+  kioskId: string;
+  items: Array<{
+    itemId: string;
+    qty: number;
+    uom?: string;
+  }>;
+  note?: string;
 };
 
 function stockTransferPayloadLines(payload: StockTransferPayload) {
@@ -123,6 +135,9 @@ export type ProductCatalogPayload = {
   priorityWeight?: number;
   imageBase64?: string;
   imageMimeType?: string;
+  sizes?: string[];
+  modifierGroups?: unknown[];
+  posOptions?: { sizes?: string[]; modifier_groups?: unknown[] };
 };
 
 export type CreateSupplierPayload = {
@@ -268,6 +283,8 @@ export type AiDashboardPlanPayload = {
     sectionId?: string;
     timeRange?: "today" | "week" | "month" | "custom";
   };
+  /** Manual override: true = force deep reasoning model, false = force fast model, null/undefined = auto-detect. */
+  reasoning?: boolean | null;
 };
 
 export type AiDashboardStreamHandlers = {
@@ -389,6 +406,7 @@ export type SourceOfTruthGateway = {
   submitKioskSale: (payload: KioskSalePayload) => Promise<unknown>;
   submitStockTransfer: (payload: StockTransferPayload) => Promise<unknown>;
   stockTransferAction: (payload: StockTransferActionPayload) => Promise<unknown>;
+  requestStock: (payload: StockRequestPayload) => Promise<unknown>;
   submitPurchaseOrder: (payload: PurchaseOrderPayload) => Promise<unknown>;
   purchaseOrderAction: (payload: PurchaseOrderActionPayload) => Promise<unknown>;
   createRecurringPurchase: (payload: RecurringPurchasePayload) => Promise<unknown>;
@@ -537,6 +555,7 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
           kioskId: payload.scope?.kioskId,
           sectionId: payload.scope?.sectionId,
           timeRange: payload.scope?.timeRange,
+          reasoning: payload.reasoning,
         },
       });
     },
@@ -558,6 +577,7 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
             kioskId: payload.scope?.kioskId,
             sectionId: payload.scope?.sectionId,
             timeRange: payload.scope?.timeRange,
+            reasoning: payload.reasoning,
           },
         }),
       });
@@ -641,6 +661,9 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
           priority_weight: payload.priorityWeight,
           image_base64: payload.imageBase64,
           image_mimetype: payload.imageMimeType,
+          sizes: payload.sizes,
+          modifier_groups: payload.modifierGroups,
+          pos_options: payload.posOptions,
         },
       });
     },
@@ -685,6 +708,19 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
             item: item.itemId,
             qty: item.qty,
           })),
+        },
+      });
+    },
+    async requestStock(payload: StockRequestPayload) {
+      return client.json("/bayaan/api/stock_request", {
+        payload: {
+          kiosk: payload.kioskId,
+          items: (payload.items || []).map((item) => ({
+            item: item.itemId,
+            qty: item.qty,
+            uom: item.uom,
+          })),
+          note: payload.note,
         },
       });
     },
@@ -781,6 +817,9 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
       const cashSales = shift.sales
         .filter((sale) => sale.tender.method === "cash")
         .reduce((sum, sale) => sum + sale.total, 0);
+      const cardSales = shift.sales
+        .filter((sale) => sale.tender.method === "card")
+        .reduce((sum, sale) => sum + sale.total, 0);
       return client.json("/bayaan/api/shift_close", {
         payload: {
           kiosk: kioskId,
@@ -789,6 +828,8 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
           opening_cash: shift.openingCash,
           expected_cash: shift.openingCash + cashSales,
           actual_cash: draft.actualCash,
+          expected_card: cardSales,
+          actual_card: draft.actualCard ?? cardSales,
           stock_counts: draft.stockCounts,
           ingredient_counts: draft.ingredientCounts,
           pos_invoices: posOrders,
@@ -4082,6 +4123,10 @@ function createSimulationGateway(): SourceOfTruthGateway {
         bayaan_state: actualState,
       };
     },
+    async requestStock(payload: StockRequestPayload) {
+      // Stock requests are a live-backend feature; simulation just acknowledges.
+      return { simulation: true, requested: true, kiosk: payload.kioskId };
+    },
     async submitPurchaseOrder(payload: PurchaseOrderPayload) {
       assertSimulationPurchaseOrderPayload(snapshot(), payload);
       const createdAt = snapshot().meta.simulation.current;
@@ -5133,6 +5178,9 @@ function createNoopGateway() {
       return { skipped: true };
     },
     async stockTransferAction(_payload: StockTransferActionPayload) {
+      return { skipped: true };
+    },
+    async requestStock(_payload: StockRequestPayload) {
       return { skipped: true };
     },
     async submitPurchaseOrder(_payload: PurchaseOrderPayload) {

@@ -69,6 +69,22 @@ class TestKioskSaleApi(BayaanTestBase, HttpCase):
         self.assertEqual(result.get("consumption_state"), "posted")
         self.assertEqual(len(result.get("consumption_lines") or []), 3)
 
+    def test_chain_bootstrap_exposes_configured_cash_payment_method(self):
+        response = self._jsonrpc("/bayaan/api/chain_bootstrap", {})
+        if "error" in response:
+            self.fail("chain_bootstrap errored: %s" % response["error"])
+        result = response["result"]
+        config_rows = result.get("pos_configs") or []
+        config = next(
+            (row for row in config_rows if row.get("id") == self.pos_config.id),
+            None,
+        )
+        self.assertTrue(config, "chain_bootstrap must include the kiosk POS config")
+        methods = config.get("payment_methods") or []
+        cash = next((method for method in methods if method.get("name") == "Cash"), None)
+        self.assertTrue(cash, "chain_bootstrap must expose configured Cash method")
+        self.assertEqual(cash.get("provider", {}).get("category"), "cash")
+
     def test_kiosk_sale_rejects_price_tamper_underpayment(self):
         response = self._jsonrpc("/bayaan/api/kiosk_sale", {
             "kiosk": "K-TEST",
@@ -179,3 +195,43 @@ class TestKioskSaleApi(BayaanTestBase, HttpCase):
             "payments": [{"method": "cash", "amount": 0}],
         })
         self.assertIn("error", response)
+
+    def test_kiosk_sale_date_order_is_never_midnight(self):
+        """A live sale must carry a real time-of-day, never 00:00:00. A midnight
+        date_order sorts the order to the bottom of the dashboard feed (sorted by
+        date_order desc), so a just-posted sale reads as 'missing' in the admin.
+        """
+        # No posting_date -> Odoo stamps date_order = now().
+        no_date = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-NODATE",
+            "cashier": self.env.user.name,
+            "items": [{"product": "MENU-OJ", "name": "Orange Juice", "qty": 1, "price_unit": 5500.0}],
+            "payments": [{"method": "cash", "amount": 5500.0}],
+        })
+        if "error" in no_date:
+            self.fail("kiosk_sale errored: %s" % no_date["error"])
+        order = self.env["pos.order"].sudo().browse(no_date["result"]["id"])
+        self.assertNotEqual(
+            order.date_order.strftime("%H:%M:%S"), "00:00:00",
+            "Sale without posting_date must be stamped at the real time, not midnight",
+        )
+
+        # A bare-date posting_date (legacy/other callers) must fall back to the
+        # current time-of-day instead of midnight.
+        bare = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-BAREDATE",
+            "cashier": self.env.user.name,
+            "posting_date": "2026-05-20",
+            "items": [{"product": "MENU-OJ", "name": "Orange Juice", "qty": 1, "price_unit": 5500.0}],
+            "payments": [{"method": "cash", "amount": 5500.0}],
+        })
+        if "error" in bare:
+            self.fail("kiosk_sale errored: %s" % bare["error"])
+        bare_order = self.env["pos.order"].sudo().browse(bare["result"]["id"])
+        self.assertEqual(bare_order.date_order.strftime("%Y-%m-%d"), "2026-05-20")
+        self.assertNotEqual(
+            bare_order.date_order.strftime("%H:%M:%S"), "00:00:00",
+            "Bare-date posting_date must fall back to current time-of-day, not midnight",
+        )

@@ -36,6 +36,23 @@ class StockPicking(models.Model):
                 for line in picking.bayaan_discrepancy_line_ids
             )
 
+    def _create_picking_from_pos_order_lines(self, location_dest_id, lines, picking_type, partner=False):
+        """Suppress the finished-SKU delivery move for recipe/none products.
+
+        Odoo 19 POS creates the order delivery through this method (not through
+        ``_launch_stock_rule_from_pos_order_lines``, which only runs when a picking
+        already exists). Recipe products deduct their measured ingredients through the
+        Bayaan consumption ledger, so the finished SKU must not also leave a kiosk stock
+        move (which would drive the unstocked finished product negative). 'finished' and
+        'hybrid' lines still flow through so Odoo handles their stock normally.
+        """
+        lines = lines.filtered(
+            lambda line: line.product_id.product_tmpl_id.bayaan_consumption_mode not in ("recipe", "none")
+        )
+        return super()._create_picking_from_pos_order_lines(
+            location_dest_id, lines, picking_type, partner=partner
+        )
+
 
 class BayaanStockReceiptDiscrepancy(models.Model):
     _name = "bayaan.stock.receipt.discrepancy"

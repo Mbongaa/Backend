@@ -38,12 +38,20 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       strictPort: true,
+      // The repo lives on a Windows mount (/mnt/c) under WSL where inotify does not
+      // fire, so native file watching misses edits and HMR silently serves stale code.
+      // Polling makes the watcher reliable across the Windows/WSL boundary.
+      watch: { usePolling: true, interval: 300 },
       proxy: {
         "/odoo": {
           target: odooTarget,
           changeOrigin: true,
           secure: false,
           ws: true,
+          // Deep-reasoning AI calls can think for minutes with no bytes in between;
+          // keep the dev proxy from cutting the SSE stream (6 min ceiling).
+          proxyTimeout: 360_000,
+          timeout: 360_000,
           rewrite: (path) => path.replace(/^\/odoo/, ""),
         },
       },

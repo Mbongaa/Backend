@@ -48,6 +48,8 @@ type TransferRow = {
   items?: string;
   eta?: string;
   status?: string;
+  requested?: boolean;
+  origin?: string;
 };
 
 type SuggestionRow = {
@@ -355,6 +357,12 @@ export function StudioInventoryWorkspace({
     setPagination((current) => ({ ...current, pageIndex: 0 }));
   }, [categoryFilter, locationFilter]);
 
+  // Open kiosk-initiated requests still awaiting warehouse action (not yet received).
+  const openRequestCount = transfers.filter((transfer) =>
+    transfer.requested
+    && !["received", "done", "complete", "cancel", "cancelled"].includes(String(transfer.status || "").toLowerCase()),
+  ).length;
+
   const inventorySummary = React.useMemo(() => {
     const healthy = filteredInv.filter((item) => inventoryTone(item.status) === "healthy").length;
     const low = filteredInv.filter((item) => inventoryTone(item.status) === "low").length;
@@ -591,10 +599,19 @@ export function StudioInventoryWorkspace({
             <CardTitle>{tInv(ar, "Warehouse transfers", "تحويلات المستودع")}</CardTitle>
             <CardDescription>{tInv(ar, "Admin creates, warehouse dispatches, kiosk receives", "الإدارة تنشئ، المستودع يرسل، والكشك يستلم")}</CardDescription>
             <CardAction>
-              <Button onClick={onOpenTransferModal} size="sm" type="button" variant="outline">
-                <Plus data-icon="inline-start" />
-                {tInv(ar, "New transfer", "تحويل جديد")}
-              </Button>
+              <div className="flex items-center gap-2">
+                {openRequestCount > 0 ? (
+                  <Badge className="border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300" variant="outline">
+                    {openRequestCount === 1
+                      ? tInv(ar, "1 open kiosk request", "طلب كشك مفتوح واحد")
+                      : `${openRequestCount} ${tInv(ar, "open kiosk requests", "طلبات أكشاك مفتوحة")}`}
+                  </Badge>
+                ) : null}
+                <Button onClick={onOpenTransferModal} size="sm" type="button" variant="outline">
+                  <Plus data-icon="inline-start" />
+                  {tInv(ar, "New transfer", "تحويل جديد")}
+                </Button>
+              </div>
             </CardAction>
           </CardHeader>
           <CardContent className="min-h-0 overflow-auto px-0">
@@ -602,9 +619,22 @@ export function StudioInventoryWorkspace({
               {transfers.length ? transfers.map((transfer) => {
                 const action = getNextTransferAction(transfer.status);
                 return (
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3" key={transfer.id}>
+                  <div
+                    className={cn(
+                      "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3",
+                      transfer.requested ? "bg-amber-500/5" : undefined,
+                    )}
+                    key={transfer.id}
+                  >
                     <div className="min-w-0">
-                      <div className="truncate font-medium">{localizeInventoryText(ar, transfer.to)}</div>
+                      <div className="flex items-center gap-2">
+                        <div className="truncate font-medium">{localizeInventoryText(ar, transfer.to)}</div>
+                        {transfer.requested ? (
+                          <Badge className="border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300" variant="outline">
+                            {tInv(ar, "Kiosk request", "طلب كشك")}
+                          </Badge>
+                        ) : null}
+                      </div>
                       <div className="truncate text-muted-foreground text-xs">{localizeInventoryText(ar, transfer.from)} - {transfer.id}</div>
                       <div className="mt-1 truncate text-muted-foreground text-xs">{localizeInventoryText(ar, transfer.items)}</div>
                     </div>

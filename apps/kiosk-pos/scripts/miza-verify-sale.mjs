@@ -1,0 +1,23 @@
+import { chromium } from "playwright";
+const URL="http://127.0.0.1:5174"; const browser=await chromium.launch();
+const page=await browser.newPage({viewport:{width:1600,height:1000}});
+let saleResp=null;
+page.on("response", async r=>{ if(r.url().includes("kiosk_sale")){ try{const j=await r.json(); saleResp=j.result||j.error;}catch(e){} } });
+await page.goto(URL,{waitUntil:"networkidle"}); await page.waitForTimeout(1200);
+await page.getByRole("button",{name:/Sign in|دخول/}).first().click();
+const dlg=page.locator("[role='dialog']"); await dlg.waitFor({state:"visible"});
+await dlg.locator("input").nth(0).fill("zainab@miza.iq"); await dlg.locator("input").nth(1).fill("test");
+await dlg.locator("button[type='submit']").click(); await page.waitForTimeout(5000);
+await page.getByRole("button",{name:/^POS$/}).first().click().catch(()=>{}); await page.waitForTimeout(3000);
+await page.locator("div").filter({hasText:/^Zainab Hassancashier$/}).first().click().catch(()=>{}); await page.waitForTimeout(1200);
+await page.getByRole("button",{name:/Start shift|ابدأ الوردية/}).first().click().catch(()=>{}); await page.waitForTimeout(6000);
+// Add Cappuccino + Cheesecake (= 10,000, the original failing sale)
+await page.locator("button.card, .card").filter({hasText:/Cappuccino/}).first().click().catch(()=>{}); await page.waitForTimeout(1000);
+await page.locator("button.card, .card").filter({hasText:/Cheesecake/}).first().click().catch(()=>{}); await page.waitForTimeout(1200);
+await page.getByRole("button",{name:/Charge/}).first().click().catch(()=>{}); await page.waitForTimeout(2000);
+await page.locator("[class*='card']").filter({hasText:/configured POS method/}).filter({hasText:/Cash/}).first().click().catch(()=>{});
+await page.waitForTimeout(5000);
+const body=await page.locator("body").innerText();
+console.log("SALE_RESP:", JSON.stringify(saleResp).slice(0,200));
+console.log("RESULT:", body.includes("Payment complete")?"Payment complete":body.includes("Sale failed")?"Sale failed":"?");
+await browser.close();

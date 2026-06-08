@@ -1,0 +1,26 @@
+import { chromium } from "playwright";
+const URL = "http://127.0.0.1:5174";
+const logs=[];
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+page.on("console",(m)=>{ if(m.type()==="error") logs.push("err:"+m.text().slice(0,160)); });
+page.on("response", async (r)=>{ if(r.url().includes("kiosk_sale")){ try{ const j=await r.json(); logs.push("kiosk_sale: "+JSON.stringify(j.result||j.error||j).slice(0,260)); }catch(e){} } });
+await page.goto(URL,{waitUntil:"networkidle"}); await page.waitForTimeout(1200);
+await page.getByRole("button",{name:/Sign in|دخول/}).first().click();
+const dlg=page.locator("[role='dialog']"); await dlg.waitFor({state:"visible"});
+await dlg.locator("input").nth(0).fill("zainab@miza.iq"); await dlg.locator("input").nth(1).fill("test");
+await dlg.locator("button[type='submit']").click(); await page.waitForTimeout(5000);
+await page.getByRole("button",{name:/^POS$/}).first().click().catch(()=>{}); await page.waitForTimeout(3000);
+await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(()=>{});
+await page.waitForTimeout(1200);
+await page.getByRole("button",{name:/Start shift|ابدأ الوردية/}).first().click().catch(()=>{}); await page.waitForTimeout(5000);
+await page.locator("button.card, .card").filter({ hasText: /Cappuccino/ }).first().click().catch(()=>{}); await page.waitForTimeout(1500);
+await page.getByRole("button",{name:/Charge/}).first().click().catch(()=>{}); await page.waitForTimeout(2500);
+// click the Cash payment-method card -> triggers submitSale
+await page.locator("[class*='card']").filter({ hasText: /configured POS method/ }).filter({ hasText: /Cash/ }).first().click().catch((e)=>logs.push("cash-click:"+String(e).slice(0,60)));
+await page.waitForTimeout(6000);
+await page.screenshot({path:"verification/miza-11-paid.png",fullPage:false});
+const body = await page.locator("body").innerText();
+logs.push("RESULT_TEXT: "+(body.includes("Payment complete")?"Payment complete ✓":body.includes("Sale failed")?"Sale failed ✗":"(unknown)"));
+console.log(logs.join("\n"));
+await browser.close();

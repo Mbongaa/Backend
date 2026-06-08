@@ -290,7 +290,7 @@ class BayaanKioskApi(http.Controller):
         if operation == "transfer" and self._is_bayaan_logistics():
             return
         assigned = self._user_is_assigned_to_kiosk(kiosk)
-        if operation in ("open_session", "sale", "waste", "shift_close"):
+        if operation in ("open_session", "sale", "waste", "shift_close", "stock_request"):
             if assigned and self._is_bayaan_cashier():
                 return
         elif operation in ("transfer", "review"):
@@ -378,7 +378,7 @@ class BayaanKioskApi(http.Controller):
             "detail": event.detail or "",
             "actor": event.actor_id.name,
             "actorLogin": event.actor_id.login,
-            "occurredAt": fields.Datetime.to_string(event.occurred_at) if event.occurred_at else False,
+            "occurredAt": self._bayaan_local_datetime(event.occurred_at),
             "kiosk": event.kiosk_id.kiosk_code if event.kiosk_id else "",
             "kioskName": event.kiosk_id.name if event.kiosk_id else "",
             "model": event.model_name or "",
@@ -576,6 +576,7 @@ class BayaanKioskApi(http.Controller):
             "image_128": image_base64,
             "image_data_url": "data:image/webp;base64,%s" % image_base64 if image_base64 else "",
             "consumption_mode": product.product_tmpl_id.bayaan_consumption_mode,
+            "pos_options": product.product_tmpl_id.bayaan_pos_options_dict(),
             "qty_available": product.qty_available,
             "target_qty": plan["target_qty"],
             "reorder_qty": plan["reorder_qty"],
@@ -607,6 +608,101 @@ class BayaanKioskApi(http.Controller):
         except binascii.Error as exc:
             raise UserError("Product image must be valid base64.") from exc
         return image
+
+    def _pos_options_value(self, payload):
+        """Normalize per-product POS options (sizes + modifier groups) into a JSON
+        string for product.template.bayaan_pos_options. Returns None when the caller
+        supplied nothing (so the stored value is left unchanged on update)."""
+        import json
+        raw = payload.get("pos_options")
+        if raw is None:
+            raw = payload.get("posOptions")
+        sizes_in = payload.get("sizes")
+        groups_in = payload.get("modifier_groups")
+        if groups_in is None:
+            groups_in = payload.get("modifierGroups")
+        if raw is None and sizes_in is None and groups_in is None:
+            return None
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw) if raw.strip() else {}
+            except (ValueError, TypeError) as exc:
+                raise UserError("pos_options must be a JSON object.") from exc
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, dict):
+            raise UserError("pos_options must be a JSON object.")
+        sizes = sizes_in if sizes_in is not None else raw.get("sizes")
+        groups = groups_in if groups_in is not None else (raw.get("modifier_groups") or raw.get("modifierGroups"))
+        return json.dumps(self._normalize_pos_options(sizes, groups), ensure_ascii=False)
+
+    def _normalize_pos_options(self, sizes, groups):
+        def _label(value):
+            if isinstance(value, dict):
+                en = str(value.get("en") or "").strip()
+                ar = str(value.get("ar") or "").strip()
+                return {"en": en or ar, "ar": ar or en}
+            text = str(value or "").strip()
+            return {"en": text, "ar": text}
+
+        def _slug(value):
+            base = "".join(ch if ch.isalnum() else "-" for ch in str(value or "").lower()).strip("-")
+            return base or "opt"
+
+        out_sizes = []
+        if isinstance(sizes, list):
+            for size in sizes:
+                token = str(size).strip()
+                if token and token not in out_sizes:
+                    out_sizes.append(token)
+
+        out_groups = []
+        if isinstance(groups, list):
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                name = _label(group.get("name") or group.get("label"))
+                if not name["en"]:
+                    continue
+                selection = "multi" if str(group.get("selection") or "single").lower() == "multi" else "single"
+                values = []
+                seen = set()
+                for value in (group.get("values") or group.get("options") or []):
+                    if not isinstance(value, dict):
+                        value = {"name": value}
+                    vname = _label(value.get("name") or value.get("label"))
+                    if not vname["en"]:
+                        continue
+                    vid = _slug(value.get("id") or vname["en"])
+                    if vid in seen:
+                        continue
+                    seen.add(vid)
+                    entry = {"id": vid, "name": vname}
+                    price_delta = value.get("priceDelta", value.get("price_delta"))
+                    if price_delta not in (None, ""):
+                        try:
+                            entry["priceDelta"] = int(round(float(price_delta)))
+                        except (ValueError, TypeError):
+                            pass
+                    recipe_factor = value.get("recipeFactor", value.get("recipe_factor"))
+                    if recipe_factor not in (None, ""):
+                        try:
+                            entry["recipeFactor"] = float(recipe_factor)
+                        except (ValueError, TypeError):
+                            pass
+                    if value.get("default"):
+                        entry["default"] = True
+                    values.append(entry)
+                if not values:
+                    continue
+                out_groups.append({
+                    "id": _slug(group.get("id") or name["en"]),
+                    "name": name,
+                    "selection": selection,
+                    "required": bool(group.get("required")),
+                    "values": values,
+                })
+        return {"sizes": out_sizes, "modifier_groups": out_groups}
 
     def _serialize_supplier_partner(self, partner, spend30=0.0, last_order="-"):
         return {
@@ -682,8 +778,8 @@ class BayaanKioskApi(http.Controller):
                 "id": row.id,
                 "employee": row.employee_id.name,
                 "kiosk": row.kiosk_id.kiosk_code,
-                "checkIn": fields.Datetime.to_string(row.check_in),
-                "checkOut": fields.Datetime.to_string(row.check_out) if row.check_out else False,
+                "checkIn": self._bayaan_local_datetime(row.check_in),
+                "checkOut": self._bayaan_local_datetime(row.check_out),
                 "workedHours": row.worked_hours,
                 "note": row.note,
             } for row in attendance],
@@ -875,8 +971,8 @@ class BayaanKioskApi(http.Controller):
             "kiosk": attendance.kiosk_id.kiosk_code,
             "kioskName": attendance.kiosk_id.name,
             "workedHours": attendance.worked_hours,
-            "checkIn": fields.Datetime.to_string(attendance.check_in),
-            "checkOut": fields.Datetime.to_string(attendance.check_out) if attendance.check_out else False,
+            "checkIn": self._bayaan_local_datetime(attendance.check_in),
+            "checkOut": self._bayaan_local_datetime(attendance.check_out),
             "odooAttendanceId": attendance.hr_attendance_id.id,
         }
 
@@ -960,7 +1056,7 @@ class BayaanKioskApi(http.Controller):
             "reason": adjustment.reason,
             "state": adjustment.state,
             "approvedBy": adjustment.approved_by_id.name,
-            "approvedAt": fields.Datetime.to_string(adjustment.approved_at) if adjustment.approved_at else False,
+            "approvedAt": self._bayaan_local_datetime(adjustment.approved_at),
         }
 
     def _ensure_payroll_adjustment_period_open(self, adjustment_date):
@@ -1741,6 +1837,16 @@ class BayaanKioskApi(http.Controller):
             or os.environ.get("OPENAI_MODEL")
             or "gpt-5.4-mini"
         ).strip()
+        reasoning_model = (
+            ICP.get_param("bayaan.ai.openai.reasoning_model")
+            or os.environ.get("BAYAAN_AI_OPENAI_REASONING_MODEL")
+            or "gpt-5.4"
+        ).strip()
+        reasoning_effort = (
+            ICP.get_param("bayaan.ai.openai.reasoning_effort")
+            or os.environ.get("BAYAAN_AI_OPENAI_REASONING_EFFORT")
+            or "high"
+        ).strip().lower()
         api_key = (
             ICP.get_param("bayaan.ai.openai.api_key")
             or os.environ.get("BAYAAN_OPENAI_API_KEY")
@@ -1750,9 +1856,32 @@ class BayaanKioskApi(http.Controller):
         return {
             "provider": provider,
             "model": model,
+            "reasoning_model": reasoning_model,
+            "reasoning_effort": reasoning_effort,
             "api_key": api_key,
             "configured": bool(api_key) and provider == "openai",
         }
+
+    def _ai_parse_reasoning_pref(self, payload):
+        """Manual override from the UI: True (force deep), False (force fast), or None (auto)."""
+        raw = payload.get("reasoning")
+        if raw is None:
+            raw = payload.get("deepReasoning")
+        if isinstance(raw, bool):
+            return raw
+        if raw is None:
+            return None
+        text = str(raw).strip().lower()
+        if text in ("true", "1", "on", "deep", "yes"):
+            return True
+        if text in ("false", "0", "off", "fast", "no"):
+            return False
+        return None
+
+    def _ai_reasoning_decision(self, plan, pref, query=""):
+        """User-controlled: the deep-reasoning model runs only when the user
+        explicitly selects it (Deep). No automatic escalation."""
+        return pref is True
 
     def _ai_int_config(self, key, env_name, default):
         ICP = request.env["ir.config_parameter"].sudo()
@@ -2253,7 +2382,7 @@ class BayaanKioskApi(http.Controller):
             "Keep action-looking items in proposal-only mode."
         ) % language["systemInstruction"]
 
-    def _ai_openai_body(self, query, report_pack, plan, language, answer_mode, stream=False, model=None):
+    def _ai_openai_body(self, query, report_pack, plan, language, answer_mode, stream=False, model=None, reasoning_effort=None):
         body = {
             "model": model or self._ai_provider_config()["model"],
             "instructions": self._ai_openai_instructions(language),
@@ -2276,7 +2405,7 @@ class BayaanKioskApi(http.Controller):
                     "summary": "natural assistant response in responseLanguage; for operations, ground it in sourceEvidence",
                 },
             }, ensure_ascii=False, default=str),
-            "max_output_tokens": 2400,
+            "max_output_tokens": 32000 if reasoning_effort else 2400,
             "text": {
                 "format": {
                     "type": "json_schema",
@@ -2286,6 +2415,8 @@ class BayaanKioskApi(http.Controller):
                 },
             },
         }
+        if reasoning_effort:
+            body["reasoning"] = {"effort": reasoning_effort}
         if stream:
             body["stream"] = True
         return body
@@ -2311,7 +2442,7 @@ class BayaanKioskApi(http.Controller):
             ),
         }
 
-    def _ai_call_openai(self, query, report_pack, plan, locale="en"):
+    def _ai_call_openai(self, query, report_pack, plan, locale="en", reasoning_pref=None):
         guard_result = self._ai_provider_guard(query, report_pack, plan)
         if guard_result:
             return guard_result
@@ -2335,7 +2466,10 @@ class BayaanKioskApi(http.Controller):
                 "visualizations": [],
                 "explanation": "Server-side AI provider credentials are not configured. The backend built a source-backed report pack, but no LLM-authored answer or visualization was made.",
             }
-        body = self._ai_openai_body(query, report_pack, plan, language, answer_mode, model=config["model"])
+        use_reasoning = self._ai_reasoning_decision(plan, reasoning_pref, query)
+        active_model = config["reasoning_model"] if use_reasoning else config["model"]
+        active_effort = config["reasoning_effort"] if use_reasoning else None
+        body = self._ai_openai_body(query, report_pack, plan, language, answer_mode, model=active_model, reasoning_effort=active_effort)
         response = requests.post(
             "https://api.openai.com/v1/responses",
             headers={
@@ -2343,11 +2477,17 @@ class BayaanKioskApi(http.Controller):
                 "Content-Type": "application/json",
             },
             json=body,
-            timeout=30,
+            timeout=300 if active_effort else 30,
         )
         response.raise_for_status()
         data = response.json()
         text = self._ai_openai_output_text(data)
+        if not text:
+            _logger.warning(
+                "Bayaan AI empty output (model=%s reasoning=%s): status=%s incomplete=%s usage=%s",
+                active_model, bool(active_effort), data.get("status"),
+                data.get("incomplete_details"), data.get("usage"),
+            )
         parsed = json.loads(text)
         merged_plan = self._ai_validate_provider_plan(parsed, plan)
         claims = self._ai_validate_provider_claims(parsed.get("claims"), report_pack, merged_plan, fallback=answer_mode != "conversation")
@@ -2356,7 +2496,8 @@ class BayaanKioskApi(http.Controller):
         return {
             "status": "llm_called",
             "provider": config["provider"],
-            "model": config["model"],
+            "model": active_model,
+            "reasoningUsed": use_reasoning,
             "responseId": data.get("id"),
             "requestId": response.headers.get("x-request-id"),
             "usage": data.get("usage", {}),
@@ -2446,6 +2587,7 @@ class BayaanKioskApi(http.Controller):
                 "status": provider_result.get("status"),
                 "provider": provider_result.get("provider"),
                 "model": provider_result.get("model"),
+                "reasoningUsed": provider_result.get("reasoningUsed", False),
                 "responseId": provider_result.get("responseId"),
                 "requestId": provider_result.get("requestId"),
                 "usage": provider_result.get("usage", {}),
@@ -2576,7 +2718,7 @@ class BayaanKioskApi(http.Controller):
                 "Content-Type": "application/json",
             },
             json=body,
-            timeout=45,
+            timeout=300 if stream_context.get("reasoningUsed") else 45,
             stream=True,
         ) as response:
             response.raise_for_status()
@@ -2622,7 +2764,8 @@ class BayaanKioskApi(http.Controller):
         provider_result = {
             "status": "llm_called",
             "provider": config["provider"],
-            "model": config["model"],
+            "model": stream_context.get("model") or config["model"],
+            "reasoningUsed": stream_context.get("reasoningUsed", False),
             "responseId": completed_response.get("id") if isinstance(completed_response, dict) else None,
             "requestId": request_id,
             "usage": usage,
@@ -2647,8 +2790,9 @@ class BayaanKioskApi(http.Controller):
         locale = payload.get("locale") or payload.get("lang") or "en"
         plan = self._ai_template_plan(query, payload)
         report_pack = self._ai_compact_report_pack(query, payload)
+        reasoning_pref = self._ai_parse_reasoning_pref(payload)
         try:
-            provider_result = self._ai_call_openai(query, report_pack, plan, locale)
+            provider_result = self._ai_call_openai(query, report_pack, plan, locale, reasoning_pref)
         except Exception as error:
             _logger.exception("Bayaan AI provider call failed.")
             provider_result = self._ai_provider_error_result(query, locale, plan, report_pack, error)
@@ -2684,6 +2828,10 @@ class BayaanKioskApi(http.Controller):
         answer_mode = self._ai_answer_mode(query, plan)
         language = self._ai_language_contract(locale)
         claims = self._ai_deterministic_claims(report_pack, plan)
+        reasoning_pref = self._ai_parse_reasoning_pref(payload)
+        use_reasoning = self._ai_reasoning_decision(plan, reasoning_pref, query)
+        active_model = config["reasoning_model"] if use_reasoning else config["model"]
+        active_effort = config["reasoning_effort"] if use_reasoning else None
         stream_context = {
             "guardResult": guard_result,
             "config": config,
@@ -2693,6 +2841,8 @@ class BayaanKioskApi(http.Controller):
             "answerMode": answer_mode,
             "language": language,
             "claims": claims,
+            "model": active_model,
+            "reasoningUsed": use_reasoning,
             "body": None if guard_result or not config["configured"] else self._ai_openai_body(
                 query,
                 report_pack,
@@ -2700,7 +2850,8 @@ class BayaanKioskApi(http.Controller):
                 language,
                 answer_mode,
                 stream=True,
-                model=config["model"],
+                model=active_model,
+                reasoning_effort=active_effort,
             ),
             "registry": request.env.registry,
             "userId": request.env.user.id,
@@ -2715,7 +2866,8 @@ class BayaanKioskApi(http.Controller):
             payload={
                 "query": query,
                 "provider": config.get("provider"),
-                "model": config.get("model"),
+                "model": active_model,
+                "reasoningUsed": use_reasoning,
                 "status": "started",
                 "answerMode": answer_mode,
                 "intent": plan.get("intent"),
@@ -2816,7 +2968,7 @@ class BayaanKioskApi(http.Controller):
             "kiosk_codes": [k.kiosk_code for k in rule.kiosk_ids],
             "product_codes": [p.default_code for p in rule.product_ids if p.default_code],
             "recipients": [{"id": u.id, "name": u.name, "email": u.email or "", "lang": u.lang or ""} for u in rule.recipient_user_ids],
-            "last_fired_at": fields.Datetime.to_string(rule.last_fired_at) if rule.last_fired_at else "",
+            "last_fired_at": self._bayaan_local_datetime(rule.last_fired_at) or "",
             "fire_count": rule.fire_count,
         }
 
@@ -3210,8 +3362,8 @@ class BayaanKioskApi(http.Controller):
             "id": attendance.id,
             "employee": employee.name,
             "workedHours": attendance.worked_hours,
-            "checkIn": fields.Datetime.to_string(attendance.check_in),
-            "checkOut": fields.Datetime.to_string(attendance.check_out) if attendance.check_out else False,
+            "checkIn": self._bayaan_local_datetime(attendance.check_in),
+            "checkOut": self._bayaan_local_datetime(attendance.check_out),
             "odooAttendanceId": attendance.hr_attendance_id.id,
         }
 
@@ -3814,6 +3966,9 @@ class BayaanKioskApi(http.Controller):
         image_value = self._product_image_value(payload)
         if image_value is not None:
             values["image_1920"] = image_value
+        pos_options_value = self._pos_options_value(payload)
+        if pos_options_value is not None:
+            values["bayaan_pos_options"] = pos_options_value
 
         if product:
             product.product_tmpl_id.sudo().write(values)
@@ -3844,11 +3999,27 @@ class BayaanKioskApi(http.Controller):
             "product": self._serialize_stock_item(product),
         }
 
+    def _bayaan_local_datetime(self, value):
+        """Single timezone authority for every UI-facing timestamp.
+
+        Odoo stores datetimes in UTC; ``to_string`` emits that UTC wall-clock
+        verbatim, while aggregations use ``context_timestamp`` (local). Mixing the
+        two made the dashboard show UTC in some places and Baghdad in others. This
+        converts a stored datetime to the user's timezone (Asia/Baghdad for this
+        client) and returns a naive wall-clock string, so slice/Date display the
+        same local clock everywhere. Returns ``False`` for empty values."""
+        if not value:
+            return False
+        return fields.Datetime.to_string(fields.Datetime.context_timestamp(request.env.user, value))
+
     @http.route("/bayaan/api/chain_bootstrap", type="jsonrpc", auth="user")
     def chain_bootstrap(self, **kwargs):
         today = fields.Date.context_today(request.env.user)
-        today_start = datetime.combine(today, time.min)
-        today_end = today_start + timedelta(days=1)
+        # The day window is the user-tz (Asia/Baghdad) civil day converted to UTC, not a
+        # naive UTC day — so salesToday/hourly buckets line up with local time. Reuses the
+        # same tz-aware boundary helper the reports use (_report_datetime).
+        today_start = self._report_datetime(today, None)
+        today_end = self._report_datetime(today, None, end_of_day=True)
         company = request.env.company
         Kiosk = request.env["bayaan.kiosk"].sudo()
         Product = request.env["product.product"].sudo()
@@ -3943,6 +4114,7 @@ class BayaanKioskApi(http.Controller):
         ]
 
         kiosks = Kiosk.search(kiosk_domain, order="kiosk_code", limit=500)
+        pos_configs = kiosks.mapped("pos_config_id").sudo()
         kiosk_location_ids = kiosks.mapped("stock_location_id").ids
         if not can_read_chain:
             kiosk_ids = kiosks.ids or [0]
@@ -4271,12 +4443,13 @@ class BayaanKioskApi(http.Controller):
                 "id": transfer.id,
                 "name": transfer.name,
                 "origin": transfer.origin,
+                "requested": bool(transfer.origin and str(transfer.origin).startswith("Kiosk stock request")),
                 "from": source_kiosk.kiosk_code if source_kiosk else transfer.location_id.complete_name,
                 "to": dest_kiosk.kiosk_code if dest_kiosk else transfer.location_dest_id.complete_name,
                 "toKioskId": dest_kiosk.kiosk_code if dest_kiosk else False,
-                "scheduledAt": fields.Datetime.to_string(transfer.scheduled_date),
-                "doneAt": fields.Datetime.to_string(transfer.date_done) if transfer.date_done else False,
-                "createdAt": fields.Datetime.to_string(transfer.create_date),
+                "scheduledAt": self._bayaan_local_datetime(transfer.scheduled_date),
+                "doneAt": self._bayaan_local_datetime(transfer.date_done),
+                "createdAt": self._bayaan_local_datetime(transfer.create_date),
                 "state": transfer.state,
                 "bayaan_state": transfer.bayaan_transfer_state,
                 "items": len(transfer.move_ids),
@@ -4326,6 +4499,15 @@ class BayaanKioskApi(http.Controller):
         waste_cost = read_group_sum(Waste, waste_domain, "estimated_cost")
         revenue_total = read_group_sum(PosOrder, sale_domain, "amount_total")
         order_count = PosOrder.search_count(sale_domain)
+        # Today's revenue bucketed by local hour (0-23) for the overview hourly view.
+        # Uses the same sale_domain as salesToday so the buckets reconcile to the daily total.
+        hourly_sales = [0.0] * 24
+        for sale_order in PosOrder.search(sale_domain, order="date_order", limit=20000):
+            if not sale_order.date_order:
+                continue
+            local_dt = fields.Datetime.context_timestamp(request.env.user, sale_order.date_order)
+            hourly_sales[local_dt.hour] += sale_order.amount_total or 0.0
+        hourly_sales = [round(value, 2) for value in hourly_sales]
         expected_cash_total = read_group_sum(ShiftClose, closing_domain, "expected_cash")
         cash_expected = expected_cash_total or today_payments["cash"]
         cash_variance_total = read_group_sum(ShiftClose, closing_domain, "cash_variance")
@@ -4620,6 +4802,7 @@ class BayaanKioskApi(http.Controller):
                     "closedKiosks": len(closed_kiosk_ids),
                 },
                 "payments": today_payments,
+                "hourlySales": hourly_sales,
                 "reportPeriods": report_periods,
                 "alerts": {
                     "lowStockItems": low_stock_count,
@@ -4668,6 +4851,22 @@ class BayaanKioskApi(http.Controller):
                 "manager": kiosk.manager_user_id.name,
                 "supervisor": kiosk.supervisor_user_id.name,
             } for kiosk in kiosks],
+            "pos_configs": [{
+                "id": config.id,
+                "name": config.name,
+                "active": config.active,
+                "picking_type_id": config.picking_type_id.id,
+                "picking_type": config.picking_type_id.display_name,
+                "source_location_id": config.picking_type_id.default_location_src_id.id,
+                "source_location": config.picking_type_id.default_location_src_id.complete_name,
+                "payment_methods": [{
+                    "id": method.id,
+                    "name": method.name,
+                    "provider": self._payment_gateway_info(method),
+                    "external_id": method.bayaan_gateway_external_id,
+                    "settlement_window": method.bayaan_gateway_settlement_window,
+                } for method in config.payment_method_ids],
+            } for config in pos_configs],
             "warehouse_stock": [{
                 "item": product.default_code or product.display_name,
                 "actual_qty": warehouse_stock_by_product.get(product.id, 0.0),
@@ -4683,7 +4882,7 @@ class BayaanKioskApi(http.Controller):
                 "product_code": recipe.product_id.default_code,
                 "version": recipe.version_label,
                 "state": recipe.state,
-                "effective_from": fields.Datetime.to_string(recipe.effective_from),
+                "effective_from": self._bayaan_local_datetime(recipe.effective_from),
                 "waste_allowance_percent": recipe.waste_allowance_percent,
                 "estimated_unit_cost": recipe.estimated_unit_cost,
                 "lines": [{
@@ -4701,7 +4900,7 @@ class BayaanKioskApi(http.Controller):
                 "supplier": order.partner_id.name,
                 "invoice": order.partner_ref or "",
                 "warehouse": order.picking_type_id.warehouse_id.name if order.picking_type_id.warehouse_id else "",
-                "date_order": fields.Datetime.to_string(order.date_order),
+                "date_order": self._bayaan_local_datetime(order.date_order),
                 "state": order.state,
                 "receipt_state": (
                     "none" if not order.picking_ids
@@ -4717,7 +4916,7 @@ class BayaanKioskApi(http.Controller):
                     "uom": line.product_uom_id.name,
                     "price_unit": line.price_unit,
                     "subtotal": line.price_subtotal,
-                    "planned_date": fields.Datetime.to_string(line.date_planned),
+                    "planned_date": self._bayaan_local_datetime(line.date_planned),
                 } for line in order.order_line],
             } for order in purchases],
             "suppliers": [
@@ -4743,21 +4942,24 @@ class BayaanKioskApi(http.Controller):
                 "kioskName": close.kiosk_id.name,
                 "city": close.kiosk_id.city,
                 "cashier": close.cashier_id.name,
-                "openedAt": fields.Datetime.to_string(close.opened_at),
-                "closedAt": fields.Datetime.to_string(close.closed_at),
+                "openedAt": self._bayaan_local_datetime(close.opened_at),
+                "closedAt": self._bayaan_local_datetime(close.closed_at),
                 "sales": sum(close.pos_order_ids.mapped("amount_total")),
                 "expectedCash": close.expected_cash,
                 "countedCash": close.actual_cash,
                 "cashVariance": close.cash_variance,
                 "cashPayments": close_payment_totals.get(close.id, {}).get("cash", 0.0),
                 "digitalPayments": close_payment_totals.get(close.id, {}).get("digital", 0.0),
+                "expectedCard": close.expected_card or close_payment_totals.get(close.id, {}).get("card", close_payment_totals.get(close.id, {}).get("digital", 0.0)),
+                "countedCard": close.actual_card,
+                "cardVariance": close.card_variance,
                 "wasteCost": waste_cost_by_kiosk.get(close.kiosk_id.id, 0.0),
                 "status": close_status(close),
                 "investigationStatus": close_investigation_status(close),
                 "notes": close_notes(close),
                 "managerReviewState": close.manager_review_state,
                 "managerReviewedBy": close.manager_reviewed_by_id.name,
-                "managerReviewedAt": fields.Datetime.to_string(close.manager_reviewed_at) if close.manager_reviewed_at else False,
+                "managerReviewedAt": self._bayaan_local_datetime(close.manager_reviewed_at),
                 "recipePostingIssues": len(close_recipe_posting_issues(close)),
                 "recipePostingIssueOrders": close_recipe_posting_issues(close).mapped("name")[:5],
                 "stock": [{
@@ -4766,7 +4968,7 @@ class BayaanKioskApi(http.Controller):
                     "expected": line.expected_qty,
                     "actual": line.actual_qty,
                     "variance": line.variance_qty,
-                    "value": 0,
+                    "value": line.variance_qty * line.product_id.standard_price,
                 } for line in close.stock_count_line_ids],
             } for close in closings],
             "today": {
@@ -4775,7 +4977,7 @@ class BayaanKioskApi(http.Controller):
                     "kiosk": sale.bayaan_kiosk_id.kiosk_code,
                     "pos_config": sale.config_id.name,
                     "cashier": sale.user_id.name,
-                    "date_order": fields.Datetime.to_string(sale.date_order),
+                    "date_order": self._bayaan_local_datetime(sale.date_order),
                     "amount_total": sale.amount_total,
                     "state": sale.state,
                     "consumption_state": sale.bayaan_consumption_state,
@@ -4817,7 +5019,7 @@ class BayaanKioskApi(http.Controller):
                     "qty": line.ingredient_qty,
                     "uom": line.uom_id.name,
                     "cost": line.total_cost,
-                    "consumed_at": fields.Datetime.to_string(line.consumed_at),
+                    "consumed_at": self._bayaan_local_datetime(line.consumed_at),
                 } for line in consumption],
                 "waste": [{
                     "id": entry.id,
@@ -4829,7 +5031,7 @@ class BayaanKioskApi(http.Controller):
                     "reason": entry.reason,
                     "estimated_cost": entry.estimated_cost,
                     "state": entry.state,
-                    "create_date": fields.Datetime.to_string(entry.create_date),
+                    "create_date": self._bayaan_local_datetime(entry.create_date),
                 } for entry in waste],
             },
         }
@@ -5262,7 +5464,12 @@ class BayaanKioskApi(http.Controller):
                 if "T" in posting_date or len(posting_date) > 10:
                     order_vals["date_order"] = fields.Datetime.to_datetime(posting_date)
                 else:
-                    order_vals["date_order"] = fields.Datetime.to_datetime(posting_date + " 00:00:00")
+                    # Bare date (no time): stamp the current time-of-day rather than midnight.
+                    # A 00:00:00 date_order sorts a live sale to the bottom of the day's order
+                    # feed (dashboards sort by date_order desc), so it reads as "missing" in the
+                    # admin even though the order posted correctly.
+                    bare_date = fields.Date.to_date(posting_date)
+                    order_vals["date_order"] = datetime.combine(bare_date, fields.Datetime.now().time())
             except Exception:
                 pass
 
@@ -5373,6 +5580,21 @@ class BayaanKioskApi(http.Controller):
         payload = self._payload(kwargs)
         kiosk = self._require_kiosk(payload.get("kiosk"))
         self._require_kiosk_scope(kiosk, "transfer")
+        return self._create_kiosk_draft_transfer(kiosk, payload)
+
+    @http.route("/bayaan/api/stock_request", type="jsonrpc", auth="user")
+    def stock_request(self, **kwargs):
+        """Cashier-initiated low-stock request. Creates a DRAFT warehouse->kiosk transfer
+        that logistics/manager approves and dispatches; the kiosk then confirms receipt at
+        the POS. Lets a cashier flag low stock without holding transfer-create rights."""
+        payload = self._payload(kwargs)
+        kiosk = self._require_kiosk(payload.get("kiosk"))
+        self._require_kiosk_scope(kiosk, "stock_request")
+        if not payload.get("origin") and not payload.get("external_id") and not payload.get("externalId"):
+            payload = dict(payload, origin="Kiosk stock request - %s" % kiosk.kiosk_code)
+        return self._create_kiosk_draft_transfer(kiosk, payload, requested=True)
+
+    def _create_kiosk_draft_transfer(self, kiosk, payload, requested=False):
         transfer_items = payload.get("items") or [{
             "item": payload.get("item"),
             "qty": payload.get("qty"),
@@ -5436,15 +5658,18 @@ class BayaanKioskApi(http.Controller):
         kiosk.last_stock_transfer_at = fields.Datetime.now()
         self._audit_event(
             "stock",
-            "transfer.created",
-            "Transfer created: %s" % picking.name,
+            "transfer.requested" if requested else "transfer.created",
+            "%s: %s" % ("Stock requested by kiosk" if requested else "Transfer created", picking.name),
             "%s to %s" % (source_location.complete_name, kiosk.kiosk_code),
             record=picking,
             kiosk=kiosk,
-            severity="success",
+            severity="warning" if requested else "success",
             payload=payload,
         )
-        return self._serialize_picking_action(picking)
+        result = self._serialize_picking_action(picking)
+        if isinstance(result, dict):
+            result["requested"] = requested
+        return result
 
     @http.route("/bayaan/api/stock_transfer_action", type="jsonrpc", auth="user")
     def stock_transfer_action(self, **kwargs):
@@ -5713,6 +5938,24 @@ class BayaanKioskApi(http.Controller):
         )
         return service.serialize(landed_cost)
 
+    def _client_datetime(self, value):
+        """Normalize a client-supplied datetime. Browsers send ISO-8601 with a
+        trailing 'Z' and milliseconds (e.g. '2026-06-08T10:00:00.372Z'), which
+        Odoo's fields.Datetime.to_datetime rejects (it only accepts
+        '%Y-%m-%d %H:%M:%S'). Return a naive UTC datetime or False."""
+        if not value:
+            return False
+        if isinstance(value, datetime):
+            return value
+        text = str(value).strip()
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(pytz.UTC).replace(tzinfo=None)
+            return parsed
+        except ValueError:
+            return fields.Datetime.to_datetime(text)
+
     @http.route("/bayaan/api/shift_close", type="jsonrpc", auth="user")
     def shift_close(self, **kwargs):
         payload = self._payload(kwargs)
@@ -5742,10 +5985,12 @@ class BayaanKioskApi(http.Controller):
         record = request.env["bayaan.shift.close"].sudo().create({
             "kiosk_id": kiosk.id,
             "cashier_id": request.env.user.id,
-            "opened_at": payload.get("opened_at") or fields.Datetime.now(),
+            "opened_at": self._client_datetime(payload.get("opened_at")) or fields.Datetime.now(),
             "opening_cash": payload.get("opening_cash") or 0,
             "expected_cash": payload.get("expected_cash") or 0,
             "actual_cash": payload.get("actual_cash") or 0,
+            "expected_card": self._float_value(payload.get("expected_card"), 0.0),
+            "actual_card": self._float_value(payload.get("actual_card"), 0.0),
             "pos_order_ids": [(6, 0, orders.ids)],
             "stock_count_json": stock_counts,
             "stock_count_line_ids": line_commands,
@@ -5877,8 +6122,8 @@ class BayaanKioskApi(http.Controller):
             "name": close.name,
             "managerReviewState": close.manager_review_state,
             "managerReviewedBy": close.manager_reviewed_by_id.name,
-            "managerReviewedAt": fields.Datetime.to_string(close.manager_reviewed_at) if close.manager_reviewed_at else False,
-            "lockedAt": fields.Datetime.to_string(close.locked_at) if close.locked_at else False,
+            "managerReviewedAt": self._bayaan_local_datetime(close.manager_reviewed_at),
+            "lockedAt": self._bayaan_local_datetime(close.locked_at),
             "lockedBy": close.locked_by_id.name,
             "investigationStatus": close.investigation_status,
             "notes": close.manager_note or "",

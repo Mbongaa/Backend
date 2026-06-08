@@ -16,6 +16,10 @@ class BayaanShiftClose(models.Model):
     expected_cash = fields.Monetary(currency_field="currency_id")
     actual_cash = fields.Monetary(currency_field="currency_id")
     cash_variance = fields.Monetary(currency_field="currency_id", compute="_compute_cash_variance", store=True)
+    # Card terminal reconciliation (counted via the PIN pad at end of day, next to cash).
+    expected_card = fields.Monetary(currency_field="currency_id")
+    actual_card = fields.Monetary(currency_field="currency_id")
+    card_variance = fields.Monetary(currency_field="currency_id", compute="_compute_card_variance", store=True)
     pos_order_ids = fields.Many2many("pos.order", string="POS Orders")
     stock_count_line_ids = fields.One2many(
         "bayaan.shift.close.line",
@@ -69,6 +73,11 @@ class BayaanShiftClose(models.Model):
     def _compute_cash_variance(self):
         for record in self:
             record.cash_variance = record.actual_cash - record.expected_cash
+
+    @api.depends("actual_card", "expected_card")
+    def _compute_card_variance(self):
+        for record in self:
+            record.card_variance = record.actual_card - record.expected_card
 
     @api.depends("ingredient_variance_line_ids.variance_value")
     def _compute_ingredient_variance_value(self):

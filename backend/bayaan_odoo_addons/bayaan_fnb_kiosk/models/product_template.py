@@ -41,6 +41,37 @@ class ProductTemplate(models.Model):
         default=1.0,
         help="Weight used when averaging item stock percentages into kiosk stock health.",
     )
+    bayaan_pos_options = fields.Text(
+        string="Bayaan POS Options",
+        help=(
+            "JSON describing per-product POS customisation, sourced to the POS instead of "
+            "frontend hardcoding. Shape: {\"sizes\": [\"S\",\"M\",\"L\"], \"modifier_groups\": "
+            "[{\"id\",\"name\":{\"en\",\"ar\"},\"selection\":\"single|multi\",\"required\":bool,"
+            "\"values\":[{\"id\",\"name\":{\"en\",\"ar\"},\"priceDelta\":int,\"recipeFactor\":float,"
+            "\"default\":bool}]}]}. The cashier's pick drives bayaan_modifier_signature / "
+            "bayaan_modifier_recipe_factor on the sale line."
+        ),
+    )
+
+    def bayaan_pos_options_dict(self):
+        """Parse bayaan_pos_options into a dict; never raise on bad/empty data."""
+        self.ensure_one()
+        import json
+        raw = (self.bayaan_pos_options or "").strip()
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        sizes = data.get("sizes")
+        groups = data.get("modifier_groups")
+        return {
+            "sizes": [str(s) for s in sizes if str(s).strip()] if isinstance(sizes, list) else [],
+            "modifier_groups": groups if isinstance(groups, list) else [],
+        }
 
     @api.model
     def _load_pos_data_fields(self, config):
