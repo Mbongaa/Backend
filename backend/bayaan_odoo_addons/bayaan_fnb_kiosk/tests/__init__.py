@@ -15,3 +15,5 @@ from . import test_spectator_role
 from . import test_data_import
 from . import test_modifier_consumption
 from . import test_alert_rules
+from . import test_product_create_bundle
+from . import test_invoice_commit

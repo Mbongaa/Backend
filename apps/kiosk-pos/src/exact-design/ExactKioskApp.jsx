@@ -1096,6 +1096,12 @@ const Avatar = ({ name, size = 24, color }) => {
   );
 };
 
+// An uploaded image lives in `image` as a base64 data URL (live mode) or comes
+// back from the backend as `image_data_url`. It renders fine as a thumbnail, but
+// must never be shown as text where a human-readable slug is expected — otherwise
+// the whole base64 blob dumps into the cell and shoves the row off-screen.
+const isUploadedImageRef = (v) => String(v || "").startsWith("data:image/");
+
 // ---------- ProductImage ----------
 // Product thumbnail with first-letter fallback. Resolves /products/<slug>.webp.
 // If a slug has no static file or uploaded override, the tile renders a
@@ -2269,11 +2275,115 @@ const DEMO_WAREHOUSE_SETUP = {
   })),
 };
 
-const odooKioskRows = (bootstrap) => {
+// Per-kiosk approximate daily P&L straight from the deterministic byKiosk summary
+// (sales / ledger COGS / waste / prorated staff cost). Today scope, matching byKiosk.
+const odooKioskPnlRows = (bootstrap, period = "Daily") => {
+  const snapshot = unwrapOdoo(bootstrap);
+  const periodKey = String(period || "Daily").toLowerCase();
+  const periodRows = snapshot?.summary?.reportPeriods?.[periodKey]?.byKiosk;
+  const rows = (Array.isArray(periodRows) && periodRows.length ? periodRows : snapshot?.summary?.byKiosk) || [];
+  return rows.map((row) => {
+    const sales = Number(row.sales || 0);
+    const cogs = Number(row.cogs || 0);
+    const wasteCost = Number(row.wasteCost || 0);
+    const staffCost = Number(row.staffCost || 0);
+    const approxProfit = row.approxProfit != null ? Number(row.approxProfit) : sales - cogs - wasteCost - staffCost;
+    return {
+      id: row.kioskId,
+      name: row.name || row.kioskId,
+      city: row.city || "",
+      orders: Number(row.orders || 0),
+      sales,
+      cogs,
+      wasteCost,
+      staffCost,
+      grossProfit: row.grossProfit != null ? Number(row.grossProfit) : sales - cogs,
+      approxProfit,
+      margin: row.margin != null ? Number(row.margin) : (sales ? (approxProfit / sales) * 100 : 0),
+    };
+  });
+};
+
+// Period-scoped view of the live bootstrap for a non-daily global scope. Swaps the order
+// list (and the today.sales / today.payments rows derived from it) plus the headline and
+// per-kiosk summary totals for the selected period, while preserving the live-only marker
+// (it's a plain key on the flat snapshot, so a spread copy keeps it). Every screen that
+// reads bootstrap.today.* / summary.* then follows the scope with no per-screen plumbing.
+// Daily, a missing period, or not-yet-loaded orders return the bootstrap untouched.
+const buildScopedBootstrap = (bootstrap, scope, periodOrders) => {
+  if (!bootstrap || typeof bootstrap !== "object") return bootstrap;
+  if (!scope || scope === "Daily" || !Array.isArray(periodOrders)) return bootstrap;
+  const scopeKey = String(scope).toLowerCase();
+  const period = bootstrap?.summary?.reportPeriods?.[scopeKey];
+  const sales = periodOrders.map((order) => ({
+    name: order.name,
+    kiosk: order.kiosk,
+    pos_config: order.pos_config,
+    revenue: order.amount_total,
+    orders: 1,
+    amount_total: order.amount_total,
+    consumption_state: order.consumption_state,
+  }));
+  const payments = periodOrders.flatMap((order) => (order.payments || []).map((payment) => ({
+    order: order.name,
+    kiosk: order.kiosk,
+    method: payment.method,
+    category: payment.category,
+    provider: payment.provider,
+    amount: payment.amount,
+  })));
+  const baseTotals = bootstrap?.summary?.totals || null;
+  const scopedTotals = (baseTotals && period) ? {
+    ...baseTotals,
+    salesToday: Number(period.revenue ?? period.sales ?? baseTotals.salesToday ?? 0),
+    ordersToday: Number(period.orders ?? baseTotals.ordersToday ?? 0),
+    profitEstimate: period.netProfitAfterPayroll != null ? Number(period.netProfitAfterPayroll)
+      : period.netProfit != null ? Number(period.netProfit) : baseTotals.profitEstimate,
+    cogs: period.cogs != null ? Number(period.cogs) : baseTotals.cogs,
+    wasteCost: period.wasteCost != null ? Number(period.wasteCost) : baseTotals.wasteCost,
+    cashExpected: period.cashExpected != null ? Number(period.cashExpected) : baseTotals.cashExpected,
+    digitalPayments: period.digitalPayments != null ? Number(period.digitalPayments) : baseTotals.digitalPayments,
+  } : baseTotals;
+  // Hour-of-day revenue distribution across the period so the Overview "sales flow"
+  // (24-bucket hourly chart) reflects the selected period instead of just today.
+  const hourly = Array(24).fill(0);
+  periodOrders.forEach((order) => {
+    const hour = Number(String(order.date_order || "").slice(11, 13));
+    if (hour >= 0 && hour < 24) hourly[hour] += Number(order.amount_total || 0);
+  });
+  return {
+    ...bootstrap,
+    summary: {
+      ...bootstrap.summary,
+      totals: scopedTotals,
+      byKiosk: (period?.byKiosk && period.byKiosk.length) ? period.byKiosk : bootstrap?.summary?.byKiosk,
+      // Drop the daily payment split so the payment-mix helper recomputes from the period's
+      // today.payments (below); feed the period's hour-of-day curve to the sales-flow chart.
+      payments: undefined,
+      hourlySales: hourly,
+      hourlyPulse: hourly,
+    },
+    today: {
+      ...bootstrap.today,
+      orders: periodOrders,
+      sales,
+      payments,
+    },
+  };
+};
+
+const odooKioskRows = (bootstrap, scope = "Daily") => {
   const snapshot = unwrapOdoo(bootstrap);
   const useDemo = canUseDemoFallback(bootstrap);
   if (!snapshot?.kiosks?.length) return useDemo ? MOCK.kiosks : [];
   const summaryRows = snapshot?.summary?.byKiosk || [];
+  // Global scope overlay: for a non-daily scope, each kiosk's revenue/orders/waste/margin
+  // come from that period's deterministic reportPeriods.byKiosk aggregate instead of today.
+  // Daily (or a missing period) leaves the today-scoped figures untouched.
+  const scopeKey = String(scope || "Daily").toLowerCase();
+  const periodByKiosk = scopeKey !== "daily"
+    ? (snapshot?.summary?.reportPeriods?.[scopeKey]?.byKiosk || [])
+    : [];
   const salesByKiosk = {};
   (snapshot.today?.sales || []).forEach((sale) => {
     const code = sale.kiosk || sale.pos_config;
@@ -2304,6 +2414,9 @@ const odooKioskRows = (bootstrap) => {
           trend: [],
         };
     const summary = summaryRows.find((row) => matchesKiosk(row.kioskId || row.name, kiosk));
+    const periodRow = periodByKiosk.length
+      ? periodByKiosk.find((row) => matchesKiosk(row.kioskId || row.name, kiosk))
+      : null;
     const sales = Object.entries(salesByKiosk).find(([key]) => matchesKiosk(key, kiosk))?.[1] || {};
     const stockRows = Object.entries(snapshot.kiosk_stock || {}).find(([key]) => matchesKiosk(key, kiosk))?.[1] || [];
     const stockRowsWithStatus = stockRows.map((row) => ({
@@ -2316,9 +2429,9 @@ const odooKioskRows = (bootstrap) => {
     const lowStockItems = Number(summary?.lowStockItems ?? actionableStockRows.length ?? 0);
     const zeroStockItems = Number(summary?.zeroStockItems ?? stockRowsWithStatus.filter((entry) => entry.status === "crit" && Number(entry.row.actual_qty || 0) <= 0).length ?? 0);
     const wasteRows = (snapshot.today?.waste || []).filter((row) => row.kiosk === kiosk.kiosk_code || row.kiosk === kiosk.name);
-    const revenue = Math.round(Number(summary?.sales ?? sales.revenue ?? fallback.revenue));
-    const orders = Math.round(Number(summary?.orders ?? sales.orders ?? fallback.orders));
-    const wasteCost = Number(summary?.wasteCost ?? wasteRows.reduce((sum, row) => sum + Number(row.estimated_cost || 0), 0));
+    const revenue = Math.round(Number(periodRow?.sales ?? summary?.sales ?? sales.revenue ?? fallback.revenue));
+    const orders = Math.round(Number(periodRow?.orders ?? summary?.orders ?? sales.orders ?? fallback.orders));
+    const wasteCost = Number(periodRow?.wasteCost ?? summary?.wasteCost ?? wasteRows.reduce((sum, row) => sum + Number(row.estimated_cost || 0), 0));
     const waste = revenue ? Number(((wasteCost / revenue) * 100).toFixed(1)) : fallback.waste;
     const stockHealth = summary?.stockHealth != null
       ? Number(summary.stockHealth)
@@ -2348,6 +2461,7 @@ const odooKioskRows = (bootstrap) => {
       supervisor: kiosk.supervisor,
       revenue,
       orders,
+      margin: periodRow?.margin != null ? Number(periodRow.margin) : summary?.margin != null ? Number(summary.margin) : fallback.margin,
       waste,
       wasteLoad,
       stockHealth,
@@ -2421,6 +2535,7 @@ const odooInventoryRows = (bootstrap) => {
     const unitCost = Number(row.unit_cost || row.standard_price || meta.standard_price || 0);
     return {
       item: row.item || "Stock item",
+      consumptionMode: meta.consumption_mode || row.mode || "",
       category: inventoryCategoryFor(row.mode || meta.consumption_mode, row.category || meta.category),
       stock: Math.round(qty * 100) / 100,
       unit: row.uom || "u",
@@ -2440,14 +2555,13 @@ const odooInventoryRows = (bootstrap) => {
   };
   const warehouseRows = (snapshot.warehouse_stock || []).slice(0, 500).map((row) => makeRow(row, "Central warehouse", "central-warehouse"));
   const kioskRows = (snapshot.kiosk_stock_rows || []).slice(0, 500).map((row) => makeRow(row, row.kiosk || "Kiosk location", row.kiosk || "kiosk"));
-  return [...warehouseRows, ...kioskRows];
+  // Recipe/combo products are MADE on demand from these items — they are never stocked,
+  // allocated, or purchased — so they do not belong in any stock view (catalog, Stock &
+  // Allocation, or Suppliers). Finished resale stock and raw ingredients stay.
+  return [...warehouseRows, ...kioskRows].filter((row) => String(row.consumptionMode || "").toLowerCase() !== "recipe");
 };
 
-const odooPosOrderRows = (bootstrap) => {
-  const snapshot = unwrapOdoo(bootstrap);
-  const rows = snapshot?.today?.orders || [];
-  if (!rows.length) return canUseDemoFallback(bootstrap) ? MOCK.posOrders : [];
-  return [...rows].sort((left, right) => (
+const mapPosOrderRows = (rows) => [...rows].sort((left, right) => (
     String(right.date_order || "").localeCompare(String(left.date_order || ""))
   )).map((order, index) => {
     const firstLine = order.lines?.[0];
@@ -2472,6 +2586,12 @@ const odooPosOrderRows = (bootstrap) => {
       sync: "live",
     };
   });
+
+const odooPosOrderRows = (bootstrap) => {
+  const snapshot = unwrapOdoo(bootstrap);
+  const rows = snapshot?.today?.orders || [];
+  if (!rows.length) return canUseDemoFallback(bootstrap) ? MOCK.posOrders : [];
+  return mapPosOrderRows(rows);
 };
 
 const POS_ORDER_FILTERS = ["All", "Needs action", "Recipe held", "Unpaid", "Returns"];
@@ -2490,16 +2610,21 @@ const posPaymentStatus = (order) => {
   return "Paid";
 };
 
+// Recipe states that mean the variance-loop deduction did NOT post cleanly — these must
+// never read as "Fulfilled"/"all posted" or the manager loses sight of the exact failure
+// the product is pitched on.
+const POS_RECIPE_UNPOSTED = ["held", "missing_recipe", "failed"];
+
 const posFulfillmentStatus = (order) => {
   const status = String(order.status || "").toLowerCase();
   if (status.includes("refund") || status.includes("void")) return "Returned";
-  if (order.recipe === "held" || order.sync !== "live") return "Unfulfilled";
+  if (POS_RECIPE_UNPOSTED.includes(order.recipe) || order.sync !== "live") return "Unfulfilled";
   return "Fulfilled";
 };
 
 const posOrderMatchesFilter = (row, filter) => {
   if (filter === "Needs action") return row.paymentStatus !== "Paid" || row.fulfillmentStatus !== "Fulfilled";
-  if (filter === "Recipe held") return row.recipe === "held";
+  if (filter === "Recipe held") return POS_RECIPE_UNPOSTED.includes(row.recipe);
   if (filter === "Unpaid") return row.paymentStatus === "Pending";
   if (filter === "Returns") return row.paymentStatus === "Refunded" || row.fulfillmentStatus === "Returned";
   return true;
@@ -2792,6 +2917,21 @@ const odooClosingRows = (bootstrap) => {
         actual: Number(line.actual ?? line.actual_qty ?? 0),
         variance: Number(line.variance ?? 0),
         value: Number(line.value ?? line.varianceValue ?? line.variance_value ?? 0),
+      })),
+      // Server-computed variance-loop inputs for this close's own window
+      // (opening + received - consumed - waste = expected). See
+      // _serialize_shift_close; never re-derive these from today's snapshot.
+      varianceInputs: (row.varianceInputs || []).map((line) => ({
+        item: cleanDisplayName(line.item),
+        unit: line.unit || "",
+        opening: Number(line.opening || 0),
+        received: Number(line.received || 0),
+        consumed: Number(line.consumed || 0),
+        waste: Number(line.waste || 0),
+        expected: Number(line.expected || 0),
+        actual: Number(line.actual || 0),
+        variance: Number(line.variance || 0),
+        value: Number(line.value || 0),
       })),
       investigationStatus: row.investigationStatus || closeInvestigationStatus(row),
       notes: row.notes || (row.status === "approved" ? "No exceptions." : "Awaiting manager note."),
@@ -3416,6 +3556,39 @@ const defaultSizesForCategory = (category) => {
     .map((v) => String(v?.name?.en || v?.id || "").trim().charAt(0).toUpperCase())
     .filter(Boolean);
   return sizes.length ? sizes : ["S"];
+};
+
+// Robust POS option resolution — a product must NEVER silently skip its size/options prompt
+// regardless of data mode or how the Odoo product is configured:
+//   1) per-product options from the source (Odoo product.pos_options.modifier_groups) win;
+//   2) else static per-category bindings (data.ts) — matched on the product's own category;
+//   3) else synthesize a Size group from the product's sizes, defaulting made-to-order
+//      (recipe/hybrid) drinks to S/M/L, so live products with no configured options still prompt.
+// Single-size finished goods (e.g. a cake slice) intentionally return [] and add straight to cart.
+const POS_SIZE_LABELS = {
+  s: { en: "Small", ar: "صغير" }, small: { en: "Small", ar: "صغير" },
+  m: { en: "Medium", ar: "وسط" }, medium: { en: "Medium", ar: "وسط" },
+  l: { en: "Large", ar: "كبير" }, large: { en: "Large", ar: "كبير" },
+  xl: { en: "Extra large", ar: "كبير جدًا" },
+};
+const posSizeLabel = (s) => POS_SIZE_LABELS[String(s).trim().toLowerCase()] || { en: String(s), ar: String(s) };
+const synthSizeGroup = (sizes) => ({
+  id: "size",
+  name: { en: "Size", ar: "الحجم" },
+  selection: "single",
+  required: true,
+  // No fabricated price/recipe deltas — a synthesized size is a recorded choice only; real
+  // per-size pricing/consumption comes from Odoo pos_options when configured.
+  values: sizes.map((s, i) => ({ id: `${slugify(String(s)) || "size"}-${i}`, name: posSizeLabel(s), default: i === 0 })),
+});
+const posModifierGroupsFor = (item, categoryName) => {
+  if (Array.isArray(item.modifierGroups) && item.modifierGroups.length) return item.modifierGroups;
+  const byCategory = resolveModifierGroups({ id: item.id, category: item.category || categoryName }, productModifierBindings);
+  if (byCategory.length) return byCategory;
+  let sizes = (Array.isArray(item.sizes) ? item.sizes : []).map((s) => String(s).trim()).filter(Boolean);
+  if (sizes.length <= 1 && ["recipe", "hybrid"].includes(item.consumptionMode)) sizes = ["S", "M", "L"];
+  if (sizes.length > 1) return [synthSizeGroup(sizes)];
+  return [];
 };
 const emptyModifierGroup = () => ({
   id: optionUid("grp"),
@@ -5256,6 +5429,126 @@ function HourlySalesFlowChart({ data, ar }) {
   );
 }
 
+const SALES_FLOW_WEEKDAYS = {
+  en: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+  ar: ["أحد", "إثن", "ثلا", "أرب", "خمي", "جمع", "سبت"],
+};
+const SALES_FLOW_MONTHS = {
+  en: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+  ar: ["ينا", "فبر", "مار", "أبر", "ماي", "يون", "يول", "أغس", "سبت", "أكت", "نوف", "ديس"],
+};
+
+// Sales-flow chart that follows the GLOBAL scope dropdown: Daily -> per hour,
+// Weekly/Monthly -> per day, Yearly -> per month. Buckets are derived from the
+// scope-aware order list (scopedBootstrap.today.orders) so the chart always reconciles
+// with the period the rest of the dashboard is showing. No local hour/day toggle.
+function ScopedSalesFlowChart({ orders, scope, ar, allowDemoFallback = false }) {
+  const key = String(scope || "Daily").toLowerCase();
+  const safeOrders = Array.isArray(orders) ? orders : [];
+  const fmtHourLabel = (hour) => {
+    const n = Number(hour);
+    const suffix = n < 12 ? (ar ? "ص" : "AM") : (ar ? "م" : "PM");
+    const display = n % 12 === 0 ? 12 : n % 12;
+    return `${display}${suffix}`;
+  };
+  let chartRows = [];
+  let granularityLabel = "";
+  let peakLabel = "";
+  if (key === "weekly" || key === "monthly") {
+    const byDay = new Map();
+    safeOrders.forEach((order) => {
+      const day = String(order.date_order || "").slice(0, 10);
+      if (day) byDay.set(day, (byDay.get(day) || 0) + Number(order.amount_total || 0));
+    });
+    chartRows = Array.from(byDay.keys()).sort().map((day) => {
+      const [y, m, d] = day.split("-").map(Number);
+      const weekday = new Date(y, (m || 1) - 1, d || 1).getDay();
+      const label = key === "weekly"
+        ? `${(ar ? SALES_FLOW_WEEKDAYS.ar : SALES_FLOW_WEEKDAYS.en)[weekday]} ${d}`
+        : String(d);
+      return { label, sales: byDay.get(day), tip: day };
+    });
+    granularityLabel = key === "weekly"
+      ? (ar ? "هذا الأسبوع · يومي" : "this week, by day")
+      : (ar ? "هذا الشهر · يومي" : "this month, by day");
+    peakLabel = ar ? "أعلى يوم" : "Peak day";
+  } else if (key === "yearly") {
+    const byMonth = new Map();
+    safeOrders.forEach((order) => {
+      const month = String(order.date_order || "").slice(0, 7);
+      if (month) byMonth.set(month, (byMonth.get(month) || 0) + Number(order.amount_total || 0));
+    });
+    chartRows = Array.from(byMonth.keys()).sort().map((month) => {
+      const mi = Number(month.split("-")[1]) - 1;
+      return { label: (ar ? SALES_FLOW_MONTHS.ar : SALES_FLOW_MONTHS.en)[mi] || month, sales: byMonth.get(month), tip: month };
+    });
+    granularityLabel = ar ? "هذه السنة · شهري" : "this year, by month";
+    peakLabel = ar ? "أعلى شهر" : "Peak month";
+  } else {
+    const buckets = Array(24).fill(0);
+    let hasReal = false;
+    safeOrders.forEach((order) => {
+      const hour = Number(String(order.date_order || "").slice(11, 13));
+      if (hour >= 0 && hour < 24) { buckets[hour] += Number(order.amount_total || 0); hasReal = true; }
+    });
+    if (!hasReal && allowDemoFallback) {
+      HOURLY_PULSE_REVENUE.forEach((value, i) => {
+        const hour = HOURLY_PULSE_START + i;
+        if (hour < 24) buckets[hour] = value;
+      });
+    }
+    let first = buckets.findIndex((value) => value > 0);
+    let last = -1;
+    buckets.forEach((value, hour) => { if (value > 0) last = hour; });
+    if (first < 0) { first = 8; last = 20; }
+    for (let hour = first; hour <= last; hour += 1) {
+      chartRows.push({ label: fmtHourLabel(hour), sales: buckets[hour], tip: fmtHourLabel(hour) });
+    }
+    granularityLabel = ar ? "اليوم · ساعي" : "today, by hour";
+    peakLabel = ar ? "ساعة الذروة" : "Peak hour";
+  }
+  const totalSales = chartRows.reduce((sum, row) => sum + row.sales, 0);
+  const peakRow = chartRows.reduce((best, row) => (row.sales > (best?.sales || 0) ? row : best), null);
+  const count = chartRows.length;
+  return (
+    <div className="sales-flow-card sales-flow-card-qualified">
+      <StudioPatternBarChart
+        ar={ar}
+        ariaLabel={ar ? "تدفق المبيعات" : "Sales flow"}
+        rows={chartRows}
+        xDataKey="label"
+        valueDataKey="sales"
+        barSize={Math.max(8, Math.min(38, Math.round(560 / Math.max(count, 1))))}
+        interval={count > 16 ? Math.ceil(count / 12) : 0}
+        tickFormatter={(value) => value}
+        tooltipTitle={(row) => row?.tip || row?.label}
+        tooltipValue={(row) => fmtCompact(Number(row?.sales || 0))}
+        valueLabel={ar ? "المبيعات" : "Sales"}
+      />
+      <div className="sales-flow-side">
+        <div>
+          <div className="sales-flow-total">
+            {fmtMoney(totalSales).replace("IQD ", "")}
+            <span>{ar ? " د.ع" : " IQD"}</span>
+          </div>
+          <div className="t-small muted" style={{ lineHeight: 1.45 }}>{granularityLabel}</div>
+        </div>
+        <div className="sales-flow-progress-card">
+          <div className="sales-flow-progress-label">{peakLabel}</div>
+          <div className="sales-flow-progress-value">
+            {peakRow ? peakRow.label : "—"}
+            <span>{peakRow ? fmtCompact(peakRow.sales) : ""}</span>
+          </div>
+          <div className="sales-flow-progress-meta">
+            <span>{count} {ar ? "شرائح" : "buckets"}</span>
+            <span>{ar ? "مباشر" : "live"}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ============================================================
 // Status / direction marker for rank rows
 // ============================================================
@@ -5273,22 +5566,21 @@ function RankIndicator({ rank }) {
 // ============================================================
 // Main screen
 // ============================================================
-function OverviewScreen({ lang, bootstrap }) {
+function OverviewScreen({ lang, bootstrap, scope = "Daily" }) {
   const ar = lang === "ar";
   const liveOnly = isLiveOnlyPayload(bootstrap);
   const allowDemoFallback = canUseDemoFallback(bootstrap);
-  const sourceKiosks = useMemo(() => odooKioskRows(bootstrap), [bootstrap]);
+  const isDailyScope = !scope || scope === "Daily";
+  // Per-kiosk rows follow the global scope via the shared scope-aware helper.
+  const sourceKiosks = useMemo(() => odooKioskRows(bootstrap, scope), [bootstrap, scope]);
   const closeRows = useMemo(() => odooClosingRows(bootstrap), [bootstrap]);
   const paymentSplit = useMemo(() => odooPaymentSplit(bootstrap), [bootstrap]);
   const summary = useMemo(() => odooSummary(bootstrap), [bootstrap]);
+  // Scope-aware order list (period orders for non-daily) feeding the Sales-flow chart.
+  const flowOrders = useMemo(() => unwrapOdoo(bootstrap)?.today?.orders || [], [bootstrap]);
   const simulationActive = isSimulationPayload(bootstrap) || isSimulationRuntime();
   const simulationPulseRows = useMemo(() => odooMinutePulse(bootstrap), [bootstrap]);
-  // Same-day hourly sales: real backend hourly buckets when present, else demo fallback.
-  const hourlyPulseData = useMemo(() => odooHourlyPulse(bootstrap) || [], [bootstrap]);
   const sourceDriven = isSourceDrivenPayload(bootstrap);
-  const leadFlowRows = useMemo(() => fiscalSalesRowsFromSummary(summary, allowDemoFallback), [summary, allowDemoFallback]);
-  const leadFlowTotal = useMemo(() => leadFlowRows.reduce((sum, row) => sum + Number(row.sales || 0), 0), [leadFlowRows]);
-  const leadFlowTarget = fiscalSalesTargetFromSummary(summary, allowDemoFallback);
   const liveProductRows = useMemo(() => {
     if (!sourceDriven) return [];
     const snapshot = unwrapOdoo(bootstrap);
@@ -5542,7 +5834,35 @@ function OverviewScreen({ lang, bootstrap }) {
   // ---- KPI aggregates (live) ----
   const liveTotalRev = useMemo(() => kiosks.reduce((s, k) => s + k.liveRev, 0), [kiosks]);
   const liveTotalOrders = useMemo(() => kiosks.reduce((s, k) => s + k.liveOrders, 0), [kiosks]);
-  const summaryTotals = summary?.totals || null;
+  const baseTotals = summary?.totals || null;
+  // Headline KPI tiles follow the same global scope. For a non-daily scope, swap the
+  // period-varying figures for that period's reportPeriods summary; everything else and
+  // the Daily case stay exactly as before. Missing fields fall back to the daily totals.
+  const summaryTotals = useMemo(() => {
+    if (!baseTotals) return baseTotals;
+    const reportPeriods = unwrapOdoo(bootstrap)?.summary?.reportPeriods;
+    if (isDailyScope) {
+      // One profit definition across every scope: net after payroll accrual
+      // (reportPeriods.*.netProfitAfterPayroll). Daily previously showed the
+      // pre-payroll totals.profitEstimate, so toggling Daily -> Weekly made
+      // the tile collapse by the salary accrual and read as a broken number.
+      const daily = reportPeriods?.daily;
+      const dailyNet = daily?.netProfitAfterPayroll ?? daily?.netProfit;
+      return dailyNet != null ? { ...baseTotals, profitEstimate: Number(dailyNet) } : baseTotals;
+    }
+    const ps = reportPeriods?.[String(scope).toLowerCase()];
+    if (!ps) return baseTotals;
+    return {
+      ...baseTotals,
+      salesToday: Number(ps.revenue ?? ps.sales ?? baseTotals.salesToday ?? 0),
+      ordersToday: Number(ps.orders ?? baseTotals.ordersToday ?? 0),
+      profitEstimate: ps.netProfitAfterPayroll != null ? Number(ps.netProfitAfterPayroll)
+        : ps.netProfit != null ? Number(ps.netProfit) : baseTotals.profitEstimate,
+      wasteCost: ps.wasteCost != null ? Number(ps.wasteCost) : baseTotals.wasteCost,
+      cashExpected: ps.cashExpected != null ? Number(ps.cashExpected) : baseTotals.cashExpected,
+      digitalPayments: ps.digitalPayments != null ? Number(ps.digitalPayments) : baseTotals.digitalPayments,
+    };
+  }, [scope, isDailyScope, baseTotals, bootstrap]);
   const totalRev = summaryTotals?.salesToday != null ? Number(summaryTotals.salesToday || 0) : liveTotalRev;
   const totalOrders = summaryTotals?.ordersToday != null ? Number(summaryTotals.ordersToday || 0) : liveTotalOrders;
   const grossProfitKnown = summaryTotals?.profitEstimate != null || !liveOnly;
@@ -5557,7 +5877,7 @@ function OverviewScreen({ lang, bootstrap }) {
   const profitMarginDisplay = grossProfitKnown && totalRev && isFiniteNumber(grossProfit)
     ? profitMarginLabel
     : liveOnly
-      ? (ar ? "Ø¨Ø§Ù†ØªØ¸Ø§Ø± Ù…Ù„Ø®Øµ Ø§Ù„Ù…Ø­Ø±Ùƒ" : "awaiting engine totals")
+      ? (ar ? "بانتظار ملخص المحرك" : "awaiting engine totals")
       : profitMarginLabel;
   const cashExpectedKnown = summaryTotals?.cashExpected != null || Boolean(paymentSplit) || !liveOnly;
   const cashExpected = summaryTotals?.cashExpected != null
@@ -5589,20 +5909,21 @@ function OverviewScreen({ lang, bootstrap }) {
         : 3.1;
   const variancePct = summaryTotals?.variancePct != null ? Number(summaryTotals.variancePct || 0) : liveOnly ? null : -1.3;
 
-  // Period filter: "day" | "week" | "month". Pure display multiplier — keeps the
-  // underlying live state ticking so rank-swap animations still fire.
-  const [period, setPeriod] = useState("day");
-  const periodMul = period === "month" ? 30 : period === "week" ? 7 : 1;
-  const periodSubtitle = period === "month"
+  // The Today Command Center follows the GLOBAL scope dropdown (Daily/Weekly/Monthly/
+  // Yearly). Every figure reads the scope-aware bootstrap, so there is no local period
+  // toggle or display multiplier here.
+  const scopeSubtitle = scope === "Monthly"
     ? (ar ? "هذا الشهر" : "this month")
-    : period === "week"
+    : scope === "Weekly"
       ? (ar ? "هذا الأسبوع" : "this week")
-      : ui(ar, "today");
+      : scope === "Yearly"
+        ? (ar ? "هذه السنة" : "this year")
+        : ui(ar, "today");
   const planDelta = sourceDriven
     ? (ar ? "المحرك فقط" : "engine only")
-    : period === "month"
+    : scope === "Monthly"
       ? (ar ? "+11.2% مقابل الخطة" : "+11.2% vs plan")
-      : period === "week"
+      : scope === "Weekly"
         ? (ar ? "+9.6% مقابل الخطة" : "+9.6% vs plan")
         : (ar ? "+8.4% مقابل الخطة" : "+8.4% vs plan");
   const paymentMixRows = useMemo(() => {
@@ -5627,9 +5948,9 @@ function OverviewScreen({ lang, bootstrap }) {
       { id: "manual", label: ar ? "يدوي" : "Manual", value: digital * 0.1, color: "var(--warn)" },
     ];
     return rows
-      .map((row) => ({ ...row, value: Math.max(0, row.value * periodMul) }))
+      .map((row) => ({ ...row, value: Math.max(0, row.value) }))
       .filter((row) => row.value > 0);
-  }, [paymentSplit, cashExpected, digitalPayments, periodMul, sourceDriven, ar]);
+  }, [paymentSplit, cashExpected, digitalPayments, sourceDriven, ar]);
   const paymentMixTotal = useMemo(() => paymentMixRows.reduce((sum, row) => sum + row.value, 0), [paymentMixRows]);
   const alertRows = sourceDriven ? [] : MOCK.alerts;
   const actionRows = sourceDriven ? [] : [
@@ -5814,22 +6135,6 @@ function OverviewScreen({ lang, bootstrap }) {
         <span className="ov-cursor" style={{ color: "var(--terminal-muted)" }}>
           {ar ? `يراقب ${kiosks.length} مواقع - ${feed.length} أحداث في الانتظار` : `watching ${kiosks.length} sites - ${feed.length} events buffered`}
         </span>
-        <span style={{ color: "var(--terminal-faint)", marginInlineStart: 14 }}>|</span>
-        <div className="ov-period" role="tablist" aria-label="Time range">
-          {[
-            { id: "hour",  label: ar ? "س" : "H", title: ar ? "ساعي" : "Hourly"  },
-            { id: "day",   label: ar ? "ي" : "D", title: ar ? "يومي" : "Daily"   },
-            { id: "week",  label: ar ? "أ" : "W", title: ar ? "أسبوعي" : "Weekly"  },
-            { id: "month", label: ar ? "ش" : "M", title: ar ? "شهري" : "Monthly" },
-          ].map((p) => (
-            <button key={p.id} type="button"
-              role="tab" aria-selected={period === p.id} title={p.title}
-              className={period === p.id ? "on" : ""}
-              onClick={() => setPeriod(p.id)}>
-              {p.label}
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* KPI ribbon moved into the center column (compact stacked card above Live activity) */}
@@ -5852,7 +6157,7 @@ function OverviewScreen({ lang, bootstrap }) {
                 {ar ? "أعلى الأكشاك" : "Top performers"}
               </div>
               <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>
-                {ar ? "حسب الإيرادات" : `by revenue - ${periodSubtitle}`}
+                {ar ? "حسب الإيرادات" : `by revenue - ${scopeSubtitle}`}
               </span>
             </div>
             <div style={{ padding: 10 }}>
@@ -5873,7 +6178,7 @@ function OverviewScreen({ lang, bootstrap }) {
                         <div className="ov-bar-fill" style={{ width: `${pct}%`, background: idx === 0 ? "var(--pos)" : "var(--ink-2)" }}/>
                       </div>
                       <span className="t-num" style={{ fontSize: 12, fontFamily: "var(--font-mono)", fontWeight: 500, fontVariantNumeric: "tabular-nums", minWidth: 48, textAlign: "end" }}>
-                        <TickerNum value={k.liveRev * periodMul} format={(v) => fmtCompact(v)}/>
+                        <TickerNum value={k.liveRev} format={(v) => fmtCompact(v)}/>
                       </span>
                     </div>
                   );
@@ -5927,7 +6232,7 @@ function OverviewScreen({ lang, bootstrap }) {
                 {ar ? "أعلى المنتجات" : "Top products"}
               </div>
               <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>
-                {ar ? "حسب الإيرادات" : "by revenue"} - {periodSubtitle}
+                {ar ? "حسب الإيرادات" : "by revenue"} - {scopeSubtitle}
               </span>
             </div>
             <div style={{ padding: 10 }}>
@@ -5948,7 +6253,7 @@ function OverviewScreen({ lang, bootstrap }) {
                         <div className="ov-bar-fill" style={{ width: `${pct}%`, background: idx === 0 ? "var(--accent)" : "var(--ink-2)" }}/>
                       </div>
                       <span className="t-num" style={{ fontSize: 12, fontFamily: "var(--font-mono)", fontWeight: 500, fontVariantNumeric: "tabular-nums", minWidth: 48, textAlign: "end" }}>
-                        <TickerNum value={p.rev * periodMul} format={(v) => fmtCompact(v)}/>
+                        <TickerNum value={p.rev} format={(v) => fmtCompact(v)}/>
                       </span>
                     </div>
                   );
@@ -5964,7 +6269,7 @@ function OverviewScreen({ lang, bootstrap }) {
                 {ar ? "أعلى الهدر" : "Top waste"}
               </div>
               <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>
-                {ar ? "حسب التكلفة" : "by cost"} - {periodSubtitle}
+                {ar ? "حسب التكلفة" : "by cost"} - {scopeSubtitle}
               </span>
             </div>
             <div style={{ padding: 10 }}>
@@ -5985,7 +6290,7 @@ function OverviewScreen({ lang, bootstrap }) {
                         <div className="ov-bar-fill" style={{ width: `${pct}%`, background: idx === 0 ? "var(--crit)" : "var(--warn)" }}/>
                       </div>
                       <span className="t-num" style={{ fontSize: 12, fontFamily: "var(--font-mono)", fontWeight: 500, color: "var(--crit)", fontVariantNumeric: "tabular-nums", minWidth: 48, textAlign: "end" }}>
-                        <TickerNum value={w.cost * periodMul} format={(v) => fmtCompact(v)}/>
+                        <TickerNum value={w.cost} format={(v) => fmtCompact(v)}/>
                       </span>
                     </div>
                   );
@@ -6005,7 +6310,7 @@ function OverviewScreen({ lang, bootstrap }) {
                 {ar ? "المؤشرات" : "KPIs"}
               </div>
               <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>
-                {periodSubtitle}
+                {scopeSubtitle}
               </span>
             </div>
             <div>
@@ -6015,17 +6320,17 @@ function OverviewScreen({ lang, bootstrap }) {
                   <div className="ov-kpi-delta" style={{ color: sourceDriven ? "var(--ink-3)" : "var(--pos)" }}>{planDelta}</div>
                 </div>
                 <div className="ov-kpi-value">
-                  <TickerNum value={totalRev * periodMul} format={(v) => fmtIQD(v)}/>
+                  <TickerNum value={totalRev} format={(v) => fmtIQD(v)}/>
                 </div>
               </div>
               <div className="ov-kpi-row">
                 <div>
-                  <div className="ov-kpi-label">{ar ? "الربح الإجمالي" : "Profit estimate"}</div>
+                  <div className="ov-kpi-label">{ar ? "صافي الربح التقديري" : "Profit estimate"}</div>
                   <div className="ov-kpi-delta" style={{ color: grossProfitKnown ? "var(--pos)" : "var(--ink-3)" }}>{profitMarginDisplay}</div>
                 </div>
                 <div className="ov-kpi-value">
                   {grossProfitKnown && isFiniteNumber(grossProfit)
-                    ? <TickerNum value={Number(grossProfit) * periodMul} format={(v) => fmtIQD(v)}/>
+                    ? <TickerNum value={Number(grossProfit)} format={(v) => fmtIQD(v)}/>
                     : "—"}
                 </div>
               </div>
@@ -6036,7 +6341,7 @@ function OverviewScreen({ lang, bootstrap }) {
                 </div>
                 <div className="ov-kpi-value">
                   {cashExpectedKnown && isFiniteNumber(cashExpected)
-                    ? <TickerNum value={Number(cashExpected) * periodMul} format={(v) => fmtIQD(v)}/>
+                    ? <TickerNum value={Number(cashExpected)} format={(v) => fmtIQD(v)}/>
                     : "—"}
                 </div>
               </div>
@@ -6047,7 +6352,7 @@ function OverviewScreen({ lang, bootstrap }) {
                 </div>
                 <div className="ov-kpi-value">
                   {digitalPaymentsKnown && isFiniteNumber(digitalPayments)
-                    ? <TickerNum value={Number(digitalPayments) * periodMul} format={(v) => fmtIQD(v)}/>
+                    ? <TickerNum value={Number(digitalPayments)} format={(v) => fmtIQD(v)}/>
                     : "—"}
                 </div>
               </div>
@@ -6064,7 +6369,7 @@ function OverviewScreen({ lang, bootstrap }) {
                   <div className="ov-kpi-delta" style={{ color: "var(--ink-3)" }}>{ar ? "متوسط" : "avg"} {fmtIQD(totalRev/Math.max(1,totalOrders)).replace("IQD ", "")}</div>
                 </div>
                 <div className="ov-kpi-value">
-                  <TickerNum value={totalOrders * periodMul} format={(v) => fmtNum(Math.round(v))}/>
+                  <TickerNum value={totalOrders} format={(v) => fmtNum(Math.round(v))}/>
                 </div>
               </div>
               <div className="ov-kpi-row">
@@ -6111,24 +6416,13 @@ function OverviewScreen({ lang, bootstrap }) {
                 {simulationActive ? ui(ar, "simulationPulse") : (ar ? "تدفق المبيعات" : "Sales flow")}
               </div>
               <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>
-                {simulationActive
-                  ? (ar ? "طلب الدقيقة" : "minute demand")
-                  : period === "hour"
-                    ? (ar ? "اليوم · ساعي" : "today, hourly")
-                    : (ar ? "يونيو-مايو" : "Jun-May")}
+                {simulationActive ? (ar ? "طلب الدقيقة" : "minute demand") : scopeSubtitle}
               </span>
             </div>
             {simulationActive && simulationPulseRows ? (
               <HourlyPulse data={simulationPulseRows} currentHour={14} />
-            ) : period === "hour" ? (
-              <HourlySalesFlowChart data={hourlyPulseData} ar={ar} />
             ) : (
-              <QualifiedSalesFlowChart
-                rows={leadFlowRows}
-                total={leadFlowTotal}
-                target={leadFlowTarget}
-                ar={ar}
-              />
+              <ScopedSalesFlowChart orders={flowOrders} scope={scope} ar={ar} allowDemoFallback={canUseDemoFallback(bootstrap)} />
             )}
           </div>
 
@@ -6608,6 +6902,12 @@ const AI_CANVAS_AR = {
   "read-only": "قراءة فقط",
   "proposal-only": "اقتراح فقط",
   "human-action": "إجراء بشري",
+  "human-confirm": "بانتظار تأكيد بشري",
+  "Product draft": "مسودة منتج",
+  "review and create": "راجع وأنشئ",
+  "Invoice draft": "مسودة فاتورة",
+  "review and receive": "راجع واستلم",
+  "Scan invoice": "مسح فاتورة",
   "provider": "المزوّد",
   "model": "النموذج",
   "tier": "الباقة",
@@ -8515,6 +8815,8 @@ function assistantRunResult(text, custom = {}, status) {
 
 function assistantArtifactHasCanvas(artifact) {
   return Boolean(
+    artifact?.productProposal ||
+    artifact?.invoiceProposal ||
     (Array.isArray(artifact?.visualizations) && artifact.visualizations.length) ||
     (Array.isArray(artifact?.claims) && artifact.claims.length) ||
     (Array.isArray(artifact?.sourceEvidence) && artifact.sourceEvidence.length)
@@ -8575,6 +8877,28 @@ function assistantArtifactItems(artifact, lang) {
     };
   });
 
+  if (artifact?.productProposal) {
+    items.unshift({
+      id: "product-draft",
+      kind: "product-draft",
+      title: aiCanvasText(lang, "Product draft"),
+      meta: aiCanvasText(lang, "human-confirm"),
+      detail: aiCanvasText(lang, "review and create"),
+      artifact: { ...artifact },
+    });
+  }
+
+  if (artifact?.invoiceProposal) {
+    items.unshift({
+      id: "invoice-draft",
+      kind: "invoice-draft",
+      title: aiCanvasText(lang, "Invoice draft"),
+      meta: aiCanvasText(lang, "human-confirm"),
+      detail: aiCanvasText(lang, "review and receive"),
+      artifact: { ...artifact },
+    });
+  }
+
   if (claims.length) {
     items.push({
       id: "claim-proof",
@@ -8619,7 +8943,28 @@ function assistantArtifactSelectedItem(artifact, itemId, lang) {
   return items.find((item) => item.id === itemId) || items[0] || null;
 }
 
-function BayaanAssistantThreadPanel({ runTurn, sourceMeta, liveMode, lang, artifactCanvas, onExport, reasoningMode, onReasoningModeChange }) {
+function InvoiceAttachButton({ onPick, lang }) {
+  const ar = lang === "ar";
+  const inputRef = useRefIns(null);
+  const [busy, setBusy] = useStateIns(false);
+  if (!onPick) return null;
+  return (
+    <>
+      <input ref={inputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => {
+        const file = e.target.files && e.target.files[0];
+        e.target.value = "";
+        if (!file) return;
+        setBusy(true);
+        try { await onPick(file); } finally { setBusy(false); }
+      }}/>
+      <button type="button" className="btn btn-ghost" style={{ height: 28, fontSize: 11.5 }} disabled={busy} onClick={() => inputRef.current && inputRef.current.click()}>
+        <Icon name="upload" size={12}/> {busy ? (ar ? "جارٍ القراءة…" : "Reading…") : aiCanvasText(lang, "Scan invoice")}
+      </button>
+    </>
+  );
+}
+
+function BayaanAssistantThreadPanel({ runTurn, sourceMeta, liveMode, lang, artifactCanvas, onExport, reasoningMode, onReasoningModeChange, onAttachInvoice }) {
   const ar = lang === "ar";
   const hasArtifactCanvas = Boolean(artifactCanvas?.pending || artifactCanvas?.artifact);
   const selectedArtifactItemId = artifactCanvas?.selectedItemId || null;
@@ -8676,7 +9021,7 @@ function BayaanAssistantThreadPanel({ runTurn, sourceMeta, liveMode, lang, artif
             <div className="bayaan-assistant-thread-toolbar">
               <SidebarTrigger className="bayaan-assistant-sidebar-trigger" />
               <div className="bayaan-assistant-thread-title">
-                {ar ? "تحليلات ميزا" : "Miza Insights"}
+                {ar ? "مساعد ميزا الذكي" : "Miza AI Assistant"}
               </div>
               {liveMode && (
                 <ReasoningModeToggle mode={reasoningMode} onChange={onReasoningModeChange} lang={lang}/>
@@ -8706,6 +9051,7 @@ function BayaanAssistantThreadPanel({ runTurn, sourceMeta, liveMode, lang, artif
                     <div className="bayaan-assistant-thread-footer">
                       <BayaanAssistantMeta sourceMeta={sourceMeta} lang={lang}/>
                       <BayaanAssistantQuickPrompts lang={lang}/>
+                      <InvoiceAttachButton onPick={onAttachInvoice} lang={lang}/>
                     </div>
                   )}
                 />
@@ -8725,6 +9071,591 @@ function BayaanAssistantThreadPanel({ runTurn, sourceMeta, liveMode, lang, artif
         </div>
       </SidebarProvider>
     </AssistantRuntimeProvider>
+  );
+}
+
+// Commit context for the AI product draft. InsightsScreen provides the live
+// gateway, toast, refresh, and the role gate so the form (rendered deep inside the
+// artifact canvas) can confirm without threading props through every renderer.
+const ProductDraftContext = React.createContext(null);
+
+function productDraftSeed(proposal) {
+  const p = proposal || {};
+  const recipe = p.recipe || null;
+  return {
+    name: p.name || "",
+    consumptionMode: ["recipe", "finished", "hybrid", "none"].includes(p.consumptionMode) ? p.consumptionMode : "recipe",
+    uom: p.uom || "",
+    category: p.category || "",
+    listPrice: p.listPrice != null ? String(p.listPrice) : "",
+    standardPrice: p.standardPrice != null ? String(p.standardPrice) : "",
+    availableInPos: p.availableInPos !== false,
+    sizes: Array.isArray(p.sizes) ? p.sizes.join(", ") : "",
+    modifierGroups: Array.isArray(p.modifierGroups) ? p.modifierGroups : [],
+    ingredientWarnings: Array.isArray(p.ingredientWarnings) ? p.ingredientWarnings : [],
+    wasteAllowancePercent: recipe && recipe.wasteAllowancePercent != null ? String(recipe.wasteAllowancePercent) : "0",
+    ingredients: recipe && Array.isArray(recipe.ingredients)
+      ? recipe.ingredients.map((line) => ({
+          // Prefer the resolvable default_code; the numeric id is only a fallback. The
+          // backend resolves either, but sending the code avoids the numeric-id path.
+          ingredientId: String(line.ingredientCode || line.ingredientId || ""),
+          ingredientCode: String(line.ingredientCode || ""),
+          ingredientName: line.ingredientName || line.ingredientCode || line.ingredientId || "",
+          qty: line.qty != null ? String(line.qty) : "",
+          uom: line.uom || "",
+        }))
+      : [],
+  };
+}
+
+// AI-drafted, human-confirmed product + recipe creation. The AI only pre-fills the
+// fields (productProposal); nothing is created until a human edits/reviews and clicks
+// Confirm, which calls the deterministic, role-gated, audited /product_create_bundle
+// route. The consumption mode is surfaced prominently with the AI's rationale because
+// the wrong mode silently breaks accounting.
+function AiProductDraftForm({ proposal, lang }) {
+  const ar = lang === "ar";
+  const ctx = React.useContext(ProductDraftContext) || {};
+  const gateway = ctx.gateway;
+  const showToast = ctx.showToast || (() => {});
+  const ingredientOptions = Array.isArray(ctx.ingredientOptions) ? ctx.ingredientOptions : [];
+  const canConfirm = ctx.canConfirm !== false; // default allow in demo; backend enforces in live
+  const signature = useMemoIns(() => JSON.stringify(proposal || {}), [proposal]);
+  const [form, setForm] = useStateIns(() => productDraftSeed(proposal));
+  const [busy, setBusy] = useStateIns(false);
+  const [created, setCreated] = useStateIns(null);
+  const [image, setImage] = useStateIns(null); // { base64, mimeType, dataUrl, name }
+  useEffectIns(() => {
+    setForm(productDraftSeed(proposal));
+    setCreated(null);
+    setBusy(false);
+    setImage(null);
+  }, [signature]);
+
+  if (!proposal) return null;
+
+  const pickImage = async (file) => {
+    if (!file) return;
+    if (!/^image\//.test(file.type || "")) { showToast(ar ? "اختر ملف صورة" : "Please choose an image file", "warn"); return; }
+    try {
+      const base64 = await readFileAsBase64(file);
+      const mimeType = file.type || "image/png";
+      setImage({ base64, mimeType, dataUrl: `data:${mimeType};base64,${base64}`, name: file.name || "image" });
+    } catch {
+      showToast(ar ? "تعذّر قراءة الصورة" : "Could not read the image", "warn");
+    }
+  };
+
+  const requiresRecipe = form.consumptionMode === "recipe" || form.consumptionMode === "hybrid";
+  const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+  const setIngredient = (idx, key, value) => setForm((prev) => ({
+    ...prev,
+    ingredients: prev.ingredients.map((line, i) => (i === idx ? { ...line, [key]: value } : line)),
+  }));
+  const removeIngredient = (idx) => setForm((prev) => ({
+    ...prev,
+    ingredients: prev.ingredients.filter((_, i) => i !== idx),
+  }));
+
+  const inputStyle = { width: "100%", height: 30, padding: "0 8px", border: "1px solid var(--line)", borderRadius: 5, background: "var(--bg)", color: "var(--ink-1)", fontSize: 12.5 };
+  const labelStyle = { fontSize: 11, fontWeight: 600, marginBottom: 4, display: "block" };
+  const MODE_LABELS = {
+    recipe: ar ? "وصفة (يخصم المكونات)" : "Recipe (deduct ingredients)",
+    finished: ar ? "منتج جاهز للبيع" : "Finished good",
+    hybrid: ar ? "هجين (الاثنان)" : "Hybrid (both)",
+    none: ar ? "خدمة / بدون مخزون" : "Service / none",
+  };
+
+  const confirm = async () => {
+    if (!form.name.trim()) { showToast(ar ? "اسم المنتج مطلوب" : "Product name is required", "warn"); return; }
+    const cleanIngredients = form.ingredients.filter((line) => line.ingredientId && Number(line.qty) > 0);
+    if (requiresRecipe && cleanIngredients.length === 0) {
+      showToast(ar ? "الوصفة تحتاج مكوناً واحداً على الأقل بكمية صحيحة" : "A recipe product needs at least one ingredient with a quantity", "warn");
+      return;
+    }
+    if (!gateway?.createProductBundle) {
+      showToast(ar ? "اربط الخلفية المباشرة أولاً لإنشاء المنتجات" : "Connect the live backend to create products", "warn");
+      return;
+    }
+    const payload = {
+      name: form.name.trim(),
+      consumptionMode: form.consumptionMode,
+      uom: form.uom.trim() || undefined,
+      category: form.category.trim() || undefined,
+      listPrice: Number(form.listPrice || 0),
+      standardPrice: Number(form.standardPrice || 0),
+      availableInPos: form.availableInPos,
+      sizes: form.sizes.split(",").map((s) => s.trim()).filter(Boolean),
+      modifierGroups: Array.isArray(form.modifierGroups) ? form.modifierGroups : [],
+      imageBase64: image?.base64 || undefined,
+      imageMimeType: image?.mimeType || undefined,
+      recipe: requiresRecipe
+        ? {
+            wasteAllowancePercent: Number(form.wasteAllowancePercent || 0),
+            ingredients: cleanIngredients.map((line) => ({ ingredientId: line.ingredientId, qty: Number(line.qty), uom: line.uom || undefined })),
+          }
+        : undefined,
+    };
+    setBusy(true);
+    try {
+      const result = unwrapOdoo(await gateway.createProductBundle(payload));
+      setCreated(result || { ok: true });
+      showToast(ar ? `تم إنشاء المنتج: ${form.name.trim()}` : `Product created: ${form.name.trim()}`, "success");
+      await ctx.refreshOdoo?.();
+    } catch (error) {
+      showToast(compactError(error) || (ar ? "تعذر إنشاء المنتج" : "Could not create product"), "warn");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (created) {
+    return (
+      <div className="ins-card" style={{ display: "grid", gap: 8, placeItems: "center", textAlign: "center", padding: "28px 18px" }}>
+        <Icon name="check" size={20}/>
+        <div style={{ fontSize: 15, fontWeight: 600 }}>{ar ? "تم إنشاء المنتج" : "Product created"}</div>
+        <div className="t-small subtle" style={{ maxWidth: 360, lineHeight: 1.5 }}>
+          {ar
+            ? `${form.name.trim()} أُنشئ في المحرك${created.recipe_state ? ` ووصفته ${created.recipe_state}` : ""}. يظهر الحدث في السجل الفوري.`
+            : `${form.name.trim()} was created in the engine${created.recipe_state ? `, recipe ${created.recipe_state}` : ""}. The event appears in the realtime audit log.`}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ins-card" style={{ display: "grid", gap: 12 }}>
+      <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+        <span className="badge" style={{ height: 18, fontSize: 10 }}>{aiCanvasText(lang, "human-confirm")}</span>
+        <span className="t-small subtle" style={{ fontSize: 11, lineHeight: 1.5 }}>
+          {ar ? "الذكاء جهّز هذه المسودة فقط — لا يُنشأ شيء حتى تراجع وتؤكد." : "The AI only drafted this — nothing is created until you review and confirm."}
+        </span>
+      </div>
+
+      {Array.isArray(form.ingredientWarnings) && form.ingredientWarnings.length > 0 && (
+        <div style={{ border: "1px solid var(--warn, #b45309)", background: "rgba(180,83,9,0.08)", borderRadius: 6, padding: "8px 10px", display: "grid", gap: 4 }}>
+          <div className="row" style={{ gap: 6, alignItems: "center" }}>
+            <Icon name="flag" size={14}/>
+            <strong style={{ fontSize: 12 }}>{ar ? "تنبيه عن المكونات" : "Ingredient notice"}</strong>
+          </div>
+          {form.ingredientWarnings.map((w, i) => (
+            <div key={i} className="t-small" style={{ fontSize: 11, lineHeight: 1.5 }}>
+              {w.status === "substituted"
+                ? (ar
+                    ? `«${w.requested}» غير موجود في الكتالوج — استبدله الذكاء بـ ${w.substitutedWithCode || "بديل"}. تحقّق قبل التأكيد.`
+                    : `"${w.requested}" is not in your catalog — the AI substituted ${w.substitutedWithCode || "an alternative"}. Verify before confirming.`)
+                : (ar
+                    ? `«${w.requested}» غير موجود في الكتالوج. ${w.note || "أضِفه كمكوّن أولاً أو عدّل الوصفة."}`
+                    : `"${w.requested}" is not in your catalog. ${w.note || "Add it as an ingredient first, or edit the recipe."}`)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div>
+        <label style={labelStyle}>{ar ? "اسم المنتج" : "Product name"}</label>
+        <input style={inputStyle} value={form.name} onChange={(e) => set("name", e.target.value)} placeholder={ar ? "مثال: عصير مانجو" : "e.g. Mango Smoothie"}/>
+      </div>
+
+      <div>
+        <label style={labelStyle}>{ar ? "صورة المنتج (اختياري)" : "Product image (optional)"}</label>
+        <label
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => { e.preventDefault(); pickImage(e.dataTransfer?.files?.[0]); }}
+          style={{ border: "1px dashed var(--line)", borderRadius: 6, padding: image ? 8 : 14, display: "flex", gap: 10, alignItems: "center", cursor: "pointer", justifyContent: image ? "space-between" : "center" }}
+        >
+          {image ? (
+            <>
+              <span className="row" style={{ gap: 8, alignItems: "center", minWidth: 0 }}>
+                <img src={image.dataUrl} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4 }}/>
+                <span className="t-small" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>{image.name}</span>
+              </span>
+              <button type="button" className="btn btn-ghost" style={{ height: 26, fontSize: 11 }} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setImage(null); }}>{ar ? "إزالة" : "Remove"}</button>
+            </>
+          ) : (
+            <span className="t-small subtle" style={{ fontSize: 11.5 }}>{ar ? "اسحب صورة هنا أو انقر للاختيار" : "Drag an image here or click to choose"}</span>
+          )}
+          <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => pickImage(e.target.files?.[0])}/>
+        </label>
+      </div>
+
+      <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, padding: 10, display: "grid", gap: 8 }}>
+        <div>
+          <label style={labelStyle}>{ar ? "وضع الاستهلاك (يؤثر على المحاسبة)" : "Consumption mode (affects accounting)"}</label>
+          <select style={inputStyle} value={form.consumptionMode} onChange={(e) => set("consumptionMode", e.target.value)}>
+            {Object.keys(MODE_LABELS).map((key) => (<option key={key} value={key}>{MODE_LABELS[key]}</option>))}
+          </select>
+        </div>
+        {proposal.modeRationale && (
+          <div className="t-small subtle" style={{ fontSize: 11, lineHeight: 1.5 }}>
+            <strong>{ar ? "سبب الذكاء: " : "AI rationale: "}</strong>{proposal.modeRationale}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <div>
+          <label style={labelStyle}>{ar ? "وحدة القياس" : "Unit of measure"}</label>
+          <input style={inputStyle} value={form.uom} onChange={(e) => set("uom", e.target.value)} placeholder={ar ? "Units" : "Units"}/>
+        </div>
+        <div>
+          <label style={labelStyle}>{ar ? "الفئة" : "Category"}</label>
+          <input style={inputStyle} value={form.category} onChange={(e) => set("category", e.target.value)}/>
+        </div>
+        <div>
+          <label style={labelStyle}>{ar ? "سعر البيع" : "Sale price"}</label>
+          <input style={inputStyle} type="number" value={form.listPrice} onChange={(e) => set("listPrice", e.target.value)}/>
+        </div>
+        <div>
+          <label style={labelStyle}>{ar ? "التكلفة" : "Unit cost"}</label>
+          <input style={inputStyle} type="number" value={form.standardPrice} onChange={(e) => set("standardPrice", e.target.value)}/>
+        </div>
+      </div>
+
+      <div>
+        <label style={labelStyle}>{ar ? "الأحجام (افصل بفاصلة)" : "Sizes (comma-separated)"}</label>
+        <input style={inputStyle} value={form.sizes} onChange={(e) => set("sizes", e.target.value)} placeholder={ar ? "صغير، وسط، كبير" : "Small, Medium, Large"}/>
+      </div>
+
+      <label className="row" style={{ gap: 6, fontSize: 12 }}>
+        <input type="checkbox" checked={form.availableInPos} onChange={(e) => set("availableInPos", e.target.checked)}/>
+        {ar ? "متاح في نقطة البيع" : "Available in POS"}
+      </label>
+
+      {requiresRecipe && (
+        <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, padding: 10, display: "grid", gap: 8 }}>
+          <div className="between">
+            <div style={{ fontSize: 12, fontWeight: 600 }}>{ar ? "الوصفة (المكونات تُخصم من المخزون)" : "Recipe (ingredients deducted from stock)"}</div>
+            <input style={{ ...inputStyle, width: 92, height: 26 }} type="number" value={form.wasteAllowancePercent} onChange={(e) => set("wasteAllowancePercent", e.target.value)} title={ar ? "نسبة الهدر %" : "Waste allowance %"} placeholder="%"/>
+          </div>
+          {form.ingredients.length === 0 ? (
+            <div className="t-small subtle" style={{ fontSize: 11 }}>{ar ? "لا توجد مكونات في المسودة." : "No ingredients in the draft."}</div>
+          ) : form.ingredients.map((line, idx) => (
+            <div key={`${line.ingredientId}-${idx}`} className="row" style={{ gap: 6, alignItems: "center" }}>
+              {ingredientOptions.length > 0 ? (
+                // Editable picker so a reviewer can correct a wrong AI ingredient pick,
+                // not just delete the line. Option value is the resolvable default_code.
+                <select
+                  style={{ ...inputStyle, flex: 1, minWidth: 0 }}
+                  value={line.ingredientId}
+                  onChange={(e) => {
+                    const opt = ingredientOptions.find((o) => o.value === e.target.value);
+                    setForm((prev) => ({
+                      ...prev,
+                      ingredients: prev.ingredients.map((l, i) => (i === idx ? {
+                        ...l,
+                        ingredientId: e.target.value,
+                        ingredientCode: e.target.value,
+                        ingredientName: opt ? opt.label : l.ingredientName,
+                        uom: l.uom || (opt ? opt.unit : ""),
+                      } : l)),
+                    }));
+                  }}
+                >
+                  {line.ingredientId && !ingredientOptions.some((o) => o.value === line.ingredientId) && (
+                    <option value={line.ingredientId}>{line.ingredientName || line.ingredientId}</option>
+                  )}
+                  {ingredientOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              ) : (
+                <span className="t-small" style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>{line.ingredientName}</span>
+              )}
+              <input style={{ ...inputStyle, width: 72 }} type="number" value={line.qty} onChange={(e) => setIngredient(idx, "qty", e.target.value)} placeholder={ar ? "كمية" : "qty"}/>
+              <input style={{ ...inputStyle, width: 64 }} value={line.uom} onChange={(e) => setIngredient(idx, "uom", e.target.value)} placeholder="uom"/>
+              <button type="button" className="btn btn-ghost" style={{ height: 26, fontSize: 11 }} onClick={() => removeIngredient(idx)} title={ar ? "حذف" : "Remove"}>×</button>
+            </div>
+          ))}
+          {ingredientOptions.length > 0 && (
+            // Lets the reviewer add a recipe line — essential when the AI flagged a
+            // missing ingredient and left the recipe empty, or to add more lines.
+            <button
+              type="button"
+              className="btn btn-ghost"
+              style={{ height: 28, fontSize: 11.5, justifySelf: "start" }}
+              onClick={() => {
+                const first = ingredientOptions[0];
+                setForm((prev) => ({
+                  ...prev,
+                  ingredients: [...prev.ingredients, {
+                    ingredientId: first ? first.value : "",
+                    ingredientCode: first ? first.value : "",
+                    ingredientName: first ? first.label : "",
+                    qty: "",
+                    uom: first ? first.unit : "",
+                  }],
+                }));
+              }}
+            >
+              + {ar ? "إضافة مكوّن" : "Add ingredient"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {!canConfirm && (
+        <div className="t-small subtle" style={{ fontSize: 11, lineHeight: 1.5 }}>
+          {ar ? "إنشاء المنتجات يتطلب صلاحية مدير. راجع المسودة وأرسلها إلى مدير لتأكيدها." : "Creating products requires manager rights. Review the draft and hand it to a manager to confirm."}
+        </div>
+      )}
+
+      <div className="between" style={{ marginTop: 2 }}>
+        <span className="t-small subtle" style={{ fontSize: 10.5 }}>
+          {ar ? "التأكيد ينشئ عبر مسار مؤمَّن ومُدقَّق" : "Confirm commits via a guarded, audited route"}
+        </span>
+        <button type="button" className="btn btn-primary" style={{ height: 32, fontSize: 12.5 }} disabled={busy || !canConfirm} onClick={confirm}>
+          {busy ? (ar ? "جارٍ الإنشاء…" : "Creating…") : (ar ? "تأكيد وإنشاء المنتج" : "Confirm & create product")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Commit context for the AI invoice scan. InsightsScreen provides the live
+// gateway, toast, refresh, role gate, plus the warehouses and product catalog the
+// form needs (it renders deep inside the artifact canvas).
+const InvoiceDraftContext = React.createContext(null);
+
+function invoiceDraftSeed(proposal) {
+  const p = proposal || {};
+  const supplier = p.supplier || {};
+  return {
+    supplierName: supplier.name || "",
+    supplierAddress: supplier.address || "",
+    supplierCategory: supplier.category || "",
+    invoiceRef: p.invoiceRef || "",
+    invoiceDate: p.invoiceDate || "",
+    warehouseId: "",
+    lines: Array.isArray(p.lines)
+      ? p.lines.map((line) => ({
+          description: line.description || "",
+          productId: line.matchedProductId || "",
+          productName: line.matchedProductName || "",
+          qty: line.qty != null ? String(line.qty) : "",
+          unitPrice: line.unitPrice != null ? String(line.unitPrice) : "",
+        }))
+      : [],
+  };
+}
+
+// AI-drafted, human-confirmed supplier-invoice intake. The AI only transcribed the
+// photo; nothing is created until the human verifies the figures against the shown
+// image, maps/creates every line to a real product, and clicks Confirm — which
+// calls the deterministic /invoice_commit route (supplier + PO + warehouse receipt
+// in one atomic transaction). Numbers are editable drafts; Odoo computes the
+// official totals and stock valuation.
+function AiInvoiceDraftForm({ proposal, scannedImage, lang }) {
+  const ar = lang === "ar";
+  const ctx = React.useContext(InvoiceDraftContext) || {};
+  const gateway = ctx.gateway;
+  const showToast = ctx.showToast || (() => {});
+  const canConfirm = ctx.canConfirm !== false;
+  const warehouses = Array.isArray(ctx.warehouses) ? ctx.warehouses : [];
+  const signature = useMemoIns(() => JSON.stringify(proposal || {}), [proposal]);
+  const [form, setForm] = useStateIns(() => invoiceDraftSeed(proposal));
+  const [catalog, setCatalog] = useStateIns(() => (Array.isArray(ctx.catalog) ? ctx.catalog : []));
+  const [busy, setBusy] = useStateIns(false);
+  const [created, setCreated] = useStateIns(null);
+  useEffectIns(() => {
+    setForm(invoiceDraftSeed(proposal));
+    setCatalog(Array.isArray(ctx.catalog) ? ctx.catalog : []);
+    setCreated(null);
+    setBusy(false);
+  }, [signature]);
+
+  if (!proposal) return null;
+
+  const inputStyle = { width: "100%", height: 30, padding: "0 8px", border: "1px solid var(--line)", borderRadius: 5, background: "var(--bg)", color: "var(--ink-1)", fontSize: 12.5 };
+  const labelStyle = { fontSize: 11, fontWeight: 600, marginBottom: 4, display: "block" };
+
+  if (proposal.extractable === false) {
+    return (
+      <div className="ins-card" style={{ display: "grid", gap: 10, placeItems: "center", textAlign: "center", padding: "26px 18px" }}>
+        <Icon name="alert-triangle" size={20}/>
+        <div style={{ fontSize: 15, fontWeight: 600 }}>{ar ? "تعذّرت قراءة الفاتورة" : "Couldn't read the invoice"}</div>
+        <div className="t-small subtle" style={{ maxWidth: 360, lineHeight: 1.5 }}>
+          {ar ? "التقط صورة أوضح للفاتورة وحاول مرة أخرى." : "Take a clearer, well-lit photo of the invoice and try again."}
+        </div>
+      </div>
+    );
+  }
+
+  const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+  const setLine = (idx, key, value) => setForm((prev) => ({
+    ...prev,
+    lines: prev.lines.map((line, i) => (i === idx ? { ...line, [key]: value } : line)),
+  }));
+  const removeLine = (idx) => setForm((prev) => ({ ...prev, lines: prev.lines.filter((_, i) => i !== idx) }));
+
+  const createItemForLine = async (idx) => {
+    const line = form.lines[idx];
+    const name = (line.description || "").trim();
+    if (!name) { showToast(ar ? "وصف الصنف مطلوب" : "Item description is required", "warn"); return; }
+    if (!gateway?.createStockItem) { showToast(ar ? "اربط الخلفية المباشرة" : "Connect the live backend", "warn"); return; }
+    try {
+      const result = unwrapOdoo(await gateway.createStockItem({ name, uom: "Units", consumptionMode: "none", availableInPos: false }));
+      const product = result?.product || {};
+      const id = String(product.id ?? product.default_code ?? name);
+      setCatalog((prev) => [...prev, { id, code: product.default_code || "", name: product.name || name, uom: product.uom || "Units" }]);
+      setForm((prev) => ({
+        ...prev,
+        lines: prev.lines.map((l, i) => (i === idx ? { ...l, productId: id, productName: product.name || name } : l)),
+      }));
+      showToast(ar ? `تم إنشاء ${name}` : `Created ${name}`, "success");
+    } catch (error) {
+      showToast(compactError(error) || (ar ? "تعذّر إنشاء الصنف" : "Could not create item"), "warn");
+    }
+  };
+
+  const confirm = async () => {
+    if (!form.supplierName.trim()) { showToast(ar ? "اسم المورد مطلوب" : "Supplier name is required", "warn"); return; }
+    const linesReady = form.lines.filter((l) => l.productId && Number(l.qty) > 0);
+    const unmatched = form.lines.some((l) => Number(l.qty) > 0 && !l.productId);
+    if (unmatched) { showToast(ar ? "طابق أو أنشئ كل بند قبل الاستلام" : "Map or create every line before receiving", "warn"); return; }
+    if (linesReady.length === 0) { showToast(ar ? "طابق صنفاً واحداً على الأقل بكمية صحيحة" : "Match at least one line to a product with a quantity", "warn"); return; }
+    if (!gateway?.commitInvoice) { showToast(ar ? "اربط الخلفية المباشرة لاستلام الفواتير" : "Connect the live backend to receive invoices", "warn"); return; }
+    setBusy(true);
+    try {
+      const result = unwrapOdoo(await gateway.commitInvoice({
+        supplier: {
+          name: form.supplierName.trim(),
+          address: form.supplierAddress.trim() || undefined,
+          category: form.supplierCategory.trim() || undefined,
+        },
+        warehouse: form.warehouseId ? (Number(form.warehouseId) || form.warehouseId) : undefined,
+        invoiceRef: form.invoiceRef.trim() || undefined,
+        invoiceDate: form.invoiceDate?.trim() || undefined,
+        currency: proposal.currency || undefined,
+        invoiceName: scannedImage?.name || "invoice",
+        invoiceFileBase64: scannedImage?.base64 || undefined,
+        invoiceMimeType: scannedImage?.mimeType || undefined,
+        lines: linesReady.map((l) => ({ productId: l.productId, qty: Number(l.qty), unitPrice: Number(l.unitPrice || 0) })),
+      }));
+      setCreated(result || { ok: true });
+      showToast(ar ? `تم استلام الفاتورة: ${result?.name || form.supplierName.trim()}` : `Invoice received: ${result?.name || form.supplierName.trim()}`, "success");
+      await ctx.refreshOdoo?.();
+    } catch (error) {
+      showToast(compactError(error) || (ar ? "تعذّر استلام الفاتورة" : "Could not receive invoice"), "warn");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (created) {
+    return (
+      <div className="ins-card" style={{ display: "grid", gap: 8, placeItems: "center", textAlign: "center", padding: "28px 18px" }}>
+        <Icon name="check" size={20}/>
+        <div style={{ fontSize: 15, fontWeight: 600 }}>{ar ? "تم استلام الفاتورة" : "Invoice received"}</div>
+        <div className="t-small subtle" style={{ maxWidth: 380, lineHeight: 1.5 }}>
+          {ar
+            ? `${created.name || form.supplierName.trim()} — أُنشئ المورد وأمر الشراء وزاد مخزون المستودع${created.receipt_state ? ` (الاستلام ${created.receipt_state})` : ""}. يظهر الحدث في السجل الفوري.`
+            : `${created.name || form.supplierName.trim()} — supplier + purchase order created and warehouse stock received${created.receipt_state ? ` (receipt ${created.receipt_state})` : ""}. The event appears in the realtime audit log.`}
+        </div>
+      </div>
+    );
+  }
+
+  const totals = proposal.totals || {};
+
+  return (
+    <div className="ins-card" style={{ display: "grid", gap: 12 }}>
+      <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+        <span className="badge" style={{ height: 18, fontSize: 10 }}>{aiCanvasText(lang, "human-confirm")}</span>
+        <span className="t-small subtle" style={{ fontSize: 11, lineHeight: 1.5 }}>
+          {ar ? "الذكاء نسخ الفاتورة فقط — تحقّق من الأرقام مقابل الصورة قبل الاستلام." : "The AI only transcribed the invoice — verify the figures against the image before receiving."}
+        </span>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 1fr) minmax(0, 1.3fr)", gap: 12, alignItems: "start" }}>
+        <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, padding: 6, position: "sticky", top: 0 }}>
+          {scannedImage?.dataUrl ? (
+            <img src={scannedImage.dataUrl} alt={ar ? "الفاتورة الممسوحة" : "Scanned invoice"} style={{ width: "100%", maxHeight: 360, objectFit: "contain", borderRadius: 4, display: "block" }}/>
+          ) : (
+            <div className="t-small subtle" style={{ padding: 16, textAlign: "center" }}>{ar ? "لا توجد صورة" : "No image"}</div>
+          )}
+        </div>
+
+        <div style={{ display: "grid", gap: 8 }}>
+          <div>
+            <label style={labelStyle}>{ar ? "اسم المورد" : "Supplier name"}</label>
+            <input style={inputStyle} value={form.supplierName} onChange={(e) => set("supplierName", e.target.value)}/>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div>
+              <label style={labelStyle}>{ar ? "العنوان" : "Address"}</label>
+              <input style={inputStyle} value={form.supplierAddress} onChange={(e) => set("supplierAddress", e.target.value)}/>
+            </div>
+            <div>
+              <label style={labelStyle}>{ar ? "الفئة" : "Category"}</label>
+              <input style={inputStyle} value={form.supplierCategory} onChange={(e) => set("supplierCategory", e.target.value)}/>
+            </div>
+            <div>
+              <label style={labelStyle}>{ar ? "مرجع الفاتورة" : "Invoice ref"}</label>
+              <input style={inputStyle} value={form.invoiceRef} onChange={(e) => set("invoiceRef", e.target.value)}/>
+            </div>
+            <div>
+              <label style={labelStyle}>{ar ? "المستودع" : "Warehouse"}</label>
+              <select style={inputStyle} value={form.warehouseId} onChange={(e) => set("warehouseId", e.target.value)}>
+                <option value="">{ar ? "الافتراضي" : "Default"}</option>
+                {warehouses.map((wh) => (<option key={String(wh.id ?? wh.code)} value={String(wh.id ?? wh.code)}>{wh.name || wh.code}</option>))}
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, padding: 10, display: "grid", gap: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 600 }}>{ar ? "البنود (تُضاف إلى مخزون المستودع)" : "Line items (added to warehouse stock)"}</div>
+        {form.lines.length === 0 ? (
+          <div className="t-small subtle" style={{ fontSize: 11 }}>{ar ? "لم تُستخرج أي بنود." : "No line items were extracted."}</div>
+        ) : form.lines.map((line, idx) => (
+          <div key={idx} style={{ display: "grid", gap: 4, borderBottom: "1px solid var(--line-soft)", paddingBottom: 6 }}>
+            <div className="t-small" style={{ fontSize: 11.5 }}>{line.description || (ar ? "بند" : "Line")}</div>
+            <div className="row" style={{ gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+              <select style={{ ...inputStyle, flex: 1, minWidth: 140 }} value={line.productId} onChange={(e) => {
+                const id = e.target.value;
+                const match = catalog.find((p) => String(p.id) === id);
+                setLine(idx, "productId", id);
+                setLine(idx, "productName", match?.name || "");
+              }}>
+                <option value="">{ar ? "اختر منتجاً…" : "Select product…"}</option>
+                {catalog.map((p) => (<option key={String(p.id)} value={String(p.id)}>{p.name}{p.code ? ` (${p.code})` : ""}</option>))}
+              </select>
+              {!line.productId && (
+                <button type="button" className="btn btn-ghost" style={{ height: 28, fontSize: 11 }} onClick={() => createItemForLine(idx)} title={ar ? "إنشاء صنف من الوصف" : "Create item from description"}>
+                  {ar ? "+ صنف" : "+ item"}
+                </button>
+              )}
+              <input style={{ ...inputStyle, width: 72 }} type="number" value={line.qty} onChange={(e) => setLine(idx, "qty", e.target.value)} placeholder={ar ? "كمية" : "qty"}/>
+              <input style={{ ...inputStyle, width: 84 }} type="number" value={line.unitPrice} onChange={(e) => setLine(idx, "unitPrice", e.target.value)} placeholder={ar ? "سعر" : "price"}/>
+              <button type="button" className="btn btn-ghost" style={{ height: 28, fontSize: 11 }} onClick={() => removeLine(idx)} title={ar ? "حذف" : "Remove"}>×</button>
+            </div>
+          </div>
+        ))}
+        {(Number(totals.total) > 0 || Number(totals.subtotal) > 0) && (
+          <div className="t-small subtle" style={{ fontSize: 10.5 }}>
+            {ar ? "إجمالي الفاتورة المنسوخ (للمراجعة فقط): " : "Transcribed invoice total (for cross-check only): "}
+            {Number(totals.total || totals.subtotal || 0).toLocaleString("en")} {proposal.currency || ""}
+          </div>
+        )}
+      </div>
+
+      {!canConfirm && (
+        <div className="t-small subtle" style={{ fontSize: 11, lineHeight: 1.5 }}>
+          {ar ? "استلام الفواتير يتطلب صلاحية لوجستيات أو مدير." : "Receiving invoices requires logistics or manager rights."}
+        </div>
+      )}
+
+      <div className="between" style={{ marginTop: 2 }}>
+        <span className="t-small subtle" style={{ fontSize: 10.5 }}>
+          {ar ? "التأكيد ينشئ المورد وأمر الشراء ويستلم المخزون" : "Confirm creates supplier + PO and receives stock"}
+        </span>
+        <button type="button" className="btn btn-primary" style={{ height: 32, fontSize: 12.5 }} disabled={busy || !canConfirm} onClick={confirm}>
+          {busy ? (ar ? "جارٍ الاستلام…" : "Receiving…") : (ar ? "تأكيد واستلام" : "Confirm & receive")}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -8762,7 +9693,11 @@ function BayaanAssistantArtifactCanvas({ artifact, pending, selectedItemId, stag
               )}
             </div>
           </div>
-          <AiMessageArtifact artifact={selected.artifact} lang={lang}/>
+          {selected.kind === "product-draft"
+            ? <AiProductDraftForm proposal={selected.artifact?.productProposal} lang={lang}/>
+            : selected.kind === "invoice-draft"
+            ? <AiInvoiceDraftForm proposal={selected.artifact?.invoiceProposal} scannedImage={selected.artifact?.scannedImage} lang={lang}/>
+            : <AiMessageArtifact artifact={selected.artifact} lang={lang}/>}
         </>
       ) : (
         <AssistantArtifactPreparing lang={lang} stage={stage || "thinking"} hasText={false}/>
@@ -8879,7 +9814,7 @@ function BayaanInsightsExportOverlay({ payload, lang, onClose }) {
       </div>
       <div className="bayaan-export-report">
         <div className="bayaan-export-report-head">
-          <div className="bayaan-export-report-brand">{ar ? "تحليلات ميزا" : "Miza Insights"}</div>
+          <div className="bayaan-export-report-brand">{ar ? "مساعد ميزا الذكي" : "Miza AI Assistant"}</div>
           <div className="bayaan-export-report-sub">{title} · {dateStr}</div>
         </div>
         {turns.length === 0 ? (
@@ -9440,9 +10375,27 @@ function aiLocalPreviewText(ar) {
 // ============================================================
 // Main screen
 // ============================================================
-function InsightsScreen({ lang, bootstrap, sourceOfTruth }) {
+function InsightsScreen({ lang, bootstrap, sourceOfTruth, canCreateProduct = false, canReceiveInvoice = false, refreshOdoo, warehouses = [] }) {
   const sourceMeta = useMemoIns(() => insightSourceMeta(bootstrap), [bootstrap]);
   const ar = lang === "ar";
+  const { showToast: insightsShowToast } = useToast();
+  const productDraftIngredientOptions = useMemoIns(() => odooIngredientOptions(bootstrap), [bootstrap]);
+  const productDraftCtx = useMemoIns(() => ({
+    gateway: sourceOfTruth,
+    showToast: insightsShowToast,
+    refreshOdoo,
+    canConfirm: canCreateProduct,
+    ingredientOptions: productDraftIngredientOptions,
+  }), [sourceOfTruth, insightsShowToast, refreshOdoo, canCreateProduct, productDraftIngredientOptions]);
+  const invoiceCatalog = useMemoIns(() => (odooProductCatalogRows(bootstrap) || []).map((row) => ({ id: row.id, code: row.code, name: row.name, uom: row.uom })), [bootstrap]);
+  const invoiceDraftCtx = useMemoIns(() => ({
+    gateway: sourceOfTruth,
+    showToast: insightsShowToast,
+    refreshOdoo,
+    canConfirm: canReceiveInvoice,
+    warehouses,
+    catalog: invoiceCatalog,
+  }), [sourceOfTruth, insightsShowToast, refreshOdoo, canReceiveInvoice, warehouses, invoiceCatalog]);
   const liveAiEnabled = Boolean(sourceOfTruth?.enabled && !isSimulationRuntime());
   const introText = aiAssistantIntroText(ar, sourceMeta, liveAiEnabled);
   const introLocale = ar ? "ar" : "en";
@@ -9489,6 +10442,40 @@ function InsightsScreen({ lang, bootstrap, sourceOfTruth }) {
     setAssistantCanvasStage("ready");
   }, []);
 
+  // Invoice scan: read the photo -> server vision extract -> push the draft into
+  // the canvas directly (no LLM chat turn). The form (rendered from this artifact)
+  // does the human-confirmed deterministic commit.
+  const handleAttachInvoice = async (file) => {
+    if (!sourceOfTruth?.extractInvoice) {
+      insightsShowToast(ar ? "اربط الخلفية المباشرة لمسح الفواتير" : "Connect the live backend to scan invoices", "warn");
+      return;
+    }
+    try {
+      const base64 = await readFileAsBase64(file);
+      const mimeType = file.type || "image/jpeg";
+      const dataUrl = `data:${mimeType};base64,${base64}`;
+      setAssistantCanvasPending(true);
+      setAssistantCanvasStage("thinking");
+      const response = unwrapOdoo(await sourceOfTruth.extractInvoice({ imageBase64: base64, mimeType }));
+      const proposal = response && response.invoiceProposal;
+      if (!proposal) {
+        insightsShowToast((response && response.error) || (ar ? "تعذّر قراءة الفاتورة" : "Could not read the invoice"), "warn");
+        setAssistantCanvasPending(false);
+        setAssistantCanvasStage("idle");
+        return;
+      }
+      setAssistantCanvasArtifact({ invoiceProposal: proposal, scannedImage: { dataUrl, base64, mimeType, name: file.name || "invoice" } });
+      setAssistantCanvasSelectedItemId("invoice-draft");
+      setAssistantCanvasMessageKey("invoice-" + (proposal.invoiceRef || "draft"));
+      setAssistantCanvasPending(false);
+      setAssistantCanvasStage("ready");
+    } catch (error) {
+      insightsShowToast(compactError(error) || (ar ? "تعذّر قراءة الفاتورة" : "Could not read the invoice"), "warn");
+      setAssistantCanvasPending(false);
+      setAssistantCanvasStage("idle");
+    }
+  };
+
   const runAssistantTurn = useMemoIns(() => async function* runBayaanAssistantTurn(options) {
     const { text: q, sceneIdHint } = latestUserTurn(options?.messages || []);
     const abortSignal = options?.abortSignal;
@@ -9515,6 +10502,7 @@ function InsightsScreen({ lang, bootstrap, sourceOfTruth }) {
         sourceEvidence: responseEvidence,
         claims: responseClaims,
         visualizations: responseVisualizations,
+        productProposal: response?.productProposal || null,
         reportPack: response?.reportPack || null,
         runtime: responseRuntime,
       };
@@ -9722,6 +10710,7 @@ function InsightsScreen({ lang, bootstrap, sourceOfTruth }) {
                   sourceEvidence: responseEvidence,
                   claims: responseClaims,
                   visualizations: responseVisualizations,
+                  productProposal: response?.productProposal || null,
                   reportPack: response?.reportPack || null,
                   runtime: responseRuntime,
                 },
@@ -9859,6 +10848,8 @@ function InsightsScreen({ lang, bootstrap, sourceOfTruth }) {
         }
       `}</style>
 
+      <ProductDraftContext.Provider value={productDraftCtx}>
+      <InvoiceDraftContext.Provider value={invoiceDraftCtx}>
       <BayaanAssistantThreadPanel
         key={`${lang}-${liveAiEnabled ? "live" : "local"}-${sourceMeta.cite}`}
         runTurn={runAssistantTurn}
@@ -9876,7 +10867,10 @@ function InsightsScreen({ lang, bootstrap, sourceOfTruth }) {
         onExport={setExportPayload}
         reasoningMode={reasoningMode}
         onReasoningModeChange={setReasoningMode}
+        onAttachInvoice={handleAttachInvoice}
       />
+      </InvoiceDraftContext.Provider>
+      </ProductDraftContext.Provider>
       {exportPayload && (
         <BayaanInsightsExportOverlay
           payload={exportPayload}
@@ -10359,12 +11353,12 @@ const makeKioskDraft = (sourceDriven = false) => ({
   warehouse: "",
 });
 
-function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdoo }) {
+function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdoo, scope = "Daily" }) {
   const ar = lang === "ar";
   const [view, setView] = useState("cards");
   const [city, setCity] = useState("all");
   const [sortBy, setSortBy] = useState("status");
-  const rows = odooKioskRows(bootstrap);
+  const rows = odooKioskRows(bootstrap, scope);
   const [tick, setTick] = useState(0);
   const sourceDriven = isSourceDrivenPayload(bootstrap);
   const animateDemoMetrics = canUseDemoFallback(bootstrap);
@@ -10812,16 +11806,16 @@ function KioskDetailScreenLegacy({ lang, onBack }) {
 
 
 
-function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refreshOdoo }) {
+function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refreshOdoo, scope = "Daily" }) {
   const ar = lang === "ar";
   const { showToast } = useToast();
   const liveOnly = isLiveOnlyPayload(bootstrap);
-  const selectedCandidate = kiosk || (liveOnly ? odooKioskRows(bootstrap)[0] : MOCK.kiosks[0]);
+  const selectedCandidate = kiosk || (liveOnly ? odooKioskRows(bootstrap, scope)[0] : MOCK.kiosks[0]);
   const hasSelectedKiosk = Boolean(selectedCandidate);
   const selected = selectedCandidate || {
     id: "--",
     kiosk_code: "--",
-    name: ar ? "Ù„Ø§ ÙŠÙˆØ¬Ø¯ ÙƒØ´Ùƒ" : "No kiosk selected",
+    name: ar ? "لا يوجد كشك" : "No kiosk selected",
     city: "-",
     staff: 0,
     revenue: 0,
@@ -10858,6 +11852,25 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
   const orders = odooPosOrderRows(bootstrap).filter((order) => matchesKiosk(order.kioskId || order.kiosk, selected));
   const visibleOrders = orders.length ? orders : sourceDriven ? [] : MOCK.posOrders.slice(0, 4);
   const closing = odooClosingRows(bootstrap).find((c) => matchesKiosk(c.kioskId || c.kioskName, selected));
+  // Per-kiosk dated close history. chain_bootstrap only ships today's close, so
+  // the "Daily closings" tab pulls the full history for this kiosk to list rows.
+  const [closeHistory, setCloseHistory] = useState([]);
+  useEffect(() => {
+    if (!sourceOfTruth?.enabled || typeof sourceOfTruth.getShiftCloseHistory !== "function") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await sourceOfTruth.getShiftCloseHistory({ kiosk: selectedKioskId });
+        const raw = res && Array.isArray(res.closings) ? res.closings : [];
+        if (!cancelled) {
+          setCloseHistory(odooClosingRows({ [LIVE_ONLY_KEY]: true, closings: raw }));
+        }
+      } catch {
+        if (!cancelled) setCloseHistory([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sourceOfTruth, selectedKioskId, bootstrap]);
   const expectedCash = sourceDriven
     ? (closing?.expectedCash == null ? null : Number(closing?.expectedCash || 0))
     : Math.round(selected.revenue * 0.65);
@@ -10916,12 +11929,12 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
     return (
       <div className="col" style={{ gap: 12 }}>
         <button className="btn btn-ghost" onClick={onBack} style={{ width: "fit-content" }}>
-          <Icon name="chevLeft" size={14}/> {ar ? "Ø±Ø¬ÙˆØ¹" : "Back"}
+          <Icon name="chevLeft" size={14}/> {ar ? "رجوع" : "Back"}
         </button>
         <div className="card card-pad">
-          <div className="t-h2">{ar ? "Ù„Ø§ ØªÙˆØ¬Ø¯ Ø£ÙƒØ´Ø§Ùƒ Ù…Ø­Ù…Ù„Ø©" : "No kiosks loaded"}</div>
+          <div className="t-h2">{ar ? "لا توجد أكشاك محملة" : "No kiosks loaded"}</div>
           <div className="t-small subtle" style={{ marginTop: 6 }}>
-            {ar ? "Ø§Ø±Ø¨Ø· Ù…Ø­Ø±Ùƒ Ø§Ù„Ù…ØµØ¯Ø± Ø£ÙˆÙ„Ø§Ù‹ Ø«Ù… Ø£Ø¹Ø¯ Ø§Ù„Ù…Ø²Ø§Ù…Ù†Ø©." : "Connect the source engine first, then resync before opening kiosk details."}
+            {ar ? "اربط محرك المصدر أولاً ثم أعد المزامنة." : "Connect the source engine first, then resync before opening kiosk details."}
           </div>
         </div>
       </div>
@@ -11117,22 +12130,81 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
     </div>
   );
 
-  const renderClosings = () => (
-    <div className="card card-pad">
-      <SectionHead title={ar ? "الإغلاق اليومي" : "Daily closing"} sub={ar ? "نقد ومخزون وموافقة المدير" : "Cash, stock, and manager approval"} />
-      {closing ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
-          <KPI label={ar ? "المبيعات" : "Sales"} value={fmtMoney(closing.sales)} />
-          <KPI label={ar ? "نقد متوقع" : "Expected cash"} value={fmtMoney(closing.expectedCash)} />
-          <KPI label={ar ? "مدفوعات رقمية" : "Digital payments"} value={fmtMoney(closing.digitalPayments || 0)} />
-          <KPI label={ar ? "نقد معدود" : "Counted cash"} value={closing.countedCash == null ? "Open" : fmtMoney(closing.countedCash)} />
-          <KPI label={ar ? "فرق النقد" : "Cash variance"} value={closing.cashVariance == null ? "-" : fmtMoney(closing.cashVariance)} delta={closing.status} deltaDir={closing.cashVariance < 0 ? "down" : "up"} />
+  const renderClosings = () => {
+    const historyRows = closeHistory.length ? closeHistory : (closing ? [closing] : []);
+    return (
+      <div className="col" style={{ gap: 14 }}>
+        <div className="card card-pad">
+          <SectionHead title={ar ? "إغلاق اليوم" : "Today's close"} sub={ar ? "نقد ومخزون وموافقة المدير" : "Cash, stock, and manager approval"} />
+          {closing ? (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
+              <KPI label={ar ? "المبيعات" : "Sales"} value={fmtMoney(closing.sales)} />
+              <KPI label={ar ? "نقد متوقع" : "Expected cash"} value={fmtMoney(closing.expectedCash)} />
+              <KPI label={ar ? "مدفوعات رقمية" : "Digital payments"} value={fmtMoney(closing.digitalPayments || 0)} />
+              <KPI label={ar ? "نقد معدود" : "Counted cash"} value={closing.countedCash == null ? "Open" : fmtMoney(closing.countedCash)} />
+              <KPI label={ar ? "فرق النقد" : "Cash variance"} value={closing.cashVariance == null ? "-" : fmtMoney(closing.cashVariance)} delta={closing.status} deltaDir={closing.cashVariance < 0 ? "down" : "up"} />
+            </div>
+          ) : (
+            <div className="t-small muted">{ar ? "لا يوجد إغلاق لهذا الكشك اليوم." : "No close recorded for this kiosk today."}</div>
+          )}
         </div>
-      ) : (
-        <div className="t-small muted">{ar ? "لا يوجد إغلاق لهذا الكشك اليوم." : "No close recorded for this kiosk today."}</div>
-      )}
-    </div>
-  );
+        <div className="card">
+          <div className="between" style={{ padding: "14px 18px" }}>
+            <div className="t-h2">{ar ? "سجل الإغلاقات اليومية" : "Daily closing history"}</div>
+            <span className="t-small muted">{historyRows.length} {ar ? "إغلاق" : "closes"}</span>
+          </div>
+          {historyRows.length ? (
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">{ar ? "التاريخ" : "Date"}</th>
+                  <th scope="col">{ar ? "الكاشير" : "Cashier"}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "المبيعات" : "Sales"}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "فرق النقد" : "Cash variance"}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "فرق البطاقة" : "Card variance"}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "فرق المخزون" : "Stock variance"}</th>
+                  <th scope="col">{ar ? "الحالة" : "Status"}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {historyRows.map((row) => {
+                  const stockVarValue = (row.stock || []).reduce((s, l) => s + (l.value - 0), 0);
+                  const stockVarCount = (row.stock || []).filter((l) => l.variance !== 0).length;
+                  const statusBadge =
+                    row.status === "approved" ? "badge-pos"
+                    : row.status === "issue" ? "badge-crit"
+                    : row.status === "pending" ? "badge-warn"
+                    : "";
+                  return (
+                    <tr key={row.id}>
+                      <td className="t-num">{row.date || (row.openedAt || "").slice(0, 10) || "-"}</td>
+                      <td className="muted">{arTerm(lang, row.cashier)}</td>
+                      <td style={{ textAlign: "end" }} className="t-num">{fmtMoneyShort(row.sales)}</td>
+                      <td className="t-num" style={{ textAlign: "end", color: (row.cashVariance || 0) < 0 ? "var(--crit)" : (row.cashVariance || 0) > 0 ? "var(--pos)" : "inherit" }}>
+                        {row.cashVariance == null ? "-" : fmtMoneyShort(row.cashVariance)}
+                      </td>
+                      <td className="t-num" style={{ textAlign: "end", color: (row.cardVariance || 0) < 0 ? "var(--crit)" : (row.cardVariance || 0) > 0 ? "var(--pos)" : "inherit" }}>
+                        {row.cardVariance == null ? "-" : fmtMoneyShort(row.cardVariance)}
+                      </td>
+                      <td style={{ textAlign: "end", color: stockVarValue < 0 ? "var(--crit)" : "inherit" }} className="t-num">
+                        {stockVarCount > 0 ? <>{fmtMoneyShort(stockVarValue)} <span className="muted">({stockVarCount})</span></> : <span className="muted">-</span>}
+                      </td>
+                      <td>
+                        <span className={`badge ${statusBadge}`}>{ar ? CLOSE_STATUS_AR[row.status] : CLOSE_STATUS_LABEL[row.status]}</span>
+                        {row.fundsUncounted ? <span className="badge badge-warn" style={{ marginInlineStart: 4 }} title={ar ? "أُغلق تلقائياً — لم يُحتسب النقد" : "Auto-closed — funds not counted"}>{ar ? "تلقائي" : "Auto"}</span> : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <div className="t-small muted" style={{ padding: "14px 18px" }}>{ar ? "لا توجد إغلاقات سابقة لهذا الكشك." : "No daily closes recorded for this kiosk yet."}</div>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   const kioskOptions = [
     { id: selectedKioskId, label: `${selectedKioskId} ${selected.name || ""}`.trim() },
@@ -11371,6 +12443,7 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
                 <tr>
                   <th scope="col">{ui(ar, "staff")}</th>
                   <th scope="col">{ui(ar, "role")}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "الأجر/ساعة" : "Hourly rate"}</th>
                   <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "hours")}</th>
                 </tr>
               </thead>
@@ -11391,13 +12464,14 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
                         </div>
                       </td>
                       <td className="muted">{hrRoleLabel(person.roleValue || person.role, lang)}</td>
+                      <td className="t-num muted" style={{ textAlign: "end" }}>{fmtMoney(Math.round(person.hourlyRate || 0))}{ar ? "/س" : "/h"}</td>
                       <td className="t-num" style={{ textAlign: "end" }}>{Math.round(personHours || 0)}{ar ? "س" : "h"}</td>
                     </tr>
                   );
                 })}
                 {!assignedTeamRows.length && (
                   <tr>
-                    <td colSpan={3} className="muted" style={{ textAlign: "center" }}>
+                    <td colSpan={4} className="muted" style={{ textAlign: "center" }}>
                       {sourceDriven ? (ar ? "لا يوجد موظفون مصدر معينون لهذا الكشك بعد." : "No source staff assigned to this kiosk yet.") : ui(ar, "noStaffForKiosk")}
                     </td>
                   </tr>
@@ -12070,6 +13144,9 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
 function SalesMonitorScreen({ lang, bootstrap }) {
   const ar = lang === "ar";
   const sourceDriven = isSourceDrivenPayload(bootstrap);
+  // `bootstrap` is already scope-aware (AdminPanel overlays the selected period's orders
+  // into today.orders via buildScopedBootstrap), so every figure on this page follows
+  // the global toggle automatically.
   const rawOrders = odooPosOrderRows(bootstrap);
   const [kioskFilter, setKioskFilter] = useState("all");
   const [paymentFilter, setPaymentFilter] = useState("all");
@@ -12106,8 +13183,8 @@ function SalesMonitorScreen({ lang, bootstrap }) {
   const digitalPaymentFooter = sourceDriven
     ? (paymentSplit.digital > 0 ? paymentMethodSignal(paymentSplit) : "no verified digital payments")
     : "demo: card, QR, wallet, FIB";
-  const issueCount = orders.filter((order) => order.status !== "paid" || order.sync !== "live").length;
-  const recipeHeld = orders.filter((order) => order.recipe === "held").length;
+  const recipeIssues = orders.filter((order) => POS_RECIPE_UNPOSTED.includes(order.recipe)).length;
+  const issueCount = orders.filter((order) => order.status !== "paid" || order.sync !== "live" || POS_RECIPE_UNPOSTED.includes(order.recipe)).length;
 
   return (
     <div className="col" style={{ gap: 14 }}>
@@ -12115,7 +13192,7 @@ function SalesMonitorScreen({ lang, bootstrap }) {
         <KPI label={ar ? "طلبات POS" : "POS orders"} value={String(orders.length)} footer={sourceDriven ? (ar ? "تدفق المصدر" : "source feed") : (ar ? "تدفق تجريبي" : "demo feed")} />
         <KPI label={ar ? "نقد" : "Cash"} value={fmtMoney(paymentTotals.cash || 0)} footer={ar ? "متوقع في الصندوق" : "expected in drawer"} />
         <KPI label={ar ? "مدفوعات رقمية" : "Digital payments"} value={fmtMoney(paymentSplit.digital)} footer={digitalPaymentFooter} />
-        <KPI label={ar ? "تحتاج مراجعة" : "Needs review"} value={String(issueCount)} delta={recipeHeld ? (ar ? `${recipeHeld} وصفات معلقة` : `${recipeHeld} recipe held`) : (ar ? "كلها مرحلة" : "all posted")} deltaDir={issueCount ? "down" : "up"} />
+        <KPI label={ar ? "تحتاج مراجعة" : "Needs review"} value={String(issueCount)} delta={recipeIssues ? (ar ? `${recipeIssues} وصفات غير مرحّلة` : `${recipeIssues} recipe unposted`) : (ar ? "كلها مرحلة" : "all posted")} deltaDir={issueCount ? "down" : "up"} />
       </div>
 
       <div className="card card-pad" style={{ display: "none", background: "var(--accent-soft)", borderColor: "transparent" }}>
@@ -12286,7 +13363,7 @@ function SalesMonitorScreen({ lang, bootstrap }) {
                     <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(order.amount)}</td>
                     <td>
                       <span className={`badge ${statusClass}`}>{order.status}</span>
-                      <div className="t-small faint" style={{ marginTop: 4 }}>{order.recipe === "posted" ? "recipe posted" : order.recipe === "finished" ? "finished SKU" : "recipe held"}</div>
+                      <div className="t-small faint" style={{ marginTop: 4, color: order.recipe === "missing_recipe" || order.recipe === "failed" ? "var(--crit)" : undefined }}>{order.recipe === "posted" ? "recipe posted" : order.recipe === "finished" ? "finished SKU" : order.recipe === "missing_recipe" ? "missing recipe" : order.recipe === "failed" ? "posting failed" : "recipe held"}</div>
                     </td>
                   </tr>
                 );
@@ -12920,7 +13997,10 @@ function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       const key = String(row.item || "").trim().toLowerCase();
       if (key && !byItem.has(key)) byItem.set(key, row);
     }
-    return Array.from(byItem.values());
+    // The catalog lists purchasable stock items — raw ingredients and finished resale
+    // stock. A recipe/combo product is MADE from these items (consumed from them), it is
+    // not itself a purchasable stock item, so keep made products out of this catalog.
+    return Array.from(byItem.values()).filter((row) => String(row.consumptionMode || "").toLowerCase() !== "recipe");
   }, [sourceDriven, localItems, engineRows]);
   const categoryOptions = React.useMemo(() => (
     ["all", ...Array.from(new Set(rows.map((row) => row.category).filter(Boolean))).sort()]
@@ -13132,6 +14212,25 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
     setClosings(seed);
   }, [bootstrap]);
 
+  // chain_bootstrap only carries TODAY's closes; pull the full dated history so
+  // the list shows past days too. Falls back to the bootstrap seed on failure.
+  useEffect(() => {
+    if (!sourceOfTruth?.enabled || typeof sourceOfTruth.getShiftCloseHistory !== "function") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await sourceOfTruth.getShiftCloseHistory();
+        const raw = res && Array.isArray(res.closings) ? res.closings : [];
+        if (!cancelled && raw.length) {
+          setClosings(odooClosingRows({ [LIVE_ONLY_KEY]: true, closings: raw }));
+        }
+      } catch {
+        /* keep bootstrap seed on failure */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [bootstrap, sourceOfTruth]);
+
   const reviewClose = async (c, payload, patch, toastMessage, toastKind) => {
     setFlashId(c.id);
     setBusyId(c.id);
@@ -13204,10 +14303,14 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
     );
   };
 
+  // Closings now span up to 30 days of history; the value tiles stay scoped to
+  // today's (Baghdad) closes while "Pending review" remains the full action queue.
+  const baghdadToday = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
   const totals = closings.reduce(
     (acc, c) => {
-      if (c.status === "approved") acc.approved += 1;
       if (c.status === "pending" || c.status === "issue") acc.pending += 1;
+      if (c.date && c.date !== baghdadToday) return acc;
+      if (c.status === "approved") acc.approved += 1;
       acc.cashVar += Number(c.cashVariance || 0);
       acc.stockVarValue += (c.stock || []).reduce((s, l) => s + (l.value - 0), 0);
       return acc;
@@ -13250,7 +14353,7 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
 
       <div className="card">
         <div className="between" style={{ padding: "14px 18px" }}>
-          <div className="t-h2">{ar ? "إغلاقات اليوم" : "Today's closes"}</div>
+          <div className="t-h2">{ar ? "الإغلاقات اليومية" : "Daily closes"}</div>
           <div className="row" style={{ gap: 6 }}>
             <button className="btn btn-ghost" style={{ height: 28, fontSize: 12 }}>{ar ? "كل المدن" : "All cities"} <Icon name="chevDown" size={11}/></button>
             <button className="btn btn-ghost" style={{ height: 28, fontSize: 12 }}>{ar ? "كل الحالات" : "All statuses"} <Icon name="chevDown" size={11}/></button>
@@ -13261,6 +14364,7 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
             <tr>
               <th scope="col" style={{ width: 24 }}></th>
               <th scope="col">{ar ? "الكشك" : "Kiosk"}</th>
+              <th scope="col">{ar ? "التاريخ" : "Date"}</th>
               <th scope="col">{ar ? "الكاشير" : "Cashier"}</th>
               <th scope="col" style={{ textAlign: "end" }}>{ar ? "المبيعات" : "Sales"}</th>
               <th scope="col" style={{ textAlign: "end" }}>{ar ? "نقد متوقع" : "Cash expected"}</th>
@@ -13282,8 +14386,10 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
               const expanded = expandedId === c.id;
               const cashKnown = c.cashVariance != null;
               const investigationLabel = ar ? (INVESTIGATION_STATUS_AR[c.investigationStatus] || c.investigationStatus) : c.investigationStatus;
-              const kioskProbe = { id: c.kioskId, name: c.kioskName, kioskName: c.kioskName, pos_config: c.kioskId };
-              const recon = expanded ? odooKioskStockReconciliationRows(bootstrap, kioskProbe) : null;
+              // The close's own server-computed window, NOT a re-derivation from
+              // today's bootstrap (which broke for historical closes and showed
+              // Received 0 even after a same-day transfer).
+              const recon = expanded ? c.varianceInputs : null;
               const statusBadge =
                 c.status === "approved" ? "badge-pos"
                 : c.status === "issue" ? "badge-crit"
@@ -13310,6 +14416,7 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
                       <div style={{ fontWeight: 500 }}>{arTerm(lang, c.kioskName)}</div>
                       <div className="t-small muted">{c.kioskId} - {arTerm(lang, c.city)}</div>
                     </td>
+                    <td className="t-small muted t-num">{c.date || (c.openedAt || "").slice(0, 10) || "-"}</td>
                     <td className="muted">{arTerm(lang, c.cashier)}</td>
                     <td style={{ textAlign: "end" }} className="t-num">{fmtMoneyShort(c.sales)}</td>
                     <td style={{ textAlign: "end" }} className="t-num muted">{fmtMoneyShort(c.expectedCash)}</td>
@@ -13333,6 +14440,7 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
                       <span className={`badge ${statusBadge}`}>
                         {ar ? CLOSE_STATUS_AR[c.status] : CLOSE_STATUS_LABEL[c.status]}
                       </span>
+                      {c.fundsUncounted ? <span className="badge badge-warn" style={{ marginInlineStart: 4 }} title={ar ? "أُغلق تلقائياً — لم يُحتسب النقد" : "Auto-closed — funds not counted"}>{ar ? "تلقائي" : "Auto"}</span> : null}
                     </td>
                     <td className="muted">{investigationLabel}</td>
                     <td onClick={(e) => e.stopPropagation()} style={{ width: 110, textAlign: "end" }}>
@@ -13375,7 +14483,7 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
                   </tr>
                   {expanded && (
                     <tr>
-                      <td colSpan={12} style={{ background: "var(--surface-sunk)", padding: "14px 18px" }}>
+                      <td colSpan={13} style={{ background: "var(--surface-sunk)", padding: "14px 18px" }}>
                         {(c.stock || []).length === 0 ? (
                           <div className="t-small muted" style={{ padding: "8px 0" }}>
                             {ar
@@ -13460,10 +14568,10 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
                                 {c.stock.map((l, i) => (
                                   <tr key={i}>
                                     <td>{l.item}</td>
-                                    <td style={{ textAlign: "end" }} className="t-num muted">{l.expected} {l.unit}</td>
-                                    <td style={{ textAlign: "end" }} className="t-num">{l.actual} {l.unit}</td>
+                                    <td style={{ textAlign: "end" }} className="t-num muted">{fmtQty(l.expected, l.unit)}</td>
+                                    <td style={{ textAlign: "end" }} className="t-num">{fmtQty(l.actual, l.unit)}</td>
                                     <td style={{ textAlign: "end", color: l.variance < 0 ? "var(--crit)" : l.variance > 0 ? "var(--pos)" : "var(--ink-3)" }} className="t-num">
-                                      {l.variance > 0 ? "+" : ""}{l.variance} {l.unit}
+                                      {l.variance > 0 ? "+" : ""}{fmtQty(l.variance, l.unit)}
                                     </td>
                                     <td style={{ textAlign: "end", color: l.value < 0 ? "var(--crit)" : "var(--ink-3)" }} className="t-num">
                                       {l.value !== 0 ? fmtMoney(l.value) : "-"}
@@ -13521,6 +14629,40 @@ const RECIPE_INGREDIENTS_AR = {
 
 const recipeProductKey = (value) => String(value || "").trim().toLowerCase();
 
+// Newest engine recipe (raw lines included) per product key. Bootstrap recipes
+// arrive newest-first per product (effective_from desc); prefer the active
+// version so the editor preloads what consumption actually deducts.
+const odooEngineRecipesByProduct = (bootstrap) => {
+  const snapshot = unwrapOdoo(bootstrap);
+  const map = new Map();
+  (snapshot?.recipes || []).forEach((recipe) => {
+    [recipe.product_code, cleanDisplayName(recipe.product)]
+      .map(recipeProductKey)
+      .filter(Boolean)
+      .forEach((key) => {
+        const existing = map.get(key);
+        if (!existing || (existing.state !== "active" && recipe.state === "active")) map.set(key, recipe);
+      });
+  });
+  return map;
+};
+
+// Engine recipe lines mapped to the editor's row shape ({ingredient, qty, unit}).
+const engineRecipeEditorLines = (engineRecipe) => (
+  (engineRecipe?.lines || []).map((line) => ({
+    ingredient: line.ingredient_code || line.ingredient || "",
+    qty: Number(line.qty) || 0,
+    unit: line.uom || "",
+  })).filter((line) => line.ingredient)
+);
+
+// Order-insensitive recipe equality so price-only edits don't mint a new version.
+const recipeLinesSignature = (list) => (list || [])
+  .filter((line) => line.ingredient && Number(line.qty) > 0)
+  .map((line) => `${line.ingredient}|${Number(line.qty)}|${String(line.unit || "").trim()}`)
+  .sort()
+  .join(";");
+
 function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const ar = lang === "ar";
   const catalog = useCatalog();
@@ -13546,6 +14688,7 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const liveProducts = odooProductCatalogRows(bootstrap);
   const products = liveProducts || catalog.state.products;
   const ingredientOptions = React.useMemo(() => odooIngredientOptions(bootstrap), [bootstrap]);
+  const engineRecipes = React.useMemo(() => odooEngineRecipesByProduct(bootstrap), [bootstrap]);
   const productHasRecipe = (product) => (
     // Finished/none products (e.g. a cheesecake bought whole) don't need an ingredient
     // recipe, so they should not count as "missing" recipe coverage.
@@ -13600,7 +14743,7 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       return;
     }
     if (sourceDriven && !sourceOfTruth?.enabled) {
-      setCreateError(ar ? "Ø§Ø±Ø¨Ø· Ù…Ø­Ø±Ùƒ Ø§Ù„Ù…ØµØ¯Ø± Ø£ÙˆÙ„Ø§Ù‹" : "Connect the source engine before creating live catalog rows");
+      setCreateError(ar ? "اربط محرك المصدر أولاً" : "Connect the source engine before creating live catalog rows");
       return;
     }
     const uploadedImage = createDraft.imageBase64
@@ -13811,7 +14954,9 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                     <td><ProductImage slug={p.image} name={p.name} size={40} radius={6} useOverride={!sourceDriven}/></td>
                     <td>
                       <div style={{ fontWeight: 500 }}>{arTerm(lang, p.name)}</div>
-                      <div className="t-small muted">{ar ? arTerm(lang, p.image) : p.image}</div>
+                      <div className="t-small muted" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 220 }}>
+                        {isUploadedImageRef(p.image) ? (ar ? "صورة مرفوعة" : "Uploaded image") : (ar ? arTerm(lang, p.image) : p.image)}
+                      </div>
                     </td>
                     <td className="muted">{arTerm(lang, p.category)}</td>
                     <td style={{ textAlign: "end" }} className="t-num">{fmtMoney(p.price)}</td>
@@ -13833,7 +14978,7 @@ function ProductsScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                   {isEditing && (
                     <tr>
                       <td colSpan={7} style={{ background: "var(--surface-sunk)", padding: "16px 18px" }}>
-                        <ProductEditor product={p} ar={ar} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} ingredientOptions={ingredientOptions} liveOnly={liveOnly} sourceDriven={sourceDriven} onClose={() => setEditingId(null)}/>
+                        <ProductEditor product={p} ar={ar} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} ingredientOptions={ingredientOptions} liveOnly={liveOnly} sourceDriven={sourceDriven} engineRecipe={engineRecipes.get(recipeProductKey(p.code)) || engineRecipes.get(recipeProductKey(p.name))} onClose={() => setEditingId(null)}/>
                       </td>
                     </tr>
                   )}
@@ -14055,19 +15200,25 @@ function ProductCreateDialog({ ar, open, draft, setDraft, lines, setLines, savin
   );
 }
 
-function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOptions = [], liveOnly, sourceDriven = liveOnly, onClose }) {
+function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOptions = [], liveOnly, sourceDriven = liveOnly, engineRecipe, onClose }) {
   const catalog = useCatalog();
   const { showToast } = useToast();
   const [draft, setDraft] = React.useState(product);
   const [uploading, setUploading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState("");
+  // Live mode preloads the active engine recipe so the editor shows what the
+  // variance loop actually deducts; saving a partial list would otherwise
+  // replace the whole recipe with the few lines the user happened to type.
   const recipeLines = sourceDriven
-    ? []
+    ? engineRecipeEditorLines(engineRecipe)
     : catalog.state.recipes[product.id]?.lines ?? [];
   const [lines, setLines] = React.useState(recipeLines);
 
-  React.useEffect(() => { setDraft(product); }, [product.id]);
+  React.useEffect(() => {
+    setDraft(product);
+    setLines(sourceDriven ? engineRecipeEditorLines(engineRecipe) : (catalog.state.recipes[product.id]?.lines ?? []));
+  }, [product.id]);
 
   const onPickFile = async (e) => {
     const file = e.target.files?.[0];
@@ -14107,6 +15258,10 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
       throw new Error("Connect the source engine before editing live catalog rows");
     }
     if (sourceOfTruth?.enabled) {
+      // Never silently downgrade a recipe/hybrid product: keep its current mode
+      // when lines exist (hybrid stays hybrid) and when the user cleared the
+      // list (the engine recipe is left untouched — no wipe path from here).
+      const modeWithLines = trimmed.consumptionMode === "hybrid" ? "hybrid" : "recipe";
       const saved = unwrapOdoo(await sourceOfTruth.upsertProductCatalog({
         id: trimmed.odooId || trimmed.code || trimmed.id,
         name: trimmed.name,
@@ -14114,7 +15269,7 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
         category: trimmed.category,
         listPrice: trimmed.price,
         standardPrice: trimmed.standardPrice || 0,
-        consumptionMode: validLines.length ? "recipe" : (trimmed.consumptionMode || "finished"),
+        consumptionMode: validLines.length ? modeWithLines : (trimmed.consumptionMode || "finished"),
         availableInPos: true,
         imageBase64: trimmed.imageBase64 || (String(trimmed.image || "").startsWith("data:image/") ? trimmed.image : undefined),
         imageMimeType: trimmed.imageMimeType,
@@ -14122,7 +15277,12 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
         modifierGroups: sanitizeModifierGroups(trimmed.modifierGroups),
       }));
       const productRef = saved?.product?.default_code || trimmed.code || trimmed.name;
-      if (validLines.length) {
+      // Only mint a new recipe version when the lines actually changed;
+      // price/image/size edits must not pollute the recipe version history.
+      const recipeUnchanged = sourceDriven
+        && engineRecipe
+        && recipeLinesSignature(validLines) === recipeLinesSignature(engineRecipeEditorLines(engineRecipe));
+      if (validLines.length && !recipeUnchanged) {
         await sourceOfTruth.submitRecipeVersion({
           itemId: productRef,
           effectiveFrom: new Date().toISOString(),
@@ -14215,6 +15375,19 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
               {ar ? "إعادة للصورة الأصلية" : "Revert to default"}
             </button>
           )}
+          {/* Escape hatch for a fresh in-session upload: restore the image
+              fields to what the product had before this edit. */}
+          {isUploadedImageRef(draft.image) && draft.image !== product.image && (
+            <button className="btn btn-quiet" style={{ height: 26, fontSize: 11 }}
+              onClick={() => setDraft((current) => ({
+                ...current,
+                image: product.image,
+                imageBase64: undefined,
+                imageMimeType: undefined,
+              }))}>
+              {ar ? "تراجع عن الرفع" : "Undo upload"}
+            </button>
+          )}
           {error && <div className="t-small" style={{ color: "var(--crit)" }}>{error}</div>}
         </div>
 
@@ -14249,14 +15422,24 @@ function ProductEditor({ product, ar, sourceOfTruth, refreshOdoo, ingredientOpti
           </div>
           <div className="col" style={{ gap: 4 }}>
             <label className="t-micro">{ar ? "معرف الصورة (slug)" : "Image slug"}</label>
-            <input value={draft.image}
-              onChange={(e) => setDraft({ ...draft, image: slugify(e.target.value) })}
-              style={editorInput}/>
-            <div className="t-small muted" style={{ fontSize: 11 }}>
-              {ar
-                ? "يحدد ملف الصورة الافتراضي في public/products/<slug>.webp والصور المرفوعة المحفوظة محلياً"
-                : "Determines the static file at public/products/<slug>.webp and the localStorage override key"}
-            </div>
+            {isUploadedImageRef(draft.image) ? (
+              <div className="t-small muted" style={{ fontSize: 11.5, padding: "6px 0" }}>
+                {ar
+                  ? "صورة مرفوعة — تُحفظ مع المنتج. ارفع ملفاً جديداً أعلاه لاستبدالها."
+                  : "Uploaded image — saved with the product. Upload a new file above to replace it."}
+              </div>
+            ) : (
+              <>
+                <input value={draft.image}
+                  onChange={(e) => setDraft({ ...draft, image: slugify(e.target.value) })}
+                  style={editorInput}/>
+                <div className="t-small muted" style={{ fontSize: 11 }}>
+                  {ar
+                    ? "يحدد ملف الصورة الافتراضي في public/products/<slug>.webp والصور المرفوعة المحفوظة محلياً"
+                    : "Determines the static file at public/products/<slug>.webp and the localStorage override key"}
+                </div>
+              </>
+            )}
           </div>
 
           <PosOptionsEditor ar={ar} draft={draft} setDraft={setDraft} />
@@ -15479,11 +16662,46 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     ...kioskOptions.map((kiosk) => kiosk.id),
     ...allStaff.map((person) => person.kiosk),
   ].filter(Boolean)))];
+  // Prefer the deterministic backend payroll run lines (worked hours, overtime,
+  // adjustments, net) when source-driven; the frontend never invents official pay.
+  const backendPayrollLines = useMemo(() => {
+    const map = {};
+    if (!sourceDriven) return map;
+    (hrSnapshot.payrollRuns?.[0]?.lines || []).forEach((line) => {
+      if (line.employee) map[line.employee] = line;
+    });
+    return map;
+  }, [sourceDriven, hrSnapshot]);
   const payrollRows = useMemo(() => allStaff.map((person) => {
     const personAdjustments = activeAdjustments.filter((item) => item.staff === person.name);
     const approvedAdjustments = personAdjustments.filter((item) => item.status === "approved");
-    const hourlyRate = person.salary / Math.max(person.hours, 1);
-    const overtimeHours = Math.max(0, person.hours - 168);
+    const hourlyRate = Number(person.hourlyRate) || person.salary / Math.max(person.hours, 1);
+    const hold = person.status === "review" || personAdjustments.some((item) => item.status === "hold");
+    const line = backendPayrollLines[person.name];
+    if (line) {
+      const overtimePay = Math.round(Number(line.overtimeAmount || 0));
+      const bonus = Math.round(Number(line.bonusAmount || 0));
+      const advance = Math.round(Number(line.advanceAmount || 0));
+      const deduction = Math.round(Number(line.deductionAmount || 0) + Number(line.cashShortageAmount || 0));
+      const base = Number(line.baseSalary || person.salary);
+      return {
+        ...person,
+        hourlyRate,
+        salary: base,
+        workedHours: Math.round(Number(line.workedHours || person.hours || 0)),
+        overtimeHours: Number(line.overtimeHours || 0),
+        overtimePay,
+        advance,
+        deduction,
+        bonus,
+        netPay: Math.max(0, Math.round(Number(line.netPay ?? (base + overtimePay + bonus - advance - deduction)))),
+        payrollStatus: hold ? "review" : person.status === "leave" ? "leave-adjusted" : "ready",
+      };
+    }
+    // No backend run: only count overtime above the standard month for demo (MOCK) data;
+    // source-driven without a run shows no phantom overtime.
+    const baselineHours = sourceDriven ? person.hours : 168;
+    const overtimeHours = Math.max(0, Number(person.workedHours ?? person.hours) - baselineHours);
     const overtimePay = Math.round(overtimeHours * hourlyRate * 1.25);
     const advance = approvedAdjustments
       .filter((item) => item.type === "advance")
@@ -15494,9 +16712,10 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     const bonus = approvedAdjustments
       .filter((item) => item.type === "bonus")
       .reduce((sum, item) => sum + Number(item.amount || 0), 0);
-    const hold = person.status === "review" || personAdjustments.some((item) => item.status === "hold");
     return {
       ...person,
+      hourlyRate,
+      workedHours: Number(person.workedHours ?? person.hours),
       overtimeHours,
       overtimePay,
       advance,
@@ -15505,7 +16724,7 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
       netPay: Math.max(0, Math.round(person.salary + overtimePay + bonus - advance - deduction)),
       payrollStatus: hold ? "review" : person.status === "leave" ? "leave-adjusted" : "ready",
     };
-  }), [activeAdjustments, allStaff]);
+  }), [activeAdjustments, allStaff, backendPayrollLines, sourceDriven]);
   const filteredRoster = payrollRows.filter((person) => (
     (roleFilter === "all" || person.role === roleFilter)
     && (kioskFilter === "all" || person.kiosk === kioskFilter)
@@ -16092,6 +17311,30 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
     showToast(ui(ar, "payrollExported", { filename }), "success");
   };
 
+  const [staffTab, setStaffTab] = useState("team");
+  const showStaff = (tab) => staffTab === tab;
+  const staffTabs = [
+    { id: "team", label: ar ? "الفريق" : "Team" },
+    { id: "schedule", label: ar ? "الجدول والتغطية" : "Schedule & coverage" },
+    { id: "payroll", label: ar ? "الرواتب والتكاليف" : "Payroll & costs" },
+  ];
+  // Coverage requirements grouped per kiosk + role + time — makes "how many of each role
+  // a kiosk needs" explicit (each shift gap traces back to one of these rules).
+  const coverageRequirements = useMemo(() => {
+    const map = {};
+    (hrSnapshot.coverageRules || []).forEach((rule) => {
+      const kid = rule.kiosk || rule.kioskName || "—";
+      const key = `${kid}::${rule.role}::${Number(rule.startHour)}-${Number(rule.endHour)}::${rule.requiredCount}`;
+      if (!map[key]) {
+        map[key] = { id: rule.id, kiosk: kid, kioskName: rule.kioskName || kid, role: rule.role, startHour: rule.startHour, endHour: rule.endHour, requiredCount: rule.requiredCount, days: new Set() };
+      }
+      map[key].days.add(Number(rule.dayOfWeek));
+    });
+    return Object.values(map)
+      .map((r) => ({ ...r, days: Array.from(r.days).sort((a, b) => a - b) }))
+      .sort((a, b) => String(a.kiosk).localeCompare(String(b.kiosk)) || String(a.role).localeCompare(String(b.role)) || a.startHour - b.startHour);
+  }, [hrSnapshot]);
+
   return (
     <div className="col" style={{ gap: 14 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
@@ -16101,6 +17344,19 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
         <KPI label={ui(ar, "coverageGaps")} value={String(missingPeople)} footer={ui(ar, "missingStaff")}/>
       </div>
 
+      <div className="card card-pad" style={{ paddingTop: 12, paddingBottom: 12 }}>
+        <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+          {staffTabs.map((tab) => (
+            <button key={tab.id} onClick={() => setStaffTab(tab.id)}
+              className={"btn " + (staffTab === tab.id ? "btn-primary" : "btn-ghost")}
+              style={{ height: 30, fontSize: 12.5 }}>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {showStaff("payroll") && (
       <div className="card card-pad">
         <div className="between" style={{ gap: 14, alignItems: "flex-start" }}>
           <div>
@@ -16132,6 +17388,47 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
             </button>
           </div>
         </div>
+      </div>
+      )}
+
+      {showStaff("schedule") && (<>
+      <div className="card">
+        <div className="between" style={{ padding: "14px 18px" }}>
+          <div>
+            <div className="t-h2">{ar ? "متطلبات التغطية" : "Coverage requirements"}</div>
+            <div className="t-small subtle">{ar ? "كم موظفاً من كل دور يحتاجه كل كشك — تُقاس الفجوات مقابلها" : "How many of each role each kiosk needs — coverage gaps are measured against these"}</div>
+          </div>
+          <button className="btn btn-primary" onClick={() => setCoverageModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
+            <Icon name="plus" size={12}/>{ar ? "متطلب" : "Requirement"}
+          </button>
+        </div>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th scope="col">{ui(ar, "kiosk")}</th>
+              <th scope="col">{ui(ar, "role")}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "العدد المطلوب" : "Required"}</th>
+              <th scope="col">{ui(ar, "slot")}</th>
+              <th scope="col">{ui(ar, "day")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {coverageRequirements.length ? coverageRequirements.map((req) => (
+              <tr key={`${req.kiosk}-${req.role}-${req.startHour}-${req.requiredCount}`}>
+                <td>
+                  <div style={{ fontWeight: 500 }}>{req.kiosk}</div>
+                  <div className="t-small muted">{arTerm(lang, req.kioskName)}</div>
+                </td>
+                <td className="muted">{hrRoleLabel(req.role, lang)}</td>
+                <td className="t-num" style={{ textAlign: "end" }}><span className="badge">{req.requiredCount}×</span></td>
+                <td className="muted">{hourToTime(req.startHour)}-{hourToTime(req.endHour)}</td>
+                <td className="muted">{req.days.length === 7 ? (ar ? "كل يوم" : "Daily") : req.days.map((d) => (ar ? WEEKDAY_LABELS_AR : WEEKDAY_LABELS)[d]).join(", ")}</td>
+              </tr>
+            )) : (
+              <tr><td colSpan={5} className="muted">{ar ? "لا توجد متطلبات تغطية بعد. أضف متطلباً ليُحسب النقص." : "No coverage requirements set yet. Add one to start measuring gaps."}</td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
 
       <div className="staff-roster-layout">
@@ -16297,7 +17594,9 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           })}
         </div>
       </div>
+      </>)}
 
+      {showStaff("payroll") && (<>
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 14 }}>
         <div className="card">
           <div className="between" style={{ padding: "14px 18px" }}>
@@ -16422,8 +17721,8 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
               </tr>
             </thead>
             <tbody>
-              {attendanceRows.map((row) => (
-                <tr key={`${row.staff}-${row.issue}`}>
+              {attendanceRows.map((row, ri) => (
+                <tr key={`${row.staff}-${row.kiosk}-${row.issue}-${ri}`}>
                   <td>
                     <div style={{ fontWeight: 500 }}>{arTerm(lang, row.staff)}</div>
                     <div className="t-small muted">{arTerm(lang, row.kiosk)} - {row.hours}{ar ? "س" : "h"}</div>
@@ -16500,7 +17799,9 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           </tbody>
         </table>
       </div>
+      </>)}
 
+      {showStaff("team") && (
       <div className="card">
         <div className="between" style={{ padding: "14px 18px" }}>
           <div className="t-h2">{ui(ar, "roster")}</div>
@@ -16523,6 +17824,7 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
               <th scope="col">{ui(ar, "role")}</th>
               <th scope="col">{ui(ar, "kiosk")}</th>
               <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "hoursMonthly")}</th>
+              <th scope="col" style={{ textAlign: "end" }}>{ar ? "الأجر/ساعة" : "Hourly rate"}</th>
               <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "netPayroll")}</th>
               <th scope="col" style={{ textAlign: "end" }}>{ui(ar, "status")}</th>
             </tr>
@@ -16539,6 +17841,7 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                 <td className="muted">{hrRoleLabel(person.roleValue || person.role, lang)}</td>
                 <td className="t-num muted">{arTerm(lang, person.kiosk)}</td>
                 <td style={{ textAlign: "end" }} className="t-num">{person.hours}{ar ? "س" : "h"}</td>
+                <td style={{ textAlign: "end" }} className="t-num muted">{fmtMoney(Math.round(person.hourlyRate || 0))}{ar ? "/س" : "/h"}</td>
                 <td style={{ textAlign: "end" }} className="t-num">{fmtMoney(person.netPay)}</td>
                 <td style={{ textAlign: "end" }}>
                   {person.payrollStatus === "ready" && <span className="badge badge-pos">{ar ? "نشط" : "Active"}</span>}
@@ -16550,6 +17853,7 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
           </tbody>
         </table>
       </div>
+      )}
 
       <Modal open={expenseModalOpen} onClose={() => setExpenseModalOpen(false)}
         title={ui(ar, "addExpense")}
@@ -16826,19 +18130,69 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
 }
 
 // =============== REPORTS ===============
-function ReportsScreen({ lang, bootstrap, mode = "reports" }) {
+// Iraqi payment aggregators (Zain Cash, FIB, FastPay, NassWallet, ...) are a future
+// feature. Until they go live we present a single "Online payments" label and hide the
+// per-provider gateway settlement card. Flip to true to re-expose the infrastructure.
+const SHOW_PAYMENT_GATEWAYS = false;
+
+function ReportsScreen({ lang, bootstrap, mode = "reports", sourceOfTruth, refreshOdoo, scope }) {
   const ar = lang === "ar";
   const financeMode = mode === "finance";
   const { showToast } = useToast();
-  const [period, setPeriod] = useState("Daily");
+  const [period, setPeriod] = useState(scope || "Daily");
+  // Follow the global dashboard scope dropdown (Daily/Weekly/Monthly/Yearly).
+  // The local period toggle still works as a same-screen override afterwards.
+  useEffect(() => {
+    if (scope) setPeriod(scope);
+  }, [scope]);
+  const [financeTab, setFinanceTab] = useState("summary");
+  const showFin = (tab) => !financeMode || financeTab === tab;
+  const sourceDrivenFinance = isSourceDrivenPayload(bootstrap);
+  const [adjustModalOpen, setAdjustModalOpen] = useState(false);
+  const [adjustDraft, setAdjustDraft] = useState({ category: "waste_loss", amount: "", note: "" });
+  const submitFinanceAdjustment = async (event) => {
+    event.preventDefault();
+    const amount = Number(adjustDraft.amount || 0);
+    if (!adjustDraft.category || !amount || !adjustDraft.note.trim()) {
+      showToast(ar ? "حدد البند والمبلغ والسبب" : "Pick a line, an amount, and a reason", "warn");
+      return;
+    }
+    if (!sourceOfTruth?.enabled) {
+      showToast(ar ? "اربط المحرك أولاً" : "Connect the source engine before recording adjustments", "warn");
+      return;
+    }
+    try {
+      await sourceOfTruth.submitFinanceAdjustment({
+        category: adjustDraft.category,
+        amount,
+        note: adjustDraft.note.trim(),
+      });
+      await refreshOdoo?.();
+      setAdjustDraft({ category: "waste_loss", amount: "", note: "" });
+      setAdjustModalOpen(false);
+      showToast(ar ? "تم تسجيل التعديل" : "Adjustment recorded", "success");
+    } catch (error) {
+      showToast(compactError(error) || (ar ? "تعذر تسجيل التعديل" : "Could not record adjustment"), "warn");
+    }
+  };
   const metrics = odooReportMetrics(bootstrap, period);
   const sourceMeta = insightSourceMeta(bootstrap);
   const summary = odooSummary(bootstrap);
+  const kioskPnlRows = useMemo(() => odooKioskPnlRows(bootstrap, period), [bootstrap, period]);
+  const kioskPnlTotals = useMemo(() => kioskPnlRows.reduce((acc, row) => ({
+    sales: acc.sales + row.sales,
+    cogs: acc.cogs + row.cogs,
+    wasteCost: acc.wasteCost + row.wasteCost,
+    staffCost: acc.staffCost + row.staffCost,
+    approxProfit: acc.approxProfit + row.approxProfit,
+  }), { sales: 0, cogs: 0, wasteCost: 0, staffCost: 0, approxProfit: 0 }), [kioskPnlRows]);
+  const financeTabs = [
+    { id: "summary", label: ar ? "الملخص" : "Summary" },
+    { id: "kiosks", label: ar ? "حسب الكشك" : "By kiosk" },
+    { id: "reports", label: ar ? "حزمة التقارير" : "Report pack" },
+  ];
   const sourceDriven = isSourceDrivenPayload(bootstrap);
   const allowDemoFallback = canUseDemoFallback(bootstrap);
-  const fiscalSalesRows = useMemo(() => fiscalSalesRowsFromSummary(summary, allowDemoFallback), [summary, allowDemoFallback]);
-  const fiscalSalesTotal = fiscalSalesRows.reduce((sum, row) => sum + Number(row.sales || 0), 0);
-  const fiscalSalesTarget = fiscalSalesTargetFromSummary(summary, allowDemoFallback);
   const periods = ["Daily", "Weekly", "Monthly", "Yearly"];
   const reportAction = (action) => showToast(
     sourceDriven
@@ -16864,17 +18218,30 @@ function ReportsScreen({ lang, bootstrap, mode = "reports" }) {
     ? ((Number(netAfterPayroll) / Number(metrics.revenue)) * 100).toFixed(1)
     : null;
   const netDirection = !isFiniteNumber(netAfterPayroll) ? "flat" : netAfterPayroll < 0 ? "down" : netAfterPayroll > 0 ? "up" : "flat";
+  const manualAdj = (summary?.reportPeriods?.[String(period).toLowerCase()]?.manualAdjustments) || { net: 0, count: 0 };
   const pnlRows = [
     ["Revenue", metrics.revenue, null, "up"],
     ["COGS", isFiniteNumber(metrics.cogs) ? -Number(metrics.cogs) : null, metrics.revenue ? `${((Number(metrics.cogs || 0) / metrics.revenue) * 100).toFixed(1)}%` : null, "flat"],
     ["Gross profit", grossProfit, metrics.revenue && isFiniteNumber(grossProfit) ? `${((Number(grossProfit) / metrics.revenue) * 100).toFixed(1)}%` : null, "up"],
     ["Waste & loss", isFiniteNumber(metrics.waste) ? -Number(metrics.waste) : null, metrics.revenue ? `${((Number(metrics.waste || 0) / metrics.revenue) * 100).toFixed(2)}%` : null, "down"],
     ["Variance impact", varianceImpact, metrics.revenue ? `${((varianceImpact / metrics.revenue) * 100).toFixed(2)}%` : null, varianceImpact < 0 ? "down" : varianceImpact > 0 ? "up" : "flat"],
+    ...(Number(manualAdj.count || 0) ? [["Manual adjustments", Number(manualAdj.net || 0), metrics.revenue ? `${((Number(manualAdj.net || 0) / metrics.revenue) * 100).toFixed(2)}%` : null, Number(manualAdj.net) < 0 ? "down" : Number(manualAdj.net) > 0 ? "up" : "flat"]] : []),
     ["Payroll", payrollExpense == null ? null : -payrollExpense, payrollExpense != null && metrics.revenue ? `${((payrollExpense / metrics.revenue) * 100).toFixed(1)}%` : null, "flat"],
-    ["Operating expenses", -operatingExpenses, metrics.revenue ? `${((operatingExpenses / metrics.revenue) * 100).toFixed(1)}%` : null, "flat"],
+    ["Operating expenses", operatingExpenses ? -operatingExpenses : 0, metrics.revenue ? `${((operatingExpenses / metrics.revenue) * 100).toFixed(1)}%` : null, "flat"],
     ["Net profit", netAfterPayroll, margin == null ? null : `${margin}%`, netDirection],
   ];
   const reportSourceCounts = metrics.sourceCounts || {};
+  // Collapse the digital payment-method breakdown into a single "Online payments"
+  // line (the Iraqi aggregator infrastructure is a future feature, hidden for now).
+  const paymentCash = Number((metrics.paymentRows || []).find(([label]) => label === "Cash")?.[1] || 0);
+  const paymentOnline = (metrics.paymentRows || []).reduce((sum, [label, amount]) => label === "Cash" ? sum : sum + Number(amount || 0), 0);
+  const collapsedPaymentRows = [
+    [ar ? "النقد" : "Cash", paymentCash],
+    [ar ? "الدفع الإلكتروني" : "Online payments", paymentOnline],
+  ];
+  const collapsedPaymentSignal = ar
+    ? `${fmtMoneyShort(paymentCash)} نقد / ${fmtMoneyShort(paymentOnline)} إلكتروني`
+    : `${fmtMoneyShort(paymentCash)} cash / ${fmtMoneyShort(paymentOnline)} online`;
   const gatewaySettlementRows = metrics.gatewayRows || [];
   const gatewayBadge = gatewaySettlementRows
     .filter((row) => Number(row.amount || 0) > 0)
@@ -16886,20 +18253,41 @@ function ReportsScreen({ lang, bootstrap, mode = "reports" }) {
     ["Product profitability", "Which prices or recipes should change", "product.template, bayaan.recipe, purchase.order", sourceDriven ? `${fmtMoneyShort(metrics.revenue)} revenue / ${fmtMoneyShort(metrics.cogs)} COGS` : "Demo recipe margin"],
     ["Ingredient consumption", "What to transfer or buy tomorrow", "bayaan.consumption.ledger, stock.quant", sourceDriven ? `${reportSourceCounts.consumptionRows || 0} ledger rows / ${reportSourceCounts.stockRows || 0} stock rows` : "Demo ingredient trend"],
     ["Waste/loss", "What waste reason is driving margin loss", "bayaan.waste.entry, shift close lines", sourceDriven ? `${reportSourceCounts.wasteRows || 0} waste rows / ${fmtMoneyShort(metrics.waste)} loss` : "Demo waste pattern"],
-    ["Payment methods", "How much was cash, card, QR, wallet, FIB, or manual digital", "pos.payment, bayaan.shift.close", metrics.paymentSignal],
+    ["Payment methods", "How much was cash vs online payments", "pos.payment, bayaan.shift.close", collapsedPaymentSignal],
     ["HR payroll & expenses", "Which labor and operating costs changed net profit", "hr.employee, hr.attendance, bayaan.payroll.adjustment, bayaan.payroll.run, bayaan.operating.expense", `${fmtMoneyShort(payrollExpense)} payroll / ${fmtMoneyShort(operatingExpenses)} expenses`],
     ["Cash flow", "How much cash should be counted and deposited", "pos.payment, account.move, shift cash count", sourceDriven ? `${fmtMoneyShort(metrics.cashVariance || 0)} cash variance` : "Demo cash variance"],
   ];
   return (
     <div className="col" style={{ gap: 14 }}>
       {financeMode && (
-        <AccountAllocationCard
-          metrics={metrics}
-          netAfterPayroll={netAfterPayroll}
-          ar={ar}
-        />
+        <div className="card card-pad">
+          <div className="between" style={{ gap: 12, flexWrap: "wrap" }}>
+            <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+              {financeTabs.map((tab) => (
+                <button key={tab.id} onClick={() => setFinanceTab(tab.id)}
+                  className={"btn " + (financeTab === tab.id ? "btn-primary" : "btn-ghost")}
+                  style={{ height: 30, fontSize: 12.5 }}>
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            {(financeTab === "summary" || financeTab === "kiosks") && (
+              <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                <span className="t-small subtle" style={{ marginInlineEnd: 4 }}>{ar ? "الإطار الزمني" : "Timeframe"}</span>
+                {periods.map((periodName) => (
+                  <button key={periodName} onClick={() => setPeriod(periodName)}
+                    className={"btn " + (periodName === period ? "btn-primary" : "btn-ghost")}
+                    style={{ height: 28, fontSize: 12 }}>
+                    {arTerm(lang, periodName)}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
+      {showFin("summary") && (<>
       <div className="card card-pad">
         <div className="row" style={{ marginBottom: 6 }}>
           <AITag>{ar ? "ملخص التقرير" : "Report summary"}</AITag>
@@ -16911,7 +18299,7 @@ function ReportsScreen({ lang, bootstrap, mode = "reports" }) {
           )}
         </div>
         <div className="ai-block" style={{ fontSize: 14.5, lineHeight: 1.55, maxWidth: 820 }}>
-          {period} report shows <strong>{fmtMoney(metrics.revenue)}</strong> revenue and <strong>{fmtMoney(netAfterPayroll)}</strong> net profit after payroll ({margin == null ? "margin —" : `${margin}% margin`}). Payment split: {metrics.paymentSignal}. Waste, loss, and payroll remain separated for management review.
+          {period} report shows <strong>{fmtMoney(metrics.revenue)}</strong> revenue and <strong>{fmtMoney(netAfterPayroll)}</strong> net profit after payroll ({margin == null ? "margin —" : `${margin}% margin`}). Payment split: {collapsedPaymentSignal}. Waste, loss, and payroll remain separated for management review.
         </div>
       </div>
 
@@ -16920,38 +18308,80 @@ function ReportsScreen({ lang, bootstrap, mode = "reports" }) {
         <KPI label={ar ? "تكلفة البضاعة" : `COGS ${period}`} value={fmtMoney(metrics.cogs)} delta={metrics.revenue ? `${((metrics.cogs / metrics.revenue) * 100).toFixed(1)}%` : "0.0%"} deltaDir="flat" footer={sourceDriven ? "verified COGS ratio" : "demo COGS ratio"} size="lg"/>
         <KPI label={ar ? "صافي الربح" : `Net profit ${period}`} value={fmtMoney(netAfterPayroll)} delta={margin == null ? undefined : `${margin}%`} deltaDir={netDirection} footer={margin == null ? (ar ? "غير متاح بدون الرواتب" : "Requires payroll wiring") : (ar ? `${margin}% هامش` : `${margin}% margin`)} size="lg"/>
       </div>
+      </>)}
 
-      <div className="card">
-        <div className="between" style={{ padding: "14px 18px" }}>
-          <div>
-            <div className="t-h2">{ar ? "إجمالي المبيعات عبر السنة" : "Total sales across years"}</div>
-            <div className="t-small subtle">{ar ? "نمط مخطط تدفق المبيعات المؤهلة، مكيّف لمبيعات بيان من يونيو إلى مايو" : "Qualified Lead Flow style, adapted for Bayaan sales from Jun to May"}</div>
+      {showFin("kiosks") && (
+        <div className="card">
+          <div className="between" style={{ padding: "14px 18px" }}>
+            <div>
+              <div className="t-h2">{ar ? "الربح التقريبي لكل كشك" : "Approximate profit per kiosk"}</div>
+              <div className="t-small subtle">{arTerm(lang, period)} — {ar ? "المبيعات ناقص تكلفة المكونات والهدر وحصة الرواتب" : "sales minus ingredient COGS, waste, and prorated staff cost"}</div>
+            </div>
+            <span className="badge">{arTerm(lang, period)} · {fmtMoney(kioskPnlTotals.approxProfit)} {ar ? "ربح" : "profit"}</span>
           </div>
-          <button className="btn btn-ghost" style={{ height: 28, fontSize: 12 }}>
-            {ar ? "آخر سنة مالية" : "Last fiscal year"} <Icon name="chevDown" size={11}/>
-          </button>
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl" style={{ minWidth: 760 }}>
+              <thead>
+                <tr>
+                  <th scope="col">{ar ? "الكشك" : "Kiosk"}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "المبيعات" : "Sales"}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "تكلفة المكونات" : "COGS"}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "الهدر" : "Waste"}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "تكلفة الموظفين" : "Staff cost"}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "ربح تقريبي" : "Approx profit"}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "الهامش" : "Margin"}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {kioskPnlRows.length ? kioskPnlRows.map((row) => (
+                  <tr key={row.id}>
+                    <td>
+                      <div style={{ fontWeight: 500 }}>{row.id}</div>
+                      <div className="t-small muted">{arTerm(lang, row.name)}</div>
+                    </td>
+                    <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(row.sales)}</td>
+                    <td className="t-num muted" style={{ textAlign: "end" }}>{fmtMoney(row.cogs)}</td>
+                    <td className="t-num muted" style={{ textAlign: "end" }}>{fmtMoney(row.wasteCost)}</td>
+                    <td className="t-num muted" style={{ textAlign: "end" }}>{fmtMoney(row.staffCost)}</td>
+                    <td className="t-num" style={{ textAlign: "end", fontWeight: 600, color: row.approxProfit < 0 ? "var(--crit)" : "var(--pos)" }}>{fmtMoney(row.approxProfit)}</td>
+                    <td className="t-num" style={{ textAlign: "end" }}>{row.sales ? `${row.margin.toFixed(1)}%` : "—"}</td>
+                  </tr>
+                )) : (
+                  <tr><td colSpan={7} className="muted">{ar ? "لا توجد مبيعات كشك اليوم بعد" : "No kiosk sales recorded today yet"}</td></tr>
+                )}
+              </tbody>
+              {kioskPnlRows.length > 0 && (
+                <tfoot>
+                  <tr style={{ background: "var(--surface-2)", fontWeight: 600 }}>
+                    <td>{ar ? "الإجمالي" : "Total"}</td>
+                    <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(kioskPnlTotals.sales)}</td>
+                    <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(kioskPnlTotals.cogs)}</td>
+                    <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(kioskPnlTotals.wasteCost)}</td>
+                    <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(kioskPnlTotals.staffCost)}</td>
+                    <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(kioskPnlTotals.approxProfit)}</td>
+                    <td className="t-num" style={{ textAlign: "end" }}>{kioskPnlTotals.sales ? `${((kioskPnlTotals.approxProfit / kioskPnlTotals.sales) * 100).toFixed(1)}%` : "—"}</td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
         </div>
-        <QualifiedSalesFlowChart
-          rows={fiscalSalesRows}
-          total={fiscalSalesTotal}
-          target={fiscalSalesTarget}
-          ar={ar}
-        />
-      </div>
+      )}
 
+      {showFin("summary") && (<>
       <div className="card">
         <div className="between" style={{ padding: "14px 18px" }}>
           <div>
             <div className="t-h2">{ar ? "طرق الدفع" : "Payment methods"}</div>
-            <div className="t-small subtle">{ar ? "فصل النقد عن المدفوعات الرقمية" : "Cash stays separate from terminal, QR, wallet, and manual digital collections"}</div>
+            <div className="t-small subtle">{ar ? "النقد منفصل عن المدفوعات الإلكترونية" : "Cash stays separate from online payments"}</div>
           </div>
-          <span className="badge">{arTerm(lang, metrics.paymentSignal)}</span>
+          <span className="badge">{collapsedPaymentSignal}</span>
         </div>
         <table className="tbl">
           <tbody>
-            {metrics.paymentRows.map(([label, amount]) => (
+            {collapsedPaymentRows.map(([label, amount]) => (
               <tr key={label}>
-                <td style={{ fontWeight: 500 }}>{arTerm(lang, label)}</td>
+                <td style={{ fontWeight: 500 }}>{label}</td>
                 <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(amount)}</td>
               </tr>
             ))}
@@ -16959,6 +18389,7 @@ function ReportsScreen({ lang, bootstrap, mode = "reports" }) {
         </table>
       </div>
 
+      {SHOW_PAYMENT_GATEWAYS && (
       <div className="card">
         <div className="between" style={{ padding: "14px 18px" }}>
           <div>
@@ -16992,7 +18423,10 @@ function ReportsScreen({ lang, bootstrap, mode = "reports" }) {
           </tbody>
         </table>
       </div>
+      )}
+      </>)}
 
+      {showFin("reports") && (
       <div className="card">
         <div className="between" style={{ padding: "14px 18px" }}>
           <div>
@@ -17046,13 +18480,22 @@ function ReportsScreen({ lang, bootstrap, mode = "reports" }) {
           </tbody>
         </table>
       </div>
+      )}
 
+      {showFin("summary") && (
       <div className="card">
         <div className="between" style={{ padding: "14px 18px" }}>
-          <div className="t-h2">{ar ? "بيان الأرباح والخسائر" : "Profit & loss"}</div>
+          <div>
+            <div className="t-h2">{ar ? "بيان الأرباح والخسائر" : "Profit & loss"}</div>
+            <div className="t-small subtle">{ar ? "عدّل البنود يدوياً عندما تختلف الأرقام الفعلية عن الحساب" : "Adjust lines manually when real figures deviate from the calculation"}</div>
+          </div>
           <div className="row" style={{ gap: 6 }}>
-            <button className="btn btn-ghost" style={{ height: 28, fontSize: 12 }}>{ar ? "هذا الشهر" : "This month"} <Icon name="chevDown" size={11}/></button>
-            <button className="btn btn-ghost" style={{ height: 28, fontSize: 12 }}><Icon name="download" size={12}/>{ar ? "PDF" : "PDF"}</button>
+            <span className="badge">{arTerm(lang, period)}</span>
+            {financeMode && (
+              <button className="btn btn-ghost" onClick={() => setAdjustModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
+                <Icon name="plus" size={12}/>{ar ? "تعديل" : "Adjust"}
+              </button>
+            )}
           </div>
         </div>
         <table className="tbl">
@@ -17079,6 +18522,41 @@ function ReportsScreen({ lang, bootstrap, mode = "reports" }) {
           </tbody>
         </table>
       </div>
+      )}
+
+      <Modal open={adjustModalOpen} onClose={() => setAdjustModalOpen(false)}
+        width={500}
+        title={ar ? "تعديل بيان الأرباح والخسائر" : "Adjust profit & loss"}
+        sub={ar ? "تصحيح يدوي مسجّل ومدقّق عندما تختلف الأرقام الفعلية عن الحساب" : "A recorded, auditable manual correction for when reality deviates from the calculation"}>
+        <form onSubmit={submitFinanceAdjustment} className="col" style={{ gap: 10 }}>
+          <div className="col" style={{ gap: 4 }}>
+            <label className="t-micro">{ar ? "البند" : "Line"}</label>
+            <select className="input" value={adjustDraft.category}
+              onChange={(event) => setAdjustDraft((d) => ({ ...d, category: event.target.value }))}>
+              <option value="waste_loss">{ar ? "الهدر والخسارة" : "Waste & loss"}</option>
+              <option value="cogs">{ar ? "تكلفة المكونات" : "COGS / ingredient cost"}</option>
+              <option value="revenue">{ar ? "الإيرادات" : "Revenue"}</option>
+              <option value="other">{ar ? "أخرى" : "Other"}</option>
+            </select>
+          </div>
+          <div className="col" style={{ gap: 4 }}>
+            <label className="t-micro">{ar ? "المبلغ (موجب يزيد البند، سالب ينقصه)" : "Amount (+ increases the line, − decreases it)"}</label>
+            <input className="input" type="number" step={1000} value={adjustDraft.amount}
+              onChange={(event) => setAdjustDraft((d) => ({ ...d, amount: event.target.value }))}
+              placeholder={ar ? "مثال: 50000 أو -20000" : "e.g. 50000 or -20000"}/>
+          </div>
+          <div className="col" style={{ gap: 4 }}>
+            <label className="t-micro">{ar ? "السبب" : "Reason"}</label>
+            <input className="input" value={adjustDraft.note}
+              onChange={(event) => setAdjustDraft((d) => ({ ...d, note: event.target.value }))}
+              placeholder={ar ? "مثال: هدر معدود أعلى من التقدير" : "e.g. counted spoilage above estimate"}/>
+          </div>
+          <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+            <button type="button" className="btn btn-ghost" onClick={() => setAdjustModalOpen(false)}>{ar ? "إلغاء" : "Cancel"}</button>
+            <button type="submit" className="btn btn-primary">{ar ? "حفظ التعديل" : "Save adjustment"}</button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }
@@ -17094,7 +18572,7 @@ function ReportsScreen({ lang, bootstrap, mode = "reports" }) {
 const ADMIN_NAV = [
   { section: "TODAY" },
   { id: "overview", label: "Today Command", icon: "gauge" },
-  { id: "insights", label: "AI Insights", icon: "brain", badge: 4 },
+  { id: "insights", label: "AI Assistant", icon: "brain", badge: 4 },
   { section: "OPERATIONS" },
   { id: "kiosks", label: "Kiosks", icon: "store" },
   { id: "warehouses", label: "Warehouses", icon: "warehouse" },
@@ -17176,7 +18654,7 @@ function filteredAdminNav(auth, hasBackend) {
 
 const ADMIN_NAV_AR = {
   overview: "مركز اليوم",
-  insights: "تحليلات الذكاء",
+  insights: "المساعد الذكي",
   kiosks: "الأكشاك",
   sales: "المبيعات ونقاط البيع",
   warehouses: "المستودعات",
@@ -17281,6 +18759,12 @@ function AdminTopBar({ title, sub, right, lang }) {
   );
 }
 
+// The product is sold and demoed as a LIVE operating system. "Demo data" and "Simulation"
+// are internal/dev modes that must never be shown to a buyer (they undercut the "this is
+// your real system" story and risk an accidental switch into mock data mid-demo). Keep only
+// the "Live only" control visible. Flip to false to restore the dev mode switcher.
+const LIVE_ONLY_DEMO = true;
+
 function DataModeToggle({ bayaan, lang, bootstrap = null }) {
   const ar = lang === "ar";
   const liveOnly = bayaan.mode === "live";
@@ -17330,6 +18814,7 @@ function DataModeToggle({ bayaan, lang, bootstrap = null }) {
   return (
     <div className="row" style={{ gap: 6 }}>
     <div className="segmented" aria-label={ui(ar, "dataSource")} style={{ height: 30 }}>
+      {!LIVE_ONLY_DEMO && (
       <button
         type="button"
         className={`seg-btn ${simulation ? "active" : ""}`}
@@ -17339,6 +18824,7 @@ function DataModeToggle({ bayaan, lang, bootstrap = null }) {
         <Icon name="chart" size={12}/>
         {ui(ar, "simulation")}
       </button>
+      )}
       <button
         type="button"
         className={`seg-btn ${liveOnly && !simulation ? "active" : ""}`}
@@ -17348,6 +18834,7 @@ function DataModeToggle({ bayaan, lang, bootstrap = null }) {
         <Icon name="zap" size={12}/>
         {ui(ar, "liveOnly")}
       </button>
+      {!LIVE_ONLY_DEMO && (
       <button
         type="button"
         className={`seg-btn ${!liveOnly && !simulation ? "active" : ""}`}
@@ -17357,6 +18844,7 @@ function DataModeToggle({ bayaan, lang, bootstrap = null }) {
         <Icon name="grid" size={12}/>
         {ui(ar, "demoData")}
       </button>
+      )}
     </div>
     {simulation && (
       <div className="segmented" aria-label="Simulation speed" style={{ height: 30 }}>
@@ -17492,12 +18980,32 @@ function AuditLogRail({ lang, sourceOfTruth, allowDemoFallback = true }) {
   );
 }
 
-function AdminPanel({ lang }) {
+function AdminPanel({ lang, scope = "Daily" }) {
   const bayaan = useBayaan();
   const [active, setActive] = useState("overview");
   const [selectedKiosk, setSelectedKiosk] = useState(null);
   const allowedIds = useMemo(() => allowedAdminIds(bayaan.auth, bayaan.hasBackend), [bayaan.auth, bayaan.hasBackend]);
   const canViewAuditLog = isSuperadminAuth(bayaan.auth);
+  // Backend requires procurement + manager scope for /product_create_bundle; a
+  // manager (or owner/superadmin) satisfies both. This only gates the Confirm
+  // button UX — the route enforces it server-side regardless.
+  const canCreateProduct = useMemo(() => {
+    if (!bayaan.hasBackend) return false;
+    const user = bayaan.auth?.user;
+    if (!user) return false;
+    const roles = Array.isArray(user.roles) ? user.roles : [];
+    const allowed = ["manager", "superadmin", "owner"];
+    return roles.some((r) => allowed.includes(r)) || allowed.includes(user.primaryRole);
+  }, [bayaan.auth, bayaan.hasBackend]);
+  // Invoice receipt = procurement scope (logistics suffices, unlike product creation).
+  const canReceiveInvoice = useMemo(() => {
+    if (!bayaan.hasBackend) return false;
+    const user = bayaan.auth?.user;
+    if (!user) return false;
+    const roles = Array.isArray(user.roles) ? user.roles : [];
+    const allowed = ["logistics", "manager", "superadmin", "owner"];
+    return roles.some((r) => allowed.includes(r)) || allowed.includes(user.primaryRole);
+  }, [bayaan.auth, bayaan.hasBackend]);
   const [auditLogOpen, setAuditLogOpen] = useState(false);
   // The AdminPanel uses the SAME gateway as the BayaanProvider. When the
   // user toggles to Demo mode, we present a transparent noop wrapper so
@@ -17659,23 +19167,46 @@ function AdminPanel({ lang }) {
     };
   }, [liveOnlySelected, sync]);
   const dashboardBootstrap = dashboardSync.bootstrap;
+  const dashboardWarehouses = (unwrapOdoo(dashboardSync?.warehouseSetup)?.warehouses) || [];
+
+  // Global time scope: when a non-daily period is selected, fetch that period's orders
+  // once here and overlay them into the bootstrap (buildScopedBootstrap). Passing the
+  // scoped bootstrap to every screen makes all order/summary-derived views — Overview
+  // live feed, kiosk-detail tabs, Sales monitor, payment mix, etc. — follow the toggle.
+  const [scopeOrders, setScopeOrders] = useState(null);
+  useEffect(() => {
+    if (!scope || scope === "Daily" || !liveBackendActive || typeof sourceOfTruth.getPosOrdersHistory !== "function") {
+      setScopeOrders(null);
+      return undefined;
+    }
+    let alive = true;
+    setScopeOrders(null);
+    sourceOfTruth.getPosOrdersHistory({ scope })
+      .then((res) => { if (alive) setScopeOrders(Array.isArray(res?.orders) ? res.orders : []); })
+      .catch(() => { if (alive) setScopeOrders([]); });
+    return () => { alive = false; };
+  }, [scope, liveBackendActive, sourceOfTruth, dashboardBootstrap]);
+  const scopedBootstrap = useMemo(
+    () => buildScopedBootstrap(dashboardBootstrap, scope, scopeOrders),
+    [dashboardBootstrap, scope, scopeOrders],
+  );
 
   const screens = {
-    overview: <OverviewScreen lang={lang} bootstrap={dashboardBootstrap}/>,
-    insights: <InsightsScreen lang={lang} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth} navigate={setActive}/>,
-    sales: <SalesMonitorScreen lang={lang} bootstrap={dashboardBootstrap}/>,
-    kiosks: <KiosksScreen lang={lang} bootstrap={dashboardBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} onPick={openKiosk}/>,
-    kioskDetail: <KioskDetailScreen lang={lang} kiosk={selectedKiosk} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} onBack={() => setActive("kiosks")}/>,
+    overview: <OverviewScreen lang={lang} bootstrap={scopedBootstrap} scope={scope}/>,
+    insights: <InsightsScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} navigate={setActive} refreshOdoo={refreshOdoo} canCreateProduct={canCreateProduct} canReceiveInvoice={canReceiveInvoice} warehouses={dashboardWarehouses}/>,
+    sales: <SalesMonitorScreen lang={lang} bootstrap={scopedBootstrap} scope={scope} sourceOfTruth={sourceOfTruth}/>,
+    kiosks: <KiosksScreen lang={lang} bootstrap={scopedBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} onPick={openKiosk} scope={scope}/>,
+    kioskDetail: <KioskDetailScreen lang={lang} kiosk={selectedKiosk} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} onBack={() => setActive("kiosks")} scope={scope}/>,
     warehouses: <WarehousesScreen lang={lang} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    items: <ItemsCatalogScreen lang={lang} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    inventory: <InventoryScreen lang={lang} bootstrap={dashboardBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    products: <ProductsScreen lang={lang} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    closing: <ClosingScreen lang={lang} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth}/>,
-    waste: <WasteScreen lang={lang} bootstrap={dashboardBootstrap}/>,
-    suppliers: <SuppliersScreen lang={lang} bootstrap={dashboardBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    staff: <HRPayrollScreen lang={lang} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    finance: <ReportsScreen lang={lang} bootstrap={dashboardBootstrap} mode="finance"/>,
-    reports: <ReportsScreen lang={lang} bootstrap={dashboardBootstrap}/>,
+    items: <ItemsCatalogScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    inventory: <InventoryScreen lang={lang} bootstrap={scopedBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    products: <ProductsScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    closing: <ClosingScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth}/>,
+    waste: <WasteScreen lang={lang} bootstrap={scopedBootstrap}/>,
+    suppliers: <SuppliersScreen lang={lang} bootstrap={scopedBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    staff: <HRPayrollScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    finance: <ReportsScreen lang={lang} bootstrap={scopedBootstrap} mode="finance" sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} scope={scope}/>,
+    reports: <ReportsScreen lang={lang} bootstrap={scopedBootstrap} scope={scope}/>,
   };
   const adminSourceDriven = isSourceDrivenPayload(dashboardBootstrap);
   const adminSummary = useMemo(() => odooSummary(dashboardBootstrap), [dashboardBootstrap]);
@@ -17735,7 +19266,7 @@ function AdminPanel({ lang }) {
   };
   const titles = {
     overview: { en: "Today Command Center", ar: "مركز قيادة اليوم", sub: adminSourceDriven ? sourceOverviewSub : { en: "Saturday, May 9 - all kiosks", ar: "السبت، 9 مايو · جميع الأكشاك" } },
-    insights: { en: "AI Insights", ar: "تحليلات الذكاء", sub: { en: "What changed and what needs attention", ar: "ما الذي تغير وما يحتاج اهتمامك" } },
+    insights: { en: "AI Assistant", ar: "المساعد الذكي", sub: { en: "Ask, analyze, and take action — AI-assisted", ar: "اسأل، حلّل، ونفّذ — بمساعدة الذكاء الاصطناعي" } },
     kiosks: { en: "Kiosks", ar: "الأكشاك", sub: adminSourceDriven ? sourceKiosksSub : { en: "10 active locations - 3 cities", ar: "١٠ مواقع نشطة · ٣ مدن" } },
     kioskDetail: {
       en: `${selectedForTitle?.name || "Kiosk"} - ${selectedForTitle?.id || selectedForTitle?.kiosk_code || "--"}`,
@@ -17809,10 +19340,7 @@ function AdminPanel({ lang }) {
                 </span>
               )}
               {active === "overview" && (
-                <>
-              <button className="btn btn-ghost"><Icon name="download" size={13}/>{lang === "ar" ? "تصدير" : "Export"}</button>
-              <button className="btn btn-ghost">{lang === "ar" ? "اليوم" : "Today"} <Icon name="chevDown" size={11}/></button>
-                </>
+                <button className="btn btn-ghost"><Icon name="download" size={13}/>{lang === "ar" ? "تصدير" : "Export"}</button>
               )}
             </div>
           )}
@@ -18439,12 +19967,8 @@ function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total
           <div className="scroll" style={{ flex: 1, overflow: "auto", padding: "8px 18px 24px" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
               {items.map(it => {
-                // Per-product options from the source win; static category bindings are the fallback.
-                const modGroups = (Array.isArray(it.modifierGroups) && it.modifierGroups.length)
-                  ? it.modifierGroups
-                  : (bayaan.mode === "live"
-                    ? []  // live products carry their own options from the source; no static fallback
-                    : resolveModifierGroups({ id: it.id, category: cat.cat }, productModifierBindings));
+                // Robust resolution: source options → category bindings → synthesized size group.
+                const modGroups = posModifierGroupsFor(it, cat.cat);
                 const handleClick = () => {
                   if (modGroups.length > 0) {
                     setModifierTarget({ item: it, groups: modGroups });
@@ -18673,8 +20197,10 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
       })
       .map((order) => {
         const payment = order.payments?.[0] || {};
-        const paymentSignal = String(payment.provider?.category || payment.method || "").toLowerCase();
-        const method = paymentSignal.includes("cash") ? "cash" : paymentSignal.includes("card") ? "card" : "wallet";
+        // Classify via the shared provider classifier (not a substring match on the
+        // method name) so a wallet like "Zain Cash" is never miscounted as cash/card.
+        const providerInfo = classifyPaymentProvider(payment.method, payment.provider);
+        const method = providerInfo.category === "cash" ? "cash" : providerInfo.category === "card" ? "card" : "wallet";
         const total = Number(order.amount_total || 0);
         return {
           id: order.name || String(order.id || "POS"),
@@ -18699,7 +20225,21 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
   const [actualCash, setActualCash] = useStatePOS("");
   const [actualCard, setActualCard] = useStatePOS("");
   const [counts, setCounts] = useStatePOS({});
+  const [rowMode, setRowMode] = useStatePOS({}); // item -> "confirmed" | "editing"
   const [busy, setBusy] = useStatePOS(false);
+
+  // Check = "count matches the expected on-hand" (no typing); Modify = enter the
+  // real counted figure. Confirming sets actual := expected so variance is zero.
+  const confirmRow = (item, expected) => {
+    setCounts((current) => ({ ...current, [item]: String(expected ?? 0) }));
+    setRowMode((current) => ({ ...current, [item]: "confirmed" }));
+  };
+  const modifyRow = (item, expected) => {
+    setCounts((current) => ({ ...current, [item]: current[item] ?? String(expected ?? 0) }));
+    setRowMode((current) => ({ ...current, [item]: "editing" }));
+  };
+  const confirmCash = () => setActualCash(String(Math.round(expectedCash || 0)));
+  const confirmCard = () => setActualCard(String(Math.round(expectedCard || 0)));
 
   const submitClose = async () => {
     if (!bayaan.shift) return;
@@ -18767,6 +20307,9 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
             <div className="t-small subtle" style={{ marginTop: 6 }}>
               {ar ? "المتوقع نقداً: " : "Expected cash: "}IQD {Math.round(expectedCash || 0).toLocaleString("en")}
             </div>
+            <button type="button" className="btn btn-quiet" style={{ marginTop: 8, height: 28, padding: "0 10px", color: "var(--pos, #2C7C58)" }} onClick={confirmCash}>
+              <Icon name="check" size={12}/>{ar ? "النقد مطابق للمتوقع" : "Cash matches expected"}
+            </button>
           </div>
           <div className="card card-pad">
             <label className="t-micro">{ar ? "البطاقة المعدودة (الجهاز)" : "Counted card (terminal)"}</label>
@@ -18774,6 +20317,9 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
             <div className="t-small subtle" style={{ marginTop: 6 }}>
               {ar ? "متوقع البطاقة: " : "Expected card: "}IQD {Math.round(expectedCard || 0).toLocaleString("en")}
             </div>
+            <button type="button" className="btn btn-quiet" style={{ marginTop: 8, height: 28, padding: "0 10px", color: "var(--pos, #2C7C58)" }} onClick={confirmCard}>
+              <Icon name="check" size={12}/>{ar ? "البطاقة مطابقة للمتوقع" : "Card matches expected"}
+            </button>
           </div>
         </div>
         <div className="card">
@@ -18789,11 +20335,29 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
                 <tr key={row.item}>
                   <td>{cleanDisplayName(row.item)}</td>
                   <td className="t-num muted">{Number(row.actual_qty || 0).toLocaleString("en", { maximumFractionDigits: 2 })} {row.uom}</td>
-                  <td style={{ width: 140 }}>
-                    <input className="input" type="number" min={0} step={0.01}
-                      value={counts[row.item] ?? ""}
-                      onChange={(event) => setCounts((current) => ({ ...current, [row.item]: event.target.value }))}
-                      placeholder="count"/>
+                  <td style={{ width: 220 }}>
+                    {rowMode[row.item] === "editing" ? (
+                      <input className="input" type="number" min={0} step={0.01} autoFocus
+                        value={counts[row.item] ?? ""}
+                        onChange={(event) => setCounts((current) => ({ ...current, [row.item]: event.target.value }))}
+                        placeholder={String(Number(row.actual_qty || 0))}/>
+                    ) : rowMode[row.item] === "confirmed" ? (
+                      <div className="row" style={{ gap: 8, justifyContent: "flex-end", alignItems: "center" }}>
+                        <span className="badge badge-pos" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          <Icon name="check" size={11}/>{ar ? "مطابق" : "Matches"}
+                        </span>
+                        <button type="button" className="btn btn-quiet" style={{ height: 26, padding: "0 8px" }} onClick={() => modifyRow(row.item, row.actual_qty)}>{ar ? "تعديل" : "Edit"}</button>
+                      </div>
+                    ) : (
+                      <div className="row" style={{ gap: 6, justifyContent: "flex-end", alignItems: "center" }}>
+                        <button type="button" className="btn btn-quiet" title={ar ? "العدد مطابق للمتوقع" : "Count matches expected"} style={{ height: 26, padding: "0 8px", color: "var(--pos, #2C7C58)" }} onClick={() => confirmRow(row.item, row.actual_qty)}>
+                          <Icon name="check" size={12}/>{ar ? "مطابق" : "Correct"}
+                        </button>
+                        <button type="button" className="btn btn-quiet" title={ar ? "أدخل العدد الفعلي" : "Enter actual count"} style={{ height: 26, padding: "0 8px" }} onClick={() => modifyRow(row.item, row.actual_qty)}>
+                          {ar ? "تعديل" : "Modify"}
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -18850,7 +20414,18 @@ function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, on
     Promise.all([submitPromise, delayPromise]).then(([result]) => {
       if (result.ok) {
         const externalId = result.externalId || result.result?.external_id || result.result?.id || null;
-        setSubmitState({ status: "ok", externalId, queued: false, error: "" });
+        const consumptionState = result.result?.consumption_state;
+        if (consumptionState === "missing_recipe" || consumptionState === "failed") {
+          // Sale recorded, but the recipe deduction did not post. Do NOT show a clean
+          // green "Recorded" — flag it so a manager reconciles stock before close.
+          setSubmitState({ status: "consumption_warn", externalId, queued: false, error: result.result?.consumption_error || "" });
+          showToast(
+            ar ? "تم تسجيل البيع لكن لم تُرحّل الوصفة — يلزم مراجعة المدير" : "Sale recorded — recipe consumption needs manager review",
+            "warn",
+          );
+        } else {
+          setSubmitState({ status: "ok", externalId, queued: false, error: "" });
+        }
       } else if (result.queued) {
         const blocked = result.queueStatus === "blocked";
         setSubmitState({ status: blocked ? "blocked" : "queued", externalId: result.externalId || null, queued: true, error: result.error });
@@ -18876,6 +20451,7 @@ function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, on
     const isError = submitState.status === "error";
     const isQueued = submitState.status === "queued";
     const isBlocked = submitState.status === "blocked";
+    const isConsumptionWarn = submitState.status === "consumption_warn";
     const isOk = submitState.status === "ok";
     const isCashPayment = tender === "cash" || cashTender?.id === tender || normalizePaymentText(tender) === "cash";
     const handlePrintReceipt = () => {
@@ -18897,12 +20473,14 @@ function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, on
         })),
       });
     };
-    const titleAr = isError ? "فشل البيع" : isBlocked ? "محفوظ للمراجعة" : isQueued ? "تم الحفظ بانتظار الاتصال" : "تم الدفع";
-    const titleEn = isError ? "Sale failed" : isBlocked ? "Saved for review" : isQueued ? "Saved offline" : "Payment complete";
+    const titleAr = isError ? "فشل البيع" : isBlocked ? "محفوظ للمراجعة" : isConsumptionWarn ? "تم الدفع — مراجعة الوصفة" : isQueued ? "تم الحفظ بانتظار الاتصال" : "تم الدفع";
+    const titleEn = isError ? "Sale failed" : isBlocked ? "Saved for review" : isConsumptionWarn ? "Paid — recipe review" : isQueued ? "Saved offline" : "Payment complete";
     const subAr = isError
       ? "لم يتم تسجيل البيع. أعد المحاولة أو استدعِ المشرف."
       : isBlocked
       ? "Server rejected this local sale. A manager must reconcile it before close."
+      : isConsumptionWarn
+      ? "تم تسجيل البيع، لكن لم تُرحّل الوصفة. على المدير تسوية المخزون قبل الإغلاق."
       : isQueued
       ? "البيع في قائمة الانتظار وسيُرسل تلقائياً عند رجوع الاتصال."
       : `طلب ${submitState.externalId ? "#" + String(submitState.externalId).slice(-8) : "#A-1247"} مدفوع`;
@@ -18910,11 +20488,13 @@ function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, on
       ? "Sale was NOT recorded. Retry or call supervisor."
       : isBlocked
       ? "Server rejected this local sale. A manager must reconcile it before close."
+      : isConsumptionWarn
+      ? "Sale recorded, but recipe consumption did not post. A manager must reconcile stock before close."
       : isQueued
       ? "Sale queued · will sync automatically when network is back."
       : `Order ${submitState.externalId ? "#" + String(submitState.externalId).slice(-8) : "#A-1247"} paid`;
-    const iconBg = isError ? "var(--crit, #C04A38)" : (isQueued || isBlocked) ? "var(--warn, #B8860B)" : "var(--ink)";
-    const iconName = isError ? "x" : (isQueued || isBlocked) ? "clock" : "check";
+    const iconBg = isError ? "var(--crit, #C04A38)" : (isQueued || isBlocked || isConsumptionWarn) ? "var(--warn, #B8860B)" : "var(--ink)";
+    const iconName = isError ? "x" : (isQueued || isBlocked || isConsumptionWarn) ? "clock" : "check";
     return (
       <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
         <div style={{ height: 52, padding: "0 18px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center" }}>
@@ -18922,6 +20502,7 @@ function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, on
           {isOk && <span className="badge badge-pos" style={{ marginInlineStart: 10 }}><span className="dot pos"></span>{ar ? "مسجل" : "Recorded"}</span>}
           {isQueued && <span className="badge badge-warn" style={{ marginInlineStart: 10 }}><span className="dot warn"></span>{ar ? "بانتظار" : "Queued"}</span>}
           {isBlocked && <span className="badge badge-warn" style={{ marginInlineStart: 10 }}><span className="dot warn"></span>{ar ? "مراجعة" : "Review"}</span>}
+          {isConsumptionWarn && <span className="badge badge-warn" style={{ marginInlineStart: 10 }}><span className="dot warn"></span>{ar ? "مراجعة الوصفة" : "Recipe review"}</span>}
           {isError && <span className="badge badge-crit" style={{ marginInlineStart: 10 }}><span className="dot crit"></span>{ar ? "خطأ" : "Error"}</span>}
         </div>
         <div className="fade-up" style={{ flex: 1, display: "grid", placeItems: "center", padding: 40 }}>
@@ -18931,10 +20512,10 @@ function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, on
             </div>
             <div className="t-display" style={{ marginBottom: 6 }}>{fmtMoney(total)}</div>
             <div className="muted" style={{ marginBottom: 4 }}>{ar ? subAr : subEn}</div>
-            {tender === "cash" && cashNum > 0 && !isError && (
+            {tender === "cash" && cashNum >= total && !isError && (
               <div style={{ marginTop: 24, padding: 16, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, display: "inline-block" }}>
                 <div className="t-micro">{ar ? "الباقي" : "Change due"}</div>
-                <div className="t-num-display">{fmtMoney(change)}</div>
+                <div className="t-num-display">{fmtMoney(Math.max(0, change))}</div>
               </div>
             )}
             {isError && submitState.error && (
@@ -19001,7 +20582,8 @@ function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, on
             <div style={{ marginTop: 28, maxWidth: 640 }}>
               <div className="t-micro" style={{ marginBottom: 10 }}>{ar ? "نقد سريع" : "Quick cash"}</div>
               <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                {[total, Math.ceil(total/10)*10, Math.ceil(total/50)*50, Math.ceil(total/100)*100, 200, 500].filter((v,i,a) => a.indexOf(v) === i).slice(0, 5).map(amt => (
+                {(() => { const ceilTo = (t, n) => Math.ceil(t / n) * n; return [total, ceilTo(total, 1000), ceilTo(total, 5000), ceilTo(total, 10000), ceilTo(total, 25000)]; })()
+                  .filter((v, i, a) => v >= total && a.indexOf(v) === i).slice(0, 5).map(amt => (
                   <button key={amt} onClick={() => { setCashGiven(String(amt)); pickTender(cashTender.id); }}
                     className="btn btn-ghost btn-lg" style={{ minWidth: 92 }}>
                     {fmtMoney(amt)}
@@ -19054,6 +20636,7 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
         id: product?.default_code || row.item,
         name: cleanDisplayName(product?.name || row.name || row.item),
         price: Number(product?.standard_price || row.standard_price || row.unit_cost || row.unitCost || 0),
+        uom: row.uom || product?.uom || "",
       };
     });
     return rows;
@@ -19128,7 +20711,7 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
                   borderColor: item?.name === it.name ? "var(--ink)" : "var(--line)"
                 }}>
                 <div style={{ fontSize: 13, fontWeight: 500 }}>{it.name}</div>
-                <div className="t-small subtle">IQD {it.price.toLocaleString("en")}</div>
+                <div className="t-small subtle">IQD {it.price.toLocaleString("en")}{it.uom ? ` · ${ar ? "للوحدة" : "per"} ${it.uom}` : ""}</div>
               </button>
             ))}
             {items.length === 0 && (
@@ -19139,12 +20722,23 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
             )}
           </div>
 
-          <div className="t-micro" style={{ marginBottom: 10 }}>2 — {ar ? "الكمية" : "Quantity"}</div>
-          <div className="row" style={{ gap: 0, border: "1px solid var(--line)", borderRadius: 8, width: "fit-content", marginBottom: 28, overflow: "hidden" }}>
-            <button onClick={() => setQty(q => Math.max(1, q-1))} style={{ width: 48, height: 48, background: "var(--surface)", borderInlineEnd: "1px solid var(--line)" }}><Icon name="minus" size={14}/></button>
-            <div style={{ width: 80, textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 22, lineHeight: "48px", background: "var(--surface)" }}>{qty}</div>
-            <button onClick={() => setQty(q => q+1)} style={{ width: 48, height: 48, background: "var(--surface)", borderInlineStart: "1px solid var(--line)" }}><Icon name="plus" size={14}/></button>
-          </div>
+          <div className="t-micro" style={{ marginBottom: 10 }}>2 — {ar ? "الكمية" : "Quantity"}{item?.uom ? ` (${item.uom})` : ""}</div>
+          {(() => {
+            // Ingredients are measured in kg/L, so allow fractional waste (e.g. 0.5 L spilled);
+            // discrete units (cups, cakes) step by 1.
+            const fractional = /kg|كغ|كجم|\bl\b|liter|litre|لتر/i.test(String(item?.uom || ""));
+            const step = fractional ? 0.1 : 1;
+            const round = (v) => Math.max(0, Math.round(v * 1000) / 1000);
+            return (
+              <div className="row" style={{ gap: 0, border: "1px solid var(--line)", borderRadius: 8, width: "fit-content", marginBottom: 28, overflow: "hidden" }}>
+                <button onClick={() => setQty(q => round(q - step))} style={{ width: 48, height: 48, background: "var(--surface)", borderInlineEnd: "1px solid var(--line)" }}><Icon name="minus" size={14}/></button>
+                <input type="number" min={0} step={step} value={qty}
+                  onChange={(e) => setQty(round(Number(e.target.value) || 0))}
+                  style={{ width: 96, textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 22, height: 48, background: "var(--surface)", border: "none", outline: "none" }}/>
+                <button onClick={() => setQty(q => round(q + step))} style={{ width: 48, height: 48, background: "var(--surface)", borderInlineStart: "1px solid var(--line)" }}><Icon name="plus" size={14}/></button>
+              </div>
+            );
+          })()}
 
           <div className="t-micro" style={{ marginBottom: 10 }}>3 — {ar ? "السبب" : "Reason"}</div>
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
@@ -19162,7 +20756,7 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
             <div className="t-small subtle">{ar ? "المنتج" : "Item"}</div>
             <div style={{ fontSize: 14, fontWeight: 500, marginTop: 2, minHeight: 22 }}>{item?.name || (ar ? "—" : "Not selected")}</div>
             <div className="hairline" style={{ margin: "12px 0" }}></div>
-            <div className="between t-small muted"><span>{ar ? "الكمية" : "Qty"}</span><span className="t-num">{qty}</span></div>
+            <div className="between t-small muted"><span>{ar ? "الكمية" : "Qty"}</span><span className="t-num">{qty}{item?.uom ? ` ${item.uom}` : ""}</span></div>
             <div className="between t-small muted" style={{ marginTop: 4 }}><span>{ar ? "السبب" : "Reason"}</span><span style={{ color: reason ? "var(--ink-1)" : "var(--ink-3)" }}>{reason || (ar ? "—" : "—")}</span></div>
             <div className="hairline" style={{ margin: "12px 0" }}></div>
             <div className="between"><span style={{ fontSize: 13, fontWeight: 500 }}>{ar ? "تكلفة الهدر" : "Loss value"}</span><span className="t-num" style={{ fontSize: 18 }}>{fmtMoney(cost)}</span></div>
@@ -19470,7 +21064,7 @@ function AuthChip({ lang }) {
   );
 }
 
-function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme }) {
+function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme, scope, setScope }) {
   const bayaan = useBayaan();
   const ar = lang === "ar";
   const canAdmin = authAllowsPanel(bayaan.auth, bayaan.hasBackend, "admin", bayaan.mode);
@@ -19488,6 +21082,27 @@ function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme }) {
       <div className="row" style={{ gap: 12 }}>
         <DataModeToggle bayaan={bayaan} lang={lang}/>
         <AuthChip lang={lang}/>
+        {typeof setScope === "function" && (
+          <label className="scope-select" aria-label={ar ? "النطاق الزمني" : "Time scope"}
+            style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <Icon name="clock" size={12}/>
+            <select
+              value={scope || "Daily"}
+              onChange={(event) => setScope(event.target.value)}
+              title={ar ? "النطاق الزمني للوحة" : "Dashboard time scope"}
+              style={{
+                height: 26, borderRadius: 6, border: "1px solid var(--line)",
+                background: "var(--surface)", color: "var(--ink-1)", cursor: "pointer",
+                fontSize: 11.5, fontFamily: "var(--font-mono)", padding: "0 6px",
+              }}
+            >
+              <option value="Daily">{ar ? "يومي" : "Daily"}</option>
+              <option value="Weekly">{ar ? "أسبوعي" : "Weekly"}</option>
+              <option value="Monthly">{ar ? "شهري" : "Monthly"}</option>
+              <option value="Yearly">{ar ? "سنوي" : "Yearly"}</option>
+            </select>
+          </label>
+        )}
         <div className="theme-switch" role="group" aria-label="Theme">
           <button
             type="button"
@@ -19568,13 +21183,13 @@ function ModeBadge({ bayaan, ar }) {
         <span style={{
           marginInlineStart: 4, padding: "0 5px", borderRadius: 8,
           background: "var(--warn-soft, #FCE8C2)", color: "var(--warn, #B8860B)", fontSize: 10,
-        }}>{ar ? "Ø£ÙˆÙÙ„Ø§ÙŠÙ†" : "offline"}</span>
+        }}>{ar ? "أوفلاين" : "offline"}</span>
       )}
       {blockedCount > 0 && (
         <span style={{
           marginInlineStart: 4, padding: "0 5px", borderRadius: 8,
           background: "var(--crit-soft, #F7D5CC)", color: "var(--crit, #C04A38)", fontSize: 10,
-        }}>{blockedCount} {ar ? "Ù…Ø±Ø§Ø¬Ø¹Ø©" : "review"}</span>
+        }}>{blockedCount} {ar ? "مراجعة" : "review"}</span>
       )}
       {retryingCount > 0 && (
         <span style={{
@@ -19612,10 +21227,12 @@ function AuthRequired({ lang }) {
         {bayaan.auth.error && (
           <div className="t-small" style={{ marginTop: 12, color: "var(--crit)" }}>{bayaan.auth.error}</div>
         )}
+        {!LIVE_ONLY_DEMO && (
         <button type="button" className="btn btn-primary" style={{ marginTop: 14, width: "100%", justifyContent: "center" }}
           onClick={() => bayaan.setMode("demo")}>
           {ar ? "فتح العرض التجريبي" : "Open demo mode"}
         </button>
+        )}
       </div>
     </div>
   );
@@ -19626,6 +21243,11 @@ function AppContent() {
   const [panel, setPanel] = useStateApp("admin");
   const [lang, setLang] = useStateApp("en");
   const [theme, setTheme] = useStateApp(getInitialTheme);
+  // Global dashboard time scope (Daily | Weekly | Monthly | Yearly). Drives the
+  // report-period views (Finance/Reports, Overview headline metrics, Sales & POS
+  // history) off the backend's precomputed reportPeriods. "Daily" === the prior
+  // today-scoped behaviour, so this is additive and changes nothing by default.
+  const [scope, setScope] = useStateApp("Daily");
   const dir = lang === "ar" ? "rtl" : "ltr";
   const needsLogin = bayaan.hasBackend && bayaan.mode === "live" && (!bayaan.auth.checked || !bayaan.auth.authenticated);
 
@@ -19642,11 +21264,11 @@ function AppContent() {
 
   return (
     <div className={`app-frame panel-${panel}`} data-theme={theme} dir={dir} lang={lang}>
-      <MasterTop panel={panel} setPanel={setPanel} lang={lang} setLang={setLang} theme={theme} setTheme={setTheme}/>
+      <MasterTop panel={panel} setPanel={setPanel} lang={lang} setLang={setLang} theme={theme} setTheme={setTheme} scope={scope} setScope={setScope}/>
       {needsLogin
         ? <AuthRequired lang={lang}/>
         : panel === "admin"
-          ? <AdminPanel lang={lang}/>
+          ? <AdminPanel lang={lang} scope={scope}/>
           : <POSPanel lang={lang}/>}
     </div>
   );

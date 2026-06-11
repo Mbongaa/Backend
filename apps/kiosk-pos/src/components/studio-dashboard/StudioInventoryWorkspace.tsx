@@ -646,7 +646,7 @@ export function StudioInventoryWorkspace({
                       {isDispatchedTransfer(transfer.status) ? (
                         <span className="text-muted-foreground text-xs">{tInv(ar, "waiting kiosk", "بانتظار الكشك")}</span>
                       ) : null}
-                      {action ? (
+                      {action && !isDispatchedTransfer(transfer.status) ? (
                         <Button
                           disabled={transferActionBusy === transfer.id}
                           onClick={() => onAdvanceTransferStatus(transfer, action)}

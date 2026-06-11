@@ -64,7 +64,13 @@ class BayaanRecipe(models.Model):
                 ("state", "=", "active"),
             ]).write({"state": "archived"})
             recipe.state = "active"
-            recipe.product_id.product_tmpl_id.bayaan_consumption_mode = "recipe"
+            # Activating a recipe marks the product recipe-driven, but must NOT clobber
+            # a deliberately chosen 'hybrid' product (which also consumes its finished
+            # SKU) down to 'recipe' — that would silently break hybrid stock accounting.
+            # recipe_version force-sets 'recipe' before activating, so it is unaffected.
+            tmpl = recipe.product_id.product_tmpl_id
+            if tmpl.bayaan_consumption_mode != "hybrid":
+                tmpl.bayaan_consumption_mode = "recipe"
 
 
 class BayaanRecipeLine(models.Model):

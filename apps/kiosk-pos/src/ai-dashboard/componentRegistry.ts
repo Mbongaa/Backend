@@ -34,7 +34,12 @@ export type VisualKind =
   | "ai-explanation"
   | "proposal-card";
 
-export type InteractionMode = "read-only" | "proposal-only" | "human-action";
+// "human-confirm" is AI-renderable like "proposal-only", but unlike an inert
+// proposal it carries a human-clickable Confirm that commits through a
+// deterministic, role-gated, audited backend route. The AI only pre-fills the
+// draft — it never writes. "human-action" remains AI-forbidden (a surface only a
+// human opens and operates, never pre-filled by a plan).
+export type InteractionMode = "read-only" | "proposal-only" | "human-confirm" | "human-action";
 
 export type CanvasSize = "small" | "medium" | "wide" | "full";
 
@@ -63,7 +68,8 @@ export type AiDashboardIntent =
   | "payment-reconciliation"
   | "staff-coaching"
   | "warehouse-topology"
-  | "catalog-lookup";
+  | "catalog-lookup"
+  | "catalog-create";
 
 export type SourceRefRequirement =
   | "pos.order"
@@ -200,6 +206,21 @@ export const componentRegistry = [
     interactionMode: "proposal-only",
     canvasSizes: ["small", "medium"],
     notes: "In v1 this component must render recommendations only, never approve or create records.",
+  },
+  {
+    id: "catalog.product_draft",
+    label: "AI product + recipe draft",
+    sectionId: "canvas",
+    sourcePath: "apps/kiosk-pos/src/exact-design/ExactKioskApp.jsx",
+    sourceLines: "8780-8964",
+    visualKind: "proposal-card",
+    bestFor: ["catalog-create"],
+    dataPacks: ["products", "items"],
+    dataContract: "Editable product+recipe draft pre-filled by the AI from a create request; a human edits and confirms it, which calls the deterministic /product_create_bundle route.",
+    sourceRefsRequired: ["product.template", "bayaan.recipe"],
+    interactionMode: "human-confirm",
+    canvasSizes: ["wide", "full"],
+    notes: "AI pre-fills the draft only; it never writes. Confirm commits via /product_create_bundle, guarded by procurement+manager scope and audited.",
   },
   {
     id: "canvas.hourly",
@@ -1319,7 +1340,11 @@ export function getComponentsForIntent(intent: AiDashboardIntent): DashboardComp
 }
 
 export function isAiRenderable(entry: DashboardComponentEntry): boolean {
-  return entry.interactionMode === "read-only" || entry.interactionMode === "proposal-only";
+  return (
+    entry.interactionMode === "read-only" ||
+    entry.interactionMode === "proposal-only" ||
+    entry.interactionMode === "human-confirm"
+  );
 }
 
 export function assertAiRenderable(componentIds: readonly DashboardComponentId[]) {

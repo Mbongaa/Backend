@@ -15,6 +15,11 @@ import {
 } from "./realtime";
 import { buildSimulationTransferSuggestions, createPeakSimulation } from "../simulation/peakSimulation";
 
+// Odoo's Datetime fields only accept "YYYY-MM-DD HH:MM:SS"; browser
+// toISOString() emits "YYYY-MM-DDTHH:MM:SS.mmmZ", which the ORM rejects.
+const odooDatetime = (value?: string): string | undefined =>
+  value ? value.slice(0, 19).replace("T", " ") : value;
+
 export type ShiftCloseDraft = {
   actualCash: number;
   actualCard?: number;
@@ -185,6 +190,78 @@ export type RecipeVersionPayload = {
   submit?: boolean;
 };
 
+// Atomic product + recipe creation for the AI draft → human-confirm workflow.
+// Maps to the deterministic /bayaan/api/product_create_bundle route, which creates
+// the product and (for recipe/hybrid modes) its recipe in a single transaction.
+export type CreateProductBundlePayload = {
+  name: string;
+  code?: string;
+  category?: string;
+  uom?: string;
+  listPrice?: number;
+  standardPrice?: number;
+  consumptionMode?: "recipe" | "finished" | "hybrid" | "none";
+  availableInPos?: boolean;
+  targetQty?: number;
+  reorderQty?: number;
+  criticalQty?: number;
+  maxQty?: number;
+  priorityWeight?: number;
+  imageBase64?: string;
+  imageMimeType?: string;
+  sizes?: string[];
+  modifierGroups?: unknown[];
+  posOptions?: { sizes?: string[]; modifier_groups?: unknown[] };
+  recipe?: {
+    ingredients: Array<{ ingredientId: string; qty: number; uom?: string }>;
+    wasteAllowancePercent?: number;
+    version?: string;
+    effectiveFrom?: string;
+  };
+  submit?: boolean;
+};
+
+// AI invoice scan: extracted draft (read-only transcription) and the deterministic
+// commit (supplier + PO + warehouse receipt). Maps to /invoice_extract and
+// /invoice_commit. Numbers are editable drafts; Odoo computes official totals.
+export type InvoiceProposalLine = {
+  description: string;
+  matchedProductId: string;
+  matchedProductName: string;
+  matchedProductCode: string;
+  qty: number;
+  unitPrice: number;
+};
+
+export type InvoiceProposal = {
+  extractable: boolean;
+  supplier: { name: string; address: string; category: string };
+  invoiceRef: string;
+  invoiceDate: string;
+  currency: string;
+  warehouseHint: string;
+  lines: InvoiceProposalLine[];
+  totals: { subtotal: number; tax: number; total: number };
+  notes: string;
+};
+
+export type ExtractInvoicePayload = {
+  imageBase64: string;
+  mimeType?: string;
+};
+
+export type InvoiceCommitPayload = {
+  supplier: { name: string; address?: string; category?: string };
+  warehouse?: string | number;
+  invoiceRef?: string;
+  invoiceName?: string;
+  invoiceDate?: string;
+  currency?: string;
+  invoiceFileBase64?: string;
+  invoiceMimeType?: string;
+  lines: Array<{ productId: string | number; qty: number; unitPrice: number }>;
+};
+
 export type ShiftCloseReviewPayload = {
   closeId: string | number;
   decision: "approved" | "rejected" | "note";
@@ -267,6 +344,13 @@ export type OperatingExpensePayload = {
   amount: number;
   date?: string;
   note?: string;
+};
+
+export type FinanceAdjustmentPayload = {
+  category: string;
+  amount: number;
+  note: string;
+  date?: string;
 };
 
 export type AuditLogPayload = {
@@ -412,10 +496,15 @@ export type SourceOfTruthGateway = {
   createRecurringPurchase: (payload: RecurringPurchasePayload) => Promise<unknown>;
   recurringPurchaseAction: (payload: { id: string | number; action: "run" }) => Promise<unknown>;
   submitRecipeVersion: (payload: RecipeVersionPayload) => Promise<unknown>;
+  createProductBundle: (payload: CreateProductBundlePayload) => Promise<unknown>;
+  extractInvoice: (payload: ExtractInvoicePayload) => Promise<unknown>;
+  commitInvoice: (payload: InvoiceCommitPayload) => Promise<unknown>;
   submitWaste: (waste: WasteRecord, kioskId: string) => Promise<unknown>;
   submitKioskWaste: (payload: KioskWastePayload) => Promise<unknown>;
   submitShiftClose: (payload: ShiftClosePayload) => Promise<unknown>;
   reviewShiftClose: (payload: ShiftCloseReviewPayload) => Promise<unknown>;
+  getShiftCloseHistory: (payload?: { kiosk?: string; dateFrom?: string; dateTo?: string }) => Promise<unknown>;
+  getPosOrdersHistory: (payload?: { scope?: string; kiosk?: string; dateFrom?: string; dateTo?: string }) => Promise<unknown>;
   getHrSnapshot: () => Promise<unknown>;
   getHrSchedule: (payload?: HrSchedulePayload) => Promise<unknown>;
   createHrEmployee: (payload: HrEmployeePayload) => Promise<unknown>;
@@ -427,6 +516,8 @@ export type SourceOfTruthGateway = {
   payrollAdjustmentAction: (payload: PayrollAdjustmentActionPayload) => Promise<unknown>;
   payrollRunAction: (payload: PayrollRunPayload) => Promise<unknown>;
   submitOperatingExpense: (payload: OperatingExpensePayload) => Promise<unknown>;
+  submitFinanceAdjustment: (payload: FinanceAdjustmentPayload) => Promise<unknown>;
+  getFinanceAdjustments: () => Promise<unknown>;
 };
 
 function dispatchAiDashboardStreamEvent(eventName: string, dataText: string, handlers: AiDashboardStreamHandlers) {
@@ -787,13 +878,77 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
       return client.json("/bayaan/api/recipe_version", {
         payload: {
           item: payload.itemId,
-          effective_from: payload.effectiveFrom,
+          effective_from: odooDatetime(payload.effectiveFrom),
           waste_allowance_percent: payload.wasteAllowancePercent,
           submit: payload.submit ?? true,
           ingredients: payload.ingredients.map((item) => ({
             ingredient: item.ingredientId,
             qty: item.qty,
             uom: item.uom,
+          })),
+        },
+      });
+    },
+    async createProductBundle(payload: CreateProductBundlePayload) {
+      return client.json("/bayaan/api/product_create_bundle", {
+        payload: {
+          name: payload.name,
+          code: payload.code,
+          category: payload.category,
+          uom: payload.uom,
+          list_price: payload.listPrice,
+          standard_price: payload.standardPrice,
+          consumption_mode: payload.consumptionMode,
+          available_in_pos: payload.availableInPos,
+          target_qty: payload.targetQty,
+          reorder_qty: payload.reorderQty,
+          critical_qty: payload.criticalQty,
+          max_qty: payload.maxQty,
+          priority_weight: payload.priorityWeight,
+          image_base64: payload.imageBase64,
+          image_mimetype: payload.imageMimeType,
+          sizes: payload.sizes,
+          modifier_groups: payload.modifierGroups,
+          pos_options: payload.posOptions,
+          submit: payload.submit ?? true,
+          recipe: payload.recipe
+            ? {
+                version: payload.recipe.version,
+                effective_from: odooDatetime(payload.recipe.effectiveFrom),
+                waste_allowance_percent: payload.recipe.wasteAllowancePercent,
+                ingredients: payload.recipe.ingredients.map((item) => ({
+                  ingredient: item.ingredientId,
+                  qty: item.qty,
+                  uom: item.uom,
+                })),
+              }
+            : undefined,
+        },
+      });
+    },
+    async extractInvoice(payload: ExtractInvoicePayload) {
+      return client.json("/bayaan/api/invoice_extract", {
+        payload: {
+          image_base64: payload.imageBase64,
+          mimetype: payload.mimeType,
+        },
+      });
+    },
+    async commitInvoice(payload: InvoiceCommitPayload) {
+      return client.json("/bayaan/api/invoice_commit", {
+        payload: {
+          supplier: payload.supplier,
+          warehouse: payload.warehouse,
+          invoice_ref: payload.invoiceRef,
+          invoice_name: payload.invoiceName,
+          invoice_date: payload.invoiceDate,
+          currency: payload.currency,
+          invoice_file: payload.invoiceFileBase64,
+          invoice_mimetype: payload.invoiceMimeType,
+          lines: payload.lines.map((line) => ({
+            product_id: line.productId,
+            qty: line.qty,
+            unit_price: line.unitPrice,
           })),
         },
       });
@@ -842,6 +997,25 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
           close_id: payload.closeId,
           decision: payload.decision,
           note: payload.note,
+        },
+      });
+    },
+    async getShiftCloseHistory(payload: { kiosk?: string; dateFrom?: string; dateTo?: string } = {}) {
+      return client.json("/bayaan/api/shift_close_history", {
+        payload: {
+          kiosk: payload.kiosk,
+          date_from: payload.dateFrom,
+          date_to: payload.dateTo,
+        },
+      });
+    },
+    async getPosOrdersHistory(payload: { scope?: string; kiosk?: string; dateFrom?: string; dateTo?: string } = {}) {
+      return client.json("/bayaan/api/pos_orders_history", {
+        payload: {
+          scope: payload.scope,
+          kiosk: payload.kiosk,
+          date_from: payload.dateFrom,
+          date_to: payload.dateTo,
         },
       });
     },
@@ -972,6 +1146,19 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
           note: payload.note,
         },
       });
+    },
+    async submitFinanceAdjustment(payload: FinanceAdjustmentPayload) {
+      return client.json("/bayaan/api/finance_adjustment", {
+        payload: {
+          category: payload.category,
+          amount: payload.amount,
+          note: payload.note,
+          date: payload.date,
+        },
+      });
+    },
+    async getFinanceAdjustments() {
+      return client.json("/bayaan/api/finance_adjustment", { payload: { action: "list" } });
     },
   };
 }
@@ -4329,6 +4516,45 @@ function createSimulationGateway(): SourceOfTruthGateway {
         recipe_version: recipe,
       };
     },
+    async createProductBundle(payload: CreateProductBundlePayload) {
+      // The AI draft -> confirm workflow is a live-backend feature (it needs the
+      // OpenAI-backed AI dashboard, which demo mode does not run), so this path is
+      // not exercised by the UI. Return a benign simulated acknowledgement rather
+      // than mutating simulation state.
+      const hasRecipe = !!payload.recipe && payload.recipe.ingredients.length > 0;
+      return {
+        simulation: true,
+        product: { name: payload.name, consumption_mode: payload.consumptionMode || "recipe" },
+        recipe_state: hasRecipe ? "active" : "",
+      };
+    },
+    async extractInvoice(_payload: ExtractInvoicePayload) {
+      // Demo mode returns a small canned draft so the form is reviewable without
+      // spending vision tokens; real OCR needs the live backend.
+      return {
+        simulation: true,
+        invoiceProposal: {
+          extractable: true,
+          supplier: { name: "Demo Supplier", address: "", category: "" },
+          invoiceRef: "DEMO-INV-001",
+          invoiceDate: "",
+          currency: "IQD",
+          warehouseHint: "",
+          lines: [],
+          totals: { subtotal: 0, tax: 0, total: 0 },
+          notes: "Demo mode does not run live invoice OCR.",
+        },
+      };
+    },
+    async commitInvoice(payload: InvoiceCommitPayload) {
+      return {
+        simulation: true,
+        name: "SIM-PO",
+        state: "purchase",
+        receipt_state: "done",
+        supplier: payload.supplier?.name || "Demo Supplier",
+      };
+    },
     async createRecurringPurchase(payload: RecurringPurchasePayload) {
       assertSimulationRecurringPurchasePayload(snapshot(), payload);
       const recurringKey = simulationRecurringPurchaseCreateKey(payload);
@@ -4578,6 +4804,20 @@ function createSimulationGateway(): SourceOfTruthGateway {
         payload: { closeId: payload.closeId, decision: payload.decision },
       });
       return { simulation: true, id: payload.closeId, status: payload.decision };
+    },
+    async getShiftCloseHistory(payload: { kiosk?: string; dateFrom?: string; dateTo?: string } = {}) {
+      const current = snapshot();
+      const rows = (current.closings || []).filter((row) => (
+        !payload.kiosk
+        || String((row as Record<string, unknown>).kioskId || "") === String(payload.kiosk)
+        || String((row as Record<string, unknown>).kioskName || "") === String(payload.kiosk)
+      ));
+      return { simulation: true, closings: rows };
+    },
+    async getPosOrdersHistory(_payload: { scope?: string; kiosk?: string; dateFrom?: string; dateTo?: string } = {}) {
+      const current = snapshot() as Record<string, unknown>;
+      const today = current.today as Record<string, unknown> | undefined;
+      return { simulation: true, orders: (today?.orders as unknown[]) || [] };
     },
     async getHrSnapshot() {
       return snapshot().hr;
@@ -5112,6 +5352,12 @@ function createSimulationGateway(): SourceOfTruthGateway {
       });
       return { simulation: true, expense: simulationHrRows(snapshot(), "expenses").find((row) => String(row.id) === entry.id) };
     },
+    async submitFinanceAdjustment(payload: FinanceAdjustmentPayload) {
+      return { simulation: true, ...payload };
+    },
+    async getFinanceAdjustments() {
+      return { simulation: true, adjustments: [] };
+    },
   };
 }
 
@@ -5198,6 +5444,15 @@ function createNoopGateway() {
     async submitRecipeVersion(_payload: RecipeVersionPayload) {
       return { skipped: true };
     },
+    async createProductBundle(_payload: CreateProductBundlePayload) {
+      return { skipped: true };
+    },
+    async extractInvoice(_payload: ExtractInvoicePayload) {
+      return { skipped: true };
+    },
+    async commitInvoice(_payload: InvoiceCommitPayload) {
+      return { skipped: true };
+    },
     async submitWaste(_waste: WasteRecord, _kioskId: string) {
       return { skipped: true };
     },
@@ -5209,6 +5464,12 @@ function createNoopGateway() {
     },
     async reviewShiftClose(_payload: ShiftCloseReviewPayload) {
       return { skipped: true };
+    },
+    async getShiftCloseHistory(_payload?: { kiosk?: string; dateFrom?: string; dateTo?: string }) {
+      return { skipped: true, closings: [] };
+    },
+    async getPosOrdersHistory(_payload?: { scope?: string; kiosk?: string; dateFrom?: string; dateTo?: string }) {
+      return { skipped: true, orders: [] };
     },
     async getHrSnapshot() {
       return { skipped: true, employees: [], attendance: [], adjustments: [], payrollRuns: [], expenses: [] };
@@ -5242,6 +5503,12 @@ function createNoopGateway() {
     },
     async submitOperatingExpense(_payload: OperatingExpensePayload) {
       return { skipped: true };
+    },
+    async submitFinanceAdjustment(_payload: FinanceAdjustmentPayload) {
+      return { skipped: true };
+    },
+    async getFinanceAdjustments() {
+      return { skipped: true, adjustments: [] };
     },
   };
 }

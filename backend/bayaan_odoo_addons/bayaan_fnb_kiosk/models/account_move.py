@@ -46,6 +46,14 @@ class AccountMove(models.Model):
     def _bayaan_validate_branch_analytic_distribution(self):
         missing_lines = self.env["account.move.line"]
         for line in self.line_ids.filtered(lambda move_line: move_line.display_type == "product"):
+            # Branch cost-center analytic applies to P&L (income / expense) lines.
+            # Balance-sheet lines — receivable, payable, cash, bank (e.g. the POS
+            # payment "combine" entries created when a pos.session is closed) — do
+            # not take a cost center and must not block posting; otherwise every
+            # session close (manual or automatic) is impossible.
+            account_type = line.account_id.account_type or ""
+            if not (account_type.startswith("income") or account_type.startswith("expense")):
+                continue
             if not line.analytic_distribution:
                 missing_lines |= line
         if not missing_lines:

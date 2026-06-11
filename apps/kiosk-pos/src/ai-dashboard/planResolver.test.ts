@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { componentRegistry, getDashboardComponent, type InteractionMode } from "./componentRegistry";
+import { assertAiRenderable, componentRegistry, getDashboardComponent, type InteractionMode } from "./componentRegistry";
 import { inferAiDashboardIntent, resolveAiDashboardPlan } from "./planResolver";
 
 const sampleQueries = [
@@ -35,6 +35,32 @@ describe("AI dashboard plan resolver", () => {
     expect(inferAiDashboardIntent("اعرض شذوذ الهدر")).toBe("waste-anomaly-review");
     expect(inferAiDashboardIntent("ما المخزون الذي يجب إرساله لـ K-07 غداً؟")).toBe("stock-allocation");
     expect(inferAiDashboardIntent("هل أستطيع اعتماد الإغلاق؟")).toBe("close-review");
+  });
+
+  it("routes explicit product-creation requests to catalog-create, ahead of lookup/margin", () => {
+    expect(inferAiDashboardIntent("Create a Mango Smoothie with sizes S/M/L")).toBe("catalog-create");
+    expect(inferAiDashboardIntent("Add a new product")).toBe("catalog-create");
+    expect(inferAiDashboardIntent("create a recipe for orange juice")).toBe("catalog-create");
+    expect(inferAiDashboardIntent("new menu item: iced latte")).toBe("catalog-create");
+    expect(inferAiDashboardIntent("أضف منتج جديد")).toBe("catalog-create");
+    expect(inferAiDashboardIntent("منتج جديد: عصير مانجو")).toBe("catalog-create");
+    // Must not swallow non-creation catalog/margin questions.
+    expect(inferAiDashboardIntent("Find stock item catalog entries for milk")).toBe("catalog-lookup");
+    expect(inferAiDashboardIntent("Which products are hurting margin?")).toBe("recipe-margin-review");
+  });
+
+  it("renders the product draft as a human-confirm card the AI is allowed to surface", () => {
+    const draft = getDashboardComponent("catalog.product_draft");
+    expect(draft.interactionMode).toBe("human-confirm");
+    // human-confirm is AI-renderable (unlike human-action), so the plan validates.
+    expect(() => assertAiRenderable(["catalog.product_draft"])).not.toThrow();
+    // human-action surfaces remain forbidden to the AI.
+    expect(() => assertAiRenderable(["items.new_item_modal"])).toThrow();
+
+    const plan = resolveAiDashboardPlan("Create a Mango Smoothie, 200g mango + 100ml milk");
+    expect(plan.intent).toBe("catalog-create");
+    const draftComponent = plan.components.find((component) => component.componentId === "catalog.product_draft");
+    expect(draftComponent?.mode).toBe("human-confirm");
   });
 
   it("keeps every generated v1 plan read-only or proposal-only", () => {

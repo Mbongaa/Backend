@@ -1,7 +1,7 @@
 // Group B — Role scoping. Each role's UI must reflect its server-side allowedNav/panels.
 import { makePage, adminLogin, navLabels, bodyText, shot } from "./lib.mjs";
 
-const ALL = ["Today Command", "AI Insights", "Kiosks", "Warehouses", "Items Catalog",
+const ALL = ["Today Command", "AI Assistant", "Kiosks", "Warehouses", "Stock inventory",
   "Sales & POS", "Daily Close", "Waste & Loss", "Products & Recipes",
   "Purchases & Suppliers", "Stock & Allocation", "Staff", "Finance", "Reports"];
 
@@ -9,12 +9,12 @@ const ROLES = [
   { id: "B1", email: "layla@miza.iq", role: "manager",
     expect: ALL, forbid: [], posDisabled: true },
   { id: "B2", email: "hassan@miza.iq", role: "logistics",
-    expect: ["Today Command", "Warehouses", "Items Catalog", "Purchases & Suppliers", "Stock & Allocation", "Reports"],
-    forbid: ["Daily Close", "Finance", "Staff", "AI Insights", "Sales & POS", "Kiosks", "Waste & Loss", "Products & Recipes"],
+    expect: ["Today Command", "Warehouses", "Stock inventory", "Purchases & Suppliers", "Stock & Allocation", "Reports"],
+    forbid: ["Daily Close", "Finance", "Staff", "AI Assistant", "Sales & POS", "Kiosks", "Waste & Loss", "Products & Recipes"],
     posDisabled: true },
   { id: "B3", email: "noor@miza.iq", role: "accountant",
-    expect: ["Today Command", "AI Insights", "Sales & POS", "Daily Close", "Purchases & Suppliers", "Staff", "Finance", "Reports"],
-    forbid: ["Kiosks", "Warehouses", "Items Catalog", "Waste & Loss", "Products & Recipes", "Stock & Allocation"],
+    expect: ["Today Command", "AI Assistant", "Sales & POS", "Daily Close", "Purchases & Suppliers", "Staff", "Finance", "Reports"],
+    forbid: ["Kiosks", "Warehouses", "Stock inventory", "Waste & Loss", "Products & Recipes", "Stock & Allocation"],
     posDisabled: true },
 ];
 

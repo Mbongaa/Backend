@@ -160,11 +160,10 @@ class PosOrder(models.Model):
         for order in self:
             kiosk = order.bayaan_kiosk_id
             try:
-                if order.bayaan_consumption_ledger_ids:
-                    order.bayaan_consumption_state = "posted"
-                    order._bayaan_publish_consumption_event(kiosk or order._bayaan_resolve_kiosk())
-                    continue
-
+                # No order-level "already has ledger rows" early-exit here: a
+                # partially-posted order (one line posted, another missing its
+                # recipe) must re-walk every line on retry. The per-line ledger
+                # lookup below keeps re-processing idempotent.
                 kiosk = order._bayaan_resolve_kiosk()
                 if not kiosk:
                     raise ValueError(

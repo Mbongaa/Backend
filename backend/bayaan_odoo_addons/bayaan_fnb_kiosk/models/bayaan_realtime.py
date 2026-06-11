@@ -2,13 +2,29 @@ import hashlib
 import hmac
 import json
 
+import pytz
+
 from odoo import api, fields, models
 from odoo.tools import config
+
+# Single timezone authority for UI-facing timestamps (mirrors the controller's
+# _bayaan_local_datetime). The publisher often runs as the system user (cron,
+# POS hooks) whose tz is unset, so the client timezone is pinned explicitly.
+BAYAAN_TZ = "Asia/Baghdad"
 
 
 class BayaanRealtime(models.AbstractModel):
     _name = "bayaan.realtime"
     _description = "Bayaan Realtime Event Publisher"
+
+    def _local_datetime_str(self, value):
+        """Baghdad wall-clock string for UI-facing event timestamps. The Live
+        Action feed renders this verbatim next to audit-log rows that are
+        already Baghdad-localized; raw UTC here reads 3 hours off."""
+        if not value:
+            return ""
+        local = pytz.utc.localize(value).astimezone(pytz.timezone(BAYAAN_TZ))
+        return fields.Datetime.to_string(local.replace(tzinfo=None))
 
     def _secret(self):
         secret = config.get("database.secret")
@@ -128,7 +144,9 @@ class BayaanRealtime(models.AbstractModel):
             "severity": severity,
             "title": title,
             "detail": detail or "",
-            "occurredAt": fields.Datetime.to_string(audit_event.occurred_at) if audit_event and audit_event.occurred_at else fields.Datetime.to_string(fields.Datetime.now()),
+            "occurredAt": self._local_datetime_str(
+                audit_event.occurred_at if audit_event and audit_event.occurred_at else fields.Datetime.now()
+            ),
             "companyId": company.id,
             "kiosk": kiosk.kiosk_code if kiosk else "",
             "kioskName": kiosk.name if kiosk else "",

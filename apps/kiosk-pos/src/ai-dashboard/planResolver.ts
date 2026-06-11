@@ -155,10 +155,26 @@ const planTemplates = {
     ],
     explanationStyle: "brief",
   },
+  "catalog-create": {
+    dataPacks: ["products", "items"],
+    components: [
+      { componentId: "catalog.product_draft", size: "wide", dataBinding: "products", title: "Product + recipe draft" },
+      { componentId: "items.catalog_table", size: "full", dataBinding: "items", title: "Existing items for reference" },
+    ],
+    explanationStyle: "brief",
+  },
 } as const satisfies Record<AiDashboardIntent, PlanTemplate>;
 
 export function inferAiDashboardIntent(query: string): AiDashboardIntent {
   const text = normalizeQuery(query);
+
+  // Creation requests win first. "new menu item" / "product" / "recipe" would
+  // otherwise be swallowed by catalog-lookup or recipe-margin-review. The draft is
+  // non-destructive (it only pre-fills a human-confirmed deterministic route), so an
+  // eager match degrades to a blank draft, never to a wrong write.
+  if (matchesAny(text, ["create a", "create new", "create product", "create the product", "add a product", "add product", "add new product", "new product", "new menu item", "add menu item", "new drink", "set up a product", "register product", "create recipe", "create a recipe", "build a product", "أضف منتج", "اضف منتج", "اضافة منتج", "إضافة منتج", "منتج جديد", "أنشئ منتج", "انشئ منتج", "صنف جديد", "وصفة جديدة", "أضف صنف", "اضف صنف"])) {
+    return "catalog-create";
+  }
 
   if (matchesAny(text, ["close", "closing", "variance", "approve", "approval", "counted", "expected", "drawer", "إغلاق", "اغلاق", "فرق", "فروقات", "اعتماد", "معدود", "متوقع", "درج"])) {
     return "close-review";

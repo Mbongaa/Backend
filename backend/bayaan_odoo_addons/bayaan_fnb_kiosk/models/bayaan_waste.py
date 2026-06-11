@@ -8,6 +8,7 @@ class BayaanWasteEntry(models.Model):
     _order = "create_date desc, id desc"
 
     name = fields.Char(default="New", copy=False)
+    external_id = fields.Char(index=True, copy=False, help="Client-supplied idempotency key (mirrors pos.order dedup).")
     kiosk_id = fields.Many2one("bayaan.kiosk", required=True)
     product_id = fields.Many2one("product.product", required=True)
     qty = fields.Float(required=True, default=1.0)

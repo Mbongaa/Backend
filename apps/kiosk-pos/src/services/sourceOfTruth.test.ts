@@ -165,6 +165,102 @@ describe("simulation source-of-truth gateway helpers", () => {
     });
   });
 
+  it("posts AI-drafted product bundles to the deterministic product_create_bundle route", async () => {
+    const fetchSpy = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({ result: { engine: "odoo_pos", product_id: 4242, recipe_id: 99, recipe_state: "active" } }),
+    }));
+
+    await withLiveOdooWindow(fetchSpy as unknown as typeof fetch, async () => {
+      const gateway = createSourceOfTruthGateway();
+      const result = await gateway.createProductBundle({
+        name: "Mango Smoothie",
+        consumptionMode: "recipe",
+        uom: "Units",
+        listPrice: 6000,
+        standardPrice: 1500,
+        availableInPos: true,
+        sizes: ["Small", "Medium", "Large"],
+        recipe: {
+          wasteAllowancePercent: 5,
+          ingredients: [
+            { ingredientId: "MANGO", qty: 0.2, uom: "kg" },
+            { ingredientId: "MILK", qty: 0.1, uom: "l" },
+          ],
+        },
+      }) as { product_id?: number; recipe_state?: string };
+      const firstCall = fetchSpy.mock.calls[0];
+      if (!firstCall) throw new Error("createProductBundle did not call fetch");
+      const [url, init] = firstCall;
+      const body = JSON.parse(String(init?.body));
+
+      expect(String(url)).toMatch(/\/bayaan\/api\/product_create_bundle$/);
+      expect(result.product_id).toBe(4242);
+      expect(result.recipe_state).toBe("active");
+      expect(body.params.payload).toMatchObject({
+        name: "Mango Smoothie",
+        consumption_mode: "recipe",
+        uom: "Units",
+        list_price: 6000,
+        standard_price: 1500,
+        available_in_pos: true,
+        sizes: ["Small", "Medium", "Large"],
+      });
+      // Recipe ingredients are mapped to the backend's {ingredient, qty, uom} shape.
+      expect(body.params.payload.recipe.ingredients).toEqual([
+        { ingredient: "MANGO", qty: 0.2, uom: "kg" },
+        { ingredient: "MILK", qty: 0.1, uom: "l" },
+      ]);
+      expect(body.params.payload.recipe.waste_allowance_percent).toBe(5);
+    });
+  });
+
+  it("posts an invoice photo to the vision extract route and the confirmed draft to invoice_commit", async () => {
+    const extractSpy = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({ result: { engine: "odoo_pos", configured: true, invoiceProposal: { extractable: true, supplier: { name: "Baghdad Dairy" }, lines: [] } } }),
+    }));
+    await withLiveOdooWindow(extractSpy as unknown as typeof fetch, async () => {
+      const gateway = createSourceOfTruthGateway();
+      const result = await gateway.extractInvoice({ imageBase64: "QUJD", mimeType: "image/jpeg" }) as { invoiceProposal?: { supplier?: { name?: string } } };
+      const [url, init] = extractSpy.mock.calls[0]!;
+      const body = JSON.parse(String(init?.body));
+      expect(String(url)).toMatch(/\/bayaan\/api\/invoice_extract$/);
+      expect(result.invoiceProposal?.supplier?.name).toBe("Baghdad Dairy");
+      expect(body.params.payload).toMatchObject({ image_base64: "QUJD", mimetype: "image/jpeg" });
+    });
+
+    const commitSpy = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({ result: { engine: "odoo_pos", po_id: 77, name: "P00077", state: "purchase", receipt_state: "done" } }),
+    }));
+    await withLiveOdooWindow(commitSpy as unknown as typeof fetch, async () => {
+      const gateway = createSourceOfTruthGateway();
+      const result = await gateway.commitInvoice({
+        supplier: { name: "Baghdad Dairy", address: "Karrada", category: "Dairy" },
+        warehouse: 3,
+        invoiceRef: "INV-9001",
+        invoiceName: "invoice.jpg",
+        invoiceFileBase64: "QUJD",
+        invoiceMimeType: "image/jpeg",
+        lines: [{ productId: "ING-MILK", qty: 12, unitPrice: 1500 }],
+      }) as { po_id?: number; receipt_state?: string };
+      const [url, init] = commitSpy.mock.calls[0]!;
+      const body = JSON.parse(String(init?.body));
+      expect(String(url)).toMatch(/\/bayaan\/api\/invoice_commit$/);
+      expect(result.po_id).toBe(77);
+      expect(result.receipt_state).toBe("done");
+      expect(body.params.payload).toMatchObject({
+        supplier: { name: "Baghdad Dairy", address: "Karrada", category: "Dairy" },
+        warehouse: 3,
+        invoice_ref: "INV-9001",
+        invoice_file: "QUJD",
+      });
+      // Lines map camelCase productId/unitPrice -> backend product_id/unit_price.
+      expect(body.params.payload.lines).toEqual([{ product_id: "ING-MILK", qty: 12, unit_price: 1500 }]);
+    });
+  });
+
   it("streams live AI dashboard text and returns the final source-backed payload", async () => {
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({

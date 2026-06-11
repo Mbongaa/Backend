@@ -92,17 +92,17 @@ async function main() {
     assert(await page.locator(".app-frame").getAttribute("data-theme") === "light", "Light theme did not restore after dark-mode proof");
 
     for (const [nav, expectedText, screenshotName] of [
-      ["AI Insights", ["assistant-ui", "New Thread", /Local preview|Live LLM/, /orders\s+\d+/, /Daily summaries tier/], "exact-admin-ai-insights.png"],
+      ["AI Assistant", ["assistant-ui", "New Thread", /Local preview|Live LLM/, /orders\s+\d+/, /Daily summaries tier/], "exact-admin-ai-insights.png"],
       ["Kiosks", "Active"],
       ["Sales & POS", ["Demo POS orders", "Gateway providers"], "exact-admin-sales-pos.png"],
       ["Warehouses", "Bayaan warehouse topology"],
       ["Stock & Allocation", "Kiosk stock needs", "exact-admin-stock-allocation.png"],
       ["Products & Recipes", ["Recipe cost and margin control", "Demo persistence"], "exact-admin-products-recipes.png"],
-      ["Daily Close", ["Variance loop", "Today's closes", "Digital payments", "Investigation"], "exact-admin-daily-close.png"],
+      ["Daily Close", ["Variance loop", "Daily closes", "Card variance", "Investigation"], "exact-admin-daily-close.png"],
       ["Waste & Loss", ["Waste reason control", "Demo pattern"]],
       ["Purchases & Suppliers", ["Open purchase orders", "Supplier item catalog", "Suppliers"]],
-      ["Staff", ["Cashier performance", "Roster"]],
-      ["Reports", ["Management report pack", "Payment methods", "Iraqi gateway settlement", "Profit & loss", "Export pack"]],
+      ["Staff", ["Roster"]],
+      ["Reports", ["Management report pack", "Payment methods", "Profit & loss", "Export pack"]],
     ]) {
       await navigateAdmin(page, nav);
       const headings = Array.isArray(expectedText) ? expectedText : [expectedText];
@@ -132,6 +132,12 @@ async function main() {
         await expectText(page, "Save");
         await page.getByRole("button", { name: "Cancel" }).click();
       }
+      if (nav === "Staff") {
+        // The Staff screen is tabbed (Team / Schedule & coverage / Payroll & costs);
+        // the cashier-performance card lives on the Payroll tab.
+        await page.getByRole("button", { name: /Payroll & costs/ }).click();
+        await expectText(page, "Cashier performance");
+      }
       if (nav === "Warehouses") {
         await expectText(page, /Central Warehouse[\s\S]*12,340/);
       }
@@ -150,9 +156,10 @@ async function main() {
         await clickStockTransferAction(page, draftId, "Pick");
         await expectStockTransferRow(page, draftId, /picked/i, "stock transfer did not move to picked");
         await clickStockTransferAction(page, draftId, "Dispatch");
+        // Admin/warehouse flow ends at dispatched → "waiting kiosk": by design the KIOSK
+        // confirms receipt (see StudioInventoryWorkspace "Admin creates, warehouse
+        // dispatches, kiosk receives"), so there is no admin-side Receive action here.
         await expectStockTransferRow(page, draftId, /dispatched[\s\S]*waiting kiosk/i, "stock transfer did not move to dispatched waiting-kiosk state");
-        await clickStockTransferAction(page, draftId, "Receive");
-        await expectStockTransferRow(page, draftId, /received/i, "stock transfer did not expose and persist the receive action");
         await page.waitForTimeout(3800);
         await scrollAdminToTop(page);
         await page.screenshot({ path: filePath("exact-admin-stock-transfer-draft.png"), fullPage: true });
@@ -170,8 +177,8 @@ async function main() {
 
     await navigateAdmin(page, "Kiosks");
     await page.locator(".card", { hasText: "Karrada Center" }).first().click();
-    await expectText(page, "Daily stock reconciliation");
-    await expectText(page, "Expected consumed from POS sales");
+    await expectText(page, "Stock on hand");
+    await expectText(page, "Opening today");
     await page.waitForTimeout(900);
     await page.screenshot({ path: filePath("exact-admin-kiosk-current-stock.png"), fullPage: true });
 
@@ -449,7 +456,7 @@ async function smokeLite() {
     "/brand/miza-logo.png",
     "STREAM ACTIVE",
     "Top performers",
-    "AI Insights",
+    "AI Assistant",
     "assistant-ui",
     "Customer-facing display",
     "Step up when ready",
@@ -577,7 +584,7 @@ async function navigateAdmin(page, label) {
 
 function adminSectionId(label) {
   return {
-    "AI Insights": "insights",
+    "AI Assistant": "insights",
     "Kiosks": "kiosks",
     "Sales & POS": "sales",
     "Warehouses": "warehouses",

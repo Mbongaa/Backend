@@ -39,6 +39,16 @@ class BayaanKioskApi(http.Controller):
         if isinstance(code_or_name, int):
             product = Product.browse(code_or_name)
             return product if product.exists() else Product.browse()
+        # The AI catalogReference and several human-confirm draft forms carry the Odoo
+        # product id as a STRING (e.g. "304"). Resolve a digit-only string as an id
+        # first, but fall through to the default_code/barcode/name searches when no
+        # such record exists, so a legitimately numeric default_code/barcode/name still
+        # resolves. Without this, every AI-drafted recipe/invoice line that references
+        # an ingredient by its numeric id raised "Product not found: <id>".
+        if isinstance(code_or_name, str) and code_or_name.strip().isdigit():
+            product = Product.browse(int(code_or_name.strip()))
+            if product.exists():
+                return product
         product = Product.search([("default_code", "=", code_or_name)], limit=1)
         if product:
             return product
@@ -55,6 +65,29 @@ class BayaanKioskApi(http.Controller):
         if not product:
             raise UserError("Product not found: %s" % (code_or_name or "empty value"))
         return product
+
+    def _expand_recipe_component(self, product, qty, uom, _depth=0):
+        """Flatten a recipe component into deductible stock items.
+
+        If the component is itself a kiosk-made ('recipe' mode) product — which has no
+        tracked stock of its own (its finished move is suppressed) — expand it into its
+        active recipe's raw ingredients, scaled by qty, so a combo deducts real stock
+        items instead of a phantom finished product. E.g. a "Cappuccino + Cheesecake"
+        combo deducts coffee/milk/cup + 1 cheesecake, not a stockless "1 Cappuccino".
+        Finished/hybrid/raw components (which DO carry stock) pass through unchanged.
+        Bounded recursion guards against a recipe that references itself in a cycle.
+        Returns a list of (product.product, qty, uom.uom) tuples."""
+        mode = product.product_tmpl_id.bayaan_consumption_mode
+        if _depth < 5 and mode == "recipe":
+            active = request.env["bayaan.recipe"].sudo().get_active_recipe(product, request.env.company)
+            if active and active.line_ids:
+                expanded = []
+                for line in active.line_ids:
+                    expanded += self._expand_recipe_component(
+                        line.ingredient_id, qty * line.qty, line.uom_id, _depth + 1
+                    )
+                return expanded
+        return [(product, qty, uom)]
 
     def _sale_product_refs(self, code_or_name, fallback_name=None):
         refs = []
@@ -546,6 +579,17 @@ class BayaanKioskApi(http.Controller):
         if date_to < date_from:
             raise UserError("HR schedule date_to must be on or after date_from.")
         return date_from, date_to
+
+    def _clean_product_name(self, name):
+        """Strip [bracketed] code/prefix segments from a product name.
+
+        The AI sometimes mimics Odoo's '[CODE] Name' display convention and puts a
+        '[MANGO JUICE]' prefix into the name itself, which then shows in the POS as
+        '[MANGO-JUICE] [MANGO JUICE] Mango Juice'. The stored POS name must be just the
+        human name ('Mango Juice'); the default_code carries the code separately."""
+        import re
+        cleaned = re.sub(r"\[[^\]]*\]", "", str(name or ""))
+        return re.sub(r"\s+", " ", cleaned).strip()
 
     def _unique_product_code(self, code, name):
         base = (code or name or "ITEM").strip()
@@ -1649,11 +1693,25 @@ class BayaanKioskApi(http.Controller):
                 "sourceRefsRequired": ["product.template", "stock.quant", "stock.location"],
                 "explanationStyle": "brief",
             },
+            "catalog-create": {
+                "dataPacks": ["products", "items"],
+                "components": [
+                    {"componentId": "catalog.product_draft", "size": "wide", "mode": "human-confirm", "dataBinding": "products", "title": "Product + recipe draft"},
+                    {"componentId": "items.catalog_table", "size": "full", "mode": "read-only", "dataBinding": "items", "title": "Existing items for reference"},
+                ],
+                "sourceRefsRequired": ["product.template", "bayaan.recipe"],
+                "explanationStyle": "brief",
+            },
         }
 
     def _ai_infer_intent(self, query):
         text = " ".join((query or "").lower().split())
         checks = [
+            # Creation requests win first. The model still has final say on intent
+            # via _ai_validate_provider_plan, and the draft form is non-destructive
+            # (it only ever pre-fills a human-confirmed deterministic route), so a
+            # slightly eager match degrades to "blank draft", never to a wrong write.
+            ("catalog-create", ("create a", "create new", "create product", "create the product", "add a product", "add product", "add new product", "new product", "new menu item", "add menu item", "new drink", "set up a product", "register product", "create recipe", "create a recipe", "build a product", "أضف منتج", "اضف منتج", "اضافة منتج", "إضافة منتج", "منتج جديد", "أنشئ منتج", "انشئ منتج", "صنف جديد", "وصفة جديدة", "أضف صنف", "اضف صنف")),
             ("close-review", ("close", "closing", "variance", "approve", "approval", "counted", "expected", "drawer", "إغلاق", "اغلاق", "فرق", "فروقات", "اعتماد", "معدود", "متوقع", "درج")),
             ("waste-anomaly-review", ("waste", "loss", "spoil", "spoiled", "anomaly", "anomalies", "tossed", "هدر", "خسارة", "شذوذ", "تالف")),
             ("catalog-lookup", ("catalog", "uom", "ingredient", "ingredients", "menu", "كتالوج", "صنف", "أصناف", "مكون", "مكونات", "قائمة")),
@@ -1790,6 +1848,34 @@ class BayaanKioskApi(http.Controller):
             "generatedAt": (bootstrap.get("meta") or {}).get("generated_at") or fields.Datetime.to_string(fields.Datetime.now()),
             "sampleRefs": self._ai_source_sample_refs(row_sources.get(model, [])),
         } for model, count in source_models.items()]
+        catalog_products = bootstrap.get("products") or []
+        catalog_reference = {
+            "ingredients": [
+                {
+                    "id": str(product.get("id")),
+                    "code": product.get("default_code") or "",
+                    "name": product.get("name") or "",
+                    "uom": product.get("uom") or "",
+                    "unitCost": product.get("standard_price") or 0,
+                    "consumptionMode": product.get("consumption_mode") or "",
+                }
+                for product in catalog_products
+                if isinstance(product, dict) and product.get("name")
+            ][:120],
+            "uoms": [
+                {"id": str(uom.id), "name": uom.name}
+                for uom in request.env["uom.uom"].sudo().search([], limit=60)
+            ],
+            "categories": [
+                category.display_name
+                for category in request.env["product.category"].sudo().search([], limit=60)
+            ],
+            "existingProductNames": [
+                product.get("name")
+                for product in catalog_products
+                if isinstance(product, dict) and product.get("name")
+            ][:120],
+        }
         return {
             "engine": "odoo_pos",
             "query": query,
@@ -1811,6 +1897,7 @@ class BayaanKioskApi(http.Controller):
                 "reportPeriods": summary.get("reportPeriods", {}),
             },
             "rows": rows,
+            "catalogReference": catalog_reference,
             "sourceEvidence": source_evidence,
         }
 
@@ -1894,6 +1981,16 @@ class BayaanKioskApi(http.Controller):
             value = default
         return max(0, value)
 
+    def _ai_unlimited(self):
+        """Single switch to run the assistant fully ungated while iterating (no tier
+        limit, no token budget). Production flips this off and sets a real tier +
+        budget. Reads the ir.config_parameter first, then the BAYAAN_AI_UNLIMITED env."""
+        ICP = request.env["ir.config_parameter"].sudo()
+        raw = ICP.get_param("bayaan.ai.unlimited")
+        if raw in (None, False, ""):
+            raw = os.environ.get("BAYAAN_AI_UNLIMITED")
+        return str(raw or "").strip().lower() in ("1", "true", "yes", "on")
+
     def _ai_feature_config(self):
         ICP = request.env["ir.config_parameter"].sudo()
         tier = (
@@ -1901,17 +1998,29 @@ class BayaanKioskApi(http.Controller):
             or os.environ.get("BAYAAN_AI_FEATURE_TIER")
             or "daily-only"
         ).strip().lower()
+        if self._ai_unlimited():
+            tier = "unlimited"
+        # catalog-create is a first-class assistant intent (it has a template and a
+        # human-confirm draft component) — it must be allowed wherever catalog-lookup
+        # is, or "create a product" requests are silently refused before the model runs.
+        operational_intents = [
+            "executive-summary", "kiosk-diagnosis", "waste-anomaly-review", "stock-allocation",
+            "close-review", "recipe-margin-review", "payment-reconciliation", "staff-coaching",
+            "warehouse-topology", "catalog-lookup", "catalog-create",
+        ]
         allowed_time_ranges = {
             "alerts-only": ["today"],
             "daily-only": ["today"],
             "daily-weekly": ["today", "week"],
             "full-chat": ["today", "week", "month", "custom"],
+            "unlimited": ["today", "week", "month", "custom"],
         }
         allowed_intents = {
             "alerts-only": ["waste-anomaly-review", "close-review", "stock-allocation", "payment-reconciliation"],
-            "daily-only": ["executive-summary", "kiosk-diagnosis", "waste-anomaly-review", "stock-allocation", "close-review", "recipe-margin-review", "payment-reconciliation", "staff-coaching", "warehouse-topology", "catalog-lookup"],
-            "daily-weekly": ["executive-summary", "kiosk-diagnosis", "waste-anomaly-review", "stock-allocation", "close-review", "recipe-margin-review", "payment-reconciliation", "staff-coaching", "warehouse-topology", "catalog-lookup"],
-            "full-chat": ["executive-summary", "kiosk-diagnosis", "waste-anomaly-review", "stock-allocation", "close-review", "recipe-margin-review", "payment-reconciliation", "staff-coaching", "warehouse-topology", "catalog-lookup"],
+            "daily-only": operational_intents,
+            "daily-weekly": operational_intents,
+            "full-chat": operational_intents,
+            "unlimited": operational_intents,
         }
         if tier not in allowed_time_ranges:
             tier = "daily-only"
@@ -1919,7 +2028,7 @@ class BayaanKioskApi(http.Controller):
             "tier": tier,
             "allowedTimeRanges": allowed_time_ranges[tier],
             "allowedIntents": allowed_intents[tier],
-            "tokenBudgetRequired": True,
+            "tokenBudgetRequired": not self._ai_unlimited(),
         }
 
     def _ai_usage_period(self):
@@ -2012,6 +2121,10 @@ class BayaanKioskApi(http.Controller):
             return self._ai_budget_payload(period, monthly_budget, current, estimated_request_tokens)
 
     def _ai_provider_guard(self, query, report_pack, plan):
+        # Ungated mode: never tier-limit or budget-block the model. Production flips
+        # bayaan.ai.unlimited off to re-enable the tier + token-budget guards below.
+        if self._ai_unlimited():
+            return None
         feature = self._ai_feature_config()
         estimate = self._ai_estimate_request_tokens(query, report_pack, plan)
         budget = self._ai_budget_snapshot(estimate)
@@ -2084,7 +2197,7 @@ class BayaanKioskApi(http.Controller):
         return {
             "type": "object",
             "additionalProperties": False,
-            "required": ["intent", "scope", "requiredDataPacks", "components", "sourceRefsRequired", "explanationStyle", "summary", "claims", "visualizations"],
+            "required": ["intent", "scope", "requiredDataPacks", "components", "sourceRefsRequired", "explanationStyle", "summary", "claims", "visualizations", "productProposal"],
             "properties": {
                 "intent": {"type": "string", "enum": sorted(templates.keys())},
                 "scope": {
@@ -2110,7 +2223,7 @@ class BayaanKioskApi(http.Controller):
                         "properties": {
                             "componentId": {"type": "string", "enum": component_ids},
                             "size": {"type": "string", "enum": ["small", "medium", "wide", "full"]},
-                            "mode": {"type": "string", "enum": ["read-only", "proposal-only"]},
+                            "mode": {"type": "string", "enum": ["read-only", "proposal-only", "human-confirm"]},
                             "dataBinding": {"type": "string", "enum": data_pack_ids},
                             "title": {"type": "string"},
                         },
@@ -2178,6 +2291,98 @@ class BayaanKioskApi(http.Controller):
                             "sourceRefs": {
                                 "type": "array",
                                 "items": {"type": "string", "enum": source_refs},
+                            },
+                        },
+                    },
+                },
+                # Draft-only product+recipe proposal. The model NEVER writes — this is
+                # a pre-filled suggestion the human edits and confirms, which then calls
+                # the deterministic /product_create_bundle route. Nullable: it is null
+                # for every non-create query. Strict mode requires every key listed in
+                # "required" and additionalProperties False on every object, with
+                # "optional" fields expressed as nullable type unions.
+                "productProposal": {
+                    "type": ["object", "null"],
+                    "additionalProperties": False,
+                    "required": [
+                        "name", "consumptionMode", "uom", "category", "listPrice",
+                        "standardPrice", "availableInPos", "sizes", "modifierGroups",
+                        "recipe", "modeRationale", "ingredientWarnings",
+                    ],
+                    "properties": {
+                        "name": {"type": "string"},
+                        "consumptionMode": {"type": "string", "enum": ["recipe", "finished", "hybrid", "none"]},
+                        "uom": {"type": "string"},
+                        "category": {"type": ["string", "null"]},
+                        "listPrice": {"type": "number"},
+                        "standardPrice": {"type": "number"},
+                        "availableInPos": {"type": "boolean"},
+                        "sizes": {"type": "array", "items": {"type": "string"}},
+                        "modifierGroups": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["name", "selection", "required", "values"],
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "selection": {"type": "string", "enum": ["single", "multi"]},
+                                    "required": {"type": "boolean"},
+                                    "values": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "additionalProperties": False,
+                                            "required": ["name", "priceDelta"],
+                                            "properties": {
+                                                "name": {"type": "string"},
+                                                "priceDelta": {"type": "number"},
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                        "recipe": {
+                            "type": ["object", "null"],
+                            "additionalProperties": False,
+                            "required": ["ingredients", "wasteAllowancePercent"],
+                            "properties": {
+                                "ingredients": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "additionalProperties": False,
+                                        "required": ["ingredientId", "ingredientName", "qty", "uom"],
+                                        "properties": {
+                                            "ingredientId": {"type": "string"},
+                                            "ingredientName": {"type": "string"},
+                                            "qty": {"type": "number"},
+                                            "uom": {"type": "string"},
+                                        },
+                                    },
+                                },
+                                "wasteAllowancePercent": {"type": "number"},
+                            },
+                        },
+                        "modeRationale": {"type": "string"},
+                        # Advisory-only channel: when the user names an ingredient that is
+                        # not in catalogReference, the model flags it here (missing, or
+                        # substituted with the item it actually used) instead of silently
+                        # swapping it in. Surfaced as a banner on the human-confirm form;
+                        # it never reaches the deterministic write path.
+                        "ingredientWarnings": {
+                            "type": ["array", "null"],
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["requested", "status", "substitutedWithCode", "note"],
+                                "properties": {
+                                    "requested": {"type": "string"},
+                                    "status": {"type": "string", "enum": ["missing", "substituted"]},
+                                    "substitutedWithCode": {"type": ["string", "null"]},
+                                    "note": {"type": "string"},
+                                },
                             },
                         },
                     },
@@ -2376,10 +2581,16 @@ class BayaanKioskApi(http.Controller):
             "You, the model, author the visualizations array. Choose only visuals that directly help the user's question; return an empty visualizations array for greetings, capability questions, or when the reportPack does not contain enough evidence. "
             "Every visualization series value must be copied or derived directly from reportPack metrics or rows, and every numeric visualization must include matching sourceRefs from reportPack.sourceEvidence. "
             "The draftPlan and components are compatibility hints only; do not force a dashboard template when the user's question needs a different focused chart, table, ranking, or no visual at all. "
-            "Return ONLY valid JSON. Do not create, approve, update, delete, or execute actions. "
-            "If the user asks you to execute a business action, explain what you can prepare or inspect, but keep action-looking items in proposal-only mode. "
+            "Return ONLY valid JSON. You never create, approve, update, delete, or execute anything — you only read and draft. "
+            "If the user asks you to execute a business action, explain what you can prepare or inspect, and keep action-looking items in proposal-only mode. "
             "Do not make numeric claims unless they are traceable to reportPack.metrics, reportPack.rows, or reportPack.sourceEvidence. "
-            "Keep action-looking items in proposal-only mode."
+            "Set productProposal to null for every request that is not an explicit ask to create a new product. "
+            "When the user explicitly asks to create or add a product (intent catalog-create), fill productProposal as an editable DRAFT for a human to review and confirm — nothing is created until a human confirms it. "
+            "Choose consumptionMode deliberately and justify it in modeRationale: 'recipe' for kiosk-made drinks (juice, coffee) where ingredients are deducted, 'finished' for packaged resale items such as a cake slice, 'hybrid' when both apply, and 'none' for services. "
+            "For a COMBO or BUNDLE that combines existing menu items (e.g. a coffee plus a cake slice sold together), use 'recipe' mode — the combo has NO stock of its own — and list its components in the recipe by referencing each existing product from catalogReference.ingredients (the backend automatically expands a kiosk-made component into its own raw ingredients). Do NOT use 'hybrid' for such a combo; 'hybrid' is only for a single SKU that is itself stocked AND recipe-made. "
+            "Every recipe ingredient must reference an item that exists in reportPack.catalogReference.ingredients (use its code when present, otherwise its id, and a unit from reportPack.catalogReference.uoms); never invent an ingredient, unit, or id. "
+            "If the user names an ingredient that is NOT present in reportPack.catalogReference.ingredients (for example a mango juice when the catalog has no mango), do NOT silently substitute or drop it. Add an entry to ingredientWarnings with the requested name and status 'missing', or status 'substituted' plus substitutedWithCode set to the catalog code you actually used, so the human reviewer is told what was missing and what you did about it. Leave ingredientWarnings null only when every requested ingredient existed in the catalog. "
+            "listPrice, standardPrice, and recipe quantities are editable suggestions for the human, not official figures."
         ) % language["systemInstruction"]
 
     def _ai_openai_body(self, query, report_pack, plan, language, answer_mode, stream=False, model=None, reasoning_effort=None):
@@ -2403,6 +2614,7 @@ class BayaanKioskApi(http.Controller):
                     "claims": "array of numeric claims, each with sourceRefs from reportPack.sourceEvidence",
                     "visualizations": "model-authored array of focused visuals: metric-card, metric-grid, bar-chart, pie-chart, table, rank-list, callout, timeline, or proposal-list. Use empty array when no visual is useful or supported by source evidence.",
                     "summary": "natural assistant response in responseLanguage; for operations, ground it in sourceEvidence",
+                    "productProposal": "null unless the user explicitly asks to create a product; then an editable draft {name, consumptionMode, uom, category, listPrice, standardPrice, availableInPos, sizes, modifierGroups, recipe:{ingredients:[{ingredientId, ingredientName, qty, uom}], wasteAllowancePercent}, modeRationale, ingredientWarnings}; recipe ingredients must come from reportPack.catalogReference; ingredientWarnings flags any requested ingredient missing from the catalog (or what you substituted)",
                 },
             }, ensure_ascii=False, default=str),
             "max_output_tokens": 32000 if reasoning_effort else 2400,
@@ -2492,6 +2704,7 @@ class BayaanKioskApi(http.Controller):
         merged_plan = self._ai_validate_provider_plan(parsed, plan)
         claims = self._ai_validate_provider_claims(parsed.get("claims"), report_pack, merged_plan, fallback=answer_mode != "conversation")
         visualizations = self._ai_validate_provider_visualizations(parsed.get("visualizations"), report_pack)
+        product_proposal = self._ai_validate_product_proposal(parsed.get("productProposal"), report_pack)
         final_budget = self._ai_record_usage(data.get("usage", {}), estimate)
         return {
             "status": "llm_called",
@@ -2508,6 +2721,7 @@ class BayaanKioskApi(http.Controller):
             "budget": final_budget,
             "claims": claims,
             "visualizations": visualizations,
+            "productProposal": product_proposal,
             "explanation": parsed.get("summary") or parsed.get("explanation") or "",
         }
 
@@ -2517,22 +2731,25 @@ class BayaanKioskApi(http.Controller):
         templates = self._ai_plan_templates()
         intent = candidate.get("intent") if candidate.get("intent") in templates else fallback_plan["intent"]
         template = templates[intent]
-        allowed_components = {component["componentId"] for component in template["components"]}
+        # The interaction mode is the template's, never the model's. The model can
+        # pick which whitelisted components to show, but it cannot promote a card to
+        # a write-capable mode — only the template grants "human-confirm", and only to
+        # catalog.product_draft. This keeps the guardrail server-authoritative.
+        template_modes = {component["componentId"]: component["mode"] for component in template["components"]}
         components = []
         for component in candidate.get("components") or []:
             if not isinstance(component, dict):
                 continue
-            if component.get("componentId") not in allowed_components:
-                continue
-            if component.get("mode") == "human-action":
+            component_id = component.get("componentId")
+            if component_id not in template_modes:
                 continue
             data_binding = component.get("dataBinding")
             if data_binding not in template["dataPacks"]:
                 data_binding = template["dataPacks"][0]
             components.append({
-                "componentId": component.get("componentId"),
+                "componentId": component_id,
                 "size": component.get("size") if component.get("size") in ("small", "medium", "wide", "full") else "wide",
-                "mode": component.get("mode") if component.get("mode") in ("read-only", "proposal-only") else "read-only",
+                "mode": template_modes[component_id],
                 "dataBinding": data_binding,
                 "title": str(component.get("title") or "")[:120],
             })
@@ -2554,6 +2771,342 @@ class BayaanKioskApi(http.Controller):
             "sourceRefsRequired": template["sourceRefsRequired"],
             "explanationStyle": candidate.get("explanationStyle") if candidate.get("explanationStyle") in ("brief", "diagnostic", "audit") else template["explanationStyle"],
         }
+
+    def _ai_validate_product_proposal(self, proposal, report_pack):
+        """Sanitize the model's draft product+recipe proposal.
+
+        This is a DRAFT a human edits and confirms — it never writes here. We only
+        (a) blank it entirely when a recipe line references an ingredient or unit the
+        model was not shown in catalogReference (so a hallucinated ingredient can
+        never reach the confirm form), and (b) coerce types. Prices/quantities are
+        passthrough suggestions, never validated as official figures. Returns the
+        cleaned proposal dict, or None when there is no usable draft."""
+        if not isinstance(proposal, dict):
+            return None
+        name = self._clean_product_name(proposal.get("name"))
+        if not name:
+            return None
+        catalog = report_pack.get("catalogReference") or {}
+        ingredient_index = {}
+        for item in catalog.get("ingredients") or []:
+            if not isinstance(item, dict):
+                continue
+            for key in ("id", "code", "name"):
+                token = str(item.get(key) or "").strip().lower()
+                if token:
+                    ingredient_index[token] = item
+        uom_names = {str(uom.get("name") or "").strip().lower() for uom in catalog.get("uoms") or []}
+        uom_names.discard("")
+
+        mode = proposal.get("consumptionMode")
+        if mode not in ("recipe", "finished", "hybrid", "none"):
+            mode = "recipe"
+
+        recipe = proposal.get("recipe")
+        clean_recipe = None
+        # Advisory-only: ingredients/units the model could not ground in the catalog,
+        # plus the model's own missing/substituted flags. Surfaced as a banner on the
+        # human-confirm form; never written.
+        warnings = []
+        if isinstance(recipe, dict):
+            ingredients = []
+            for line in recipe.get("ingredients") or []:
+                if not isinstance(line, dict):
+                    continue
+                requested = str(line.get("ingredientName") or line.get("ingredientId") or "").strip()
+                ref = str(line.get("ingredientId") or line.get("ingredientName") or "").strip().lower()
+                match = ingredient_index.get(ref)
+                if not match:
+                    # Drop just this line and warn, instead of nuking the whole draft, so
+                    # the rest of the proposal still reaches the human-confirm form. The
+                    # dropped (possibly hallucinated) line never reaches the write path.
+                    warnings.append({
+                        "requested": requested or "(unknown)",
+                        "status": "missing",
+                        "substitutedWithCode": None,
+                        "note": "Not found in the catalog; dropped from the draft recipe.",
+                    })
+                    continue
+                line_uom = str(line.get("uom") or match.get("uom") or "").strip()
+                if uom_names and line_uom and line_uom.lower() not in uom_names:
+                    warnings.append({
+                        "requested": requested or (match.get("name") or ""),
+                        "status": "missing",
+                        "substitutedWithCode": None,
+                        "note": "Unit '%s' is not a known unit; line dropped." % line_uom,
+                    })
+                    continue
+                ingredients.append({
+                    "ingredientId": str(match.get("id") or ""),
+                    "ingredientCode": match.get("code") or "",
+                    "ingredientName": match.get("name") or "",
+                    "qty": self._float_value(line.get("qty"), 0.0),
+                    "uom": line_uom or match.get("uom") or "",
+                })
+            if ingredients:
+                clean_recipe = {
+                    "ingredients": ingredients,
+                    "wasteAllowancePercent": self._float_value(recipe.get("wasteAllowancePercent"), 0.0),
+                }
+
+        # Merge the model's own missing/substituted-ingredient flags. A substitution that
+        # points at an item the model was not shown is downgraded to a plain 'missing'.
+        for entry in proposal.get("ingredientWarnings") or []:
+            if not isinstance(entry, dict):
+                continue
+            status = str(entry.get("status") or "").strip().lower()
+            if status not in ("missing", "substituted"):
+                continue
+            sub_code = entry.get("substitutedWithCode")
+            sub_code = str(sub_code).strip() if sub_code else ""
+            if sub_code and sub_code.lower() not in ingredient_index:
+                sub_code = ""
+                status = "missing"
+            warnings.append({
+                "requested": (str(entry.get("requested") or "").strip()[:120]) or "(unspecified)",
+                "status": status,
+                "substitutedWithCode": sub_code or None,
+                "note": str(entry.get("note") or "").strip()[:240],
+            })
+
+        product_uom = str(proposal.get("uom") or "").strip()
+        if uom_names and product_uom and product_uom.lower() not in uom_names:
+            product_uom = ""  # unknown display unit is cosmetic; form falls back to a default
+        sizes = [str(size).strip() for size in (proposal.get("sizes") or []) if str(size).strip()]
+        modifier_groups = proposal.get("modifierGroups") if isinstance(proposal.get("modifierGroups"), list) else []
+
+        return {
+            "name": name,
+            "consumptionMode": mode,
+            "uom": product_uom,
+            "category": str(proposal.get("category")).strip() if proposal.get("category") else "",
+            "listPrice": self._float_value(proposal.get("listPrice"), 0.0),
+            "standardPrice": self._float_value(proposal.get("standardPrice"), 0.0),
+            "availableInPos": bool(proposal.get("availableInPos", True)),
+            "sizes": sizes,
+            "modifierGroups": modifier_groups,
+            "recipe": clean_recipe,
+            "modeRationale": str(proposal.get("modeRationale") or "").strip(),
+            "ingredientWarnings": warnings,
+        }
+
+    # --- Invoice vision extraction --------------------------------------------
+    # The AI reads a supplier invoice photo and TRANSCRIBES it into an editable
+    # draft (invoiceProposal). It never writes and never computes official numbers
+    # — the human verifies every figure against the shown image, and the
+    # deterministic /invoice_commit route does the actual supplier+PO+receipt.
+
+    def _ai_invoice_schema(self):
+        """Strict structured-output schema. Strict mode requires every key in
+        `required` and additionalProperties False on every object; "optional"
+        fields are nullable type unions. `extractable` lets the model signal an
+        unreadable image instead of hallucinating a draft."""
+        nullable_string = {"type": ["string", "null"]}
+        nullable_number = {"type": ["number", "null"]}
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["extractable", "supplier", "invoiceRef", "invoiceDate", "currency", "warehouseHint", "lines", "totals", "notes"],
+            "properties": {
+                "extractable": {"type": "boolean"},
+                "supplier": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["name", "address", "category"],
+                    "properties": {
+                        "name": nullable_string,
+                        "address": nullable_string,
+                        "category": nullable_string,
+                    },
+                },
+                "invoiceRef": nullable_string,
+                "invoiceDate": nullable_string,
+                "currency": nullable_string,
+                "warehouseHint": nullable_string,
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["description", "matchedProductCode", "qty", "unitPrice"],
+                        "properties": {
+                            "description": nullable_string,
+                            "matchedProductCode": nullable_string,
+                            "qty": nullable_number,
+                            "unitPrice": nullable_number,
+                        },
+                    },
+                },
+                "totals": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["subtotal", "tax", "total"],
+                    "properties": {
+                        "subtotal": nullable_number,
+                        "tax": nullable_number,
+                        "total": nullable_number,
+                    },
+                },
+                "notes": nullable_string,
+            },
+        }
+
+    def _ai_invoice_catalog(self, limit=300):
+        """Compact purchasable-product catalog for the vision prompt, plus a
+        code/name -> product index the server uses to re-validate the model's
+        matchedProductCode (so a hallucinated code can never reach a receipt)."""
+        Product = request.env["product.product"].sudo()
+        products = Product.search([("company_id", "in", [False, request.env.company.id])], limit=limit)
+        catalog = []
+        index = {}
+        for product in products:
+            name = product.display_name or product.name or ""
+            if not name:
+                continue
+            code = product.default_code or ""
+            catalog.append({"code": code, "name": name, "uom": product.uom_id.name or ""})
+            if code:
+                index[code.strip().lower()] = product
+            index[name.strip().lower()] = product
+        return catalog, index
+
+    def _ai_openai_vision_body(self, image_data_url, catalog):
+        config = self._ai_provider_config()
+        instructions = (
+            "You are Bayaan's invoice reader for an F&B kiosk operating system. "
+            "Read the supplied supplier invoice image and TRANSCRIBE it into the JSON schema. "
+            "Transcribe exactly what you see; never invent or compute values. "
+            "If the image is not a readable supplier invoice, set extractable to false and leave fields null. "
+            "For each line, set matchedProductCode to the code of the catalog product that best matches the line description, or null if none matches. Never invent a code. "
+            "All numbers are drafts a human will verify against the image; never compute, round, or 'fix' totals."
+        )
+        task = json.dumps({
+            "task": "Extract this supplier invoice into the invoiceProposal schema.",
+            "catalog": catalog,
+        }, ensure_ascii=False, default=str)
+        return {
+            "model": config["model"],
+            "instructions": instructions,
+            "input": [{
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": task},
+                    {"type": "input_image", "image_url": image_data_url},
+                ],
+            }],
+            "max_output_tokens": 4000,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "bayaan_invoice_proposal",
+                    "strict": True,
+                    "schema": self._ai_invoice_schema(),
+                },
+            },
+        }
+
+    def _ai_call_invoice_extract(self, image_data_url, catalog):
+        config = self._ai_provider_config()
+        body = self._ai_openai_vision_body(image_data_url, catalog)
+        response = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": "Bearer %s" % config["api_key"],
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=120,
+        )
+        response.raise_for_status()
+        data = response.json()
+        text = self._ai_openai_output_text(data)
+        parsed = json.loads(text) if text else {}
+        return parsed, data.get("usage", {})
+
+    def _ai_validate_invoice_proposal(self, proposal, catalog_index):
+        """Sanitize the transcribed invoice. Resolve each line's matchedProductCode
+        against the real catalog (-> productId or None; blank-on-unknown, never
+        invent). Numbers pass through as editable drafts. Returns None for an
+        unreadable image."""
+        if not isinstance(proposal, dict):
+            return None
+        if proposal.get("extractable") is False:
+            return {"extractable": False, "supplier": {}, "lines": [], "totals": {}, "invoiceRef": "", "invoiceDate": "", "currency": "", "warehouseHint": "", "notes": str(proposal.get("notes") or "").strip()}
+
+        supplier = proposal.get("supplier") if isinstance(proposal.get("supplier"), dict) else {}
+        lines = []
+        for line in proposal.get("lines") or []:
+            if not isinstance(line, dict):
+                continue
+            code = str(line.get("matchedProductCode") or "").strip().lower()
+            match = catalog_index.get(code) if code else None
+            lines.append({
+                "description": str(line.get("description") or "").strip(),
+                "matchedProductId": str(match.id) if match else "",
+                "matchedProductName": (match.display_name if match else ""),
+                "matchedProductCode": (match.default_code or "") if match else "",
+                "qty": self._float_value(line.get("qty"), 0.0),
+                "unitPrice": self._float_value(line.get("unitPrice"), 0.0),
+            })
+        totals = proposal.get("totals") if isinstance(proposal.get("totals"), dict) else {}
+        return {
+            "extractable": True,
+            "supplier": {
+                "name": str(supplier.get("name") or "").strip(),
+                "address": str(supplier.get("address") or "").strip(),
+                "category": str(supplier.get("category") or "").strip(),
+            },
+            "invoiceRef": str(proposal.get("invoiceRef") or "").strip(),
+            "invoiceDate": str(proposal.get("invoiceDate") or "").strip(),
+            "currency": str(proposal.get("currency") or "").strip(),
+            "warehouseHint": str(proposal.get("warehouseHint") or "").strip(),
+            "lines": lines,
+            "totals": {
+                "subtotal": self._float_value(totals.get("subtotal"), 0.0),
+                "tax": self._float_value(totals.get("tax"), 0.0),
+                "total": self._float_value(totals.get("total"), 0.0),
+            },
+            "notes": str(proposal.get("notes") or "").strip(),
+        }
+
+    @http.route("/bayaan/api/invoice_extract", type="jsonrpc", auth="user")
+    def invoice_extract(self, **kwargs):
+        """Vision read of a supplier invoice photo -> editable draft. Read-only:
+        creates nothing, just transcribes for the human to confirm via
+        /invoice_commit."""
+        self._require_procurement_scope()
+        payload = self._payload(kwargs)
+        image_b64 = payload.get("image_base64") or payload.get("imageBase64") or ""
+        mimetype = payload.get("mimetype") or payload.get("mimeType") or "image/jpeg"
+        if not image_b64:
+            raise UserError("An invoice image is required.")
+        config = self._ai_provider_config()
+        if not config["configured"]:
+            return {"engine": "odoo_pos", "configured": False, "invoiceProposal": None,
+                    "error": "AI provider credentials are not configured."}
+        budget = self._ai_budget_snapshot()
+        if budget.get("status") == "exhausted" and not self._ai_unlimited():
+            return {"engine": "odoo_pos", "configured": True, "invoiceProposal": None,
+                    "budget": budget, "error": "Monthly AI token budget is exhausted."}
+        data_url = image_b64 if image_b64.startswith("data:") else "data:%s;base64,%s" % (mimetype, image_b64)
+        catalog, catalog_index = self._ai_invoice_catalog()
+        try:
+            parsed, usage = self._ai_call_invoice_extract(data_url, catalog)
+        except Exception:
+            _logger.exception("Bayaan invoice extract failed.")
+            return {"engine": "odoo_pos", "configured": True, "invoiceProposal": None,
+                    "error": "Could not read the invoice. Try a clearer photo."}
+        proposal = self._ai_validate_invoice_proposal(parsed, catalog_index)
+        budget = self._ai_record_usage(usage, 0)
+        self._audit_event(
+            "ai",
+            "invoice.extracted",
+            "Invoice scanned for draft review",
+            "%s line(s)" % len(proposal.get("lines") or []) if proposal else "no draft",
+            severity="info",
+            payload={"mimetype": mimetype},
+        )
+        return {"engine": "odoo_pos", "configured": True, "invoiceProposal": proposal, "budget": budget}
 
     def _ai_dashboard_response(self, query, locale, plan, report_pack, provider_result, audit=True, event_name="ai_dashboard_plan"):
         if audit:
@@ -2597,6 +3150,7 @@ class BayaanKioskApi(http.Controller):
             "budget": provider_result.get("budget") or self._ai_budget_snapshot(),
             "claims": provider_result["claims"] if "claims" in provider_result else self._ai_deterministic_claims(report_pack, provider_result.get("plan", plan)),
             "visualizations": provider_result.get("visualizations") or [],
+            "productProposal": provider_result.get("productProposal"),
             "reportPack": report_pack,
             "sourceEvidence": report_pack["sourceEvidence"],
         }
@@ -2747,6 +3301,7 @@ class BayaanKioskApi(http.Controller):
         merged_plan = self._ai_validate_provider_plan(parsed, plan)
         claims = self._ai_validate_provider_claims(parsed.get("claims"), report_pack, merged_plan, fallback=answer_mode != "conversation")
         visualizations = self._ai_validate_provider_visualizations(parsed.get("visualizations"), report_pack)
+        product_proposal = self._ai_validate_product_proposal(parsed.get("productProposal"), report_pack)
         usage = completed_response.get("usage", {}) if isinstance(completed_response, dict) else {}
         try:
             final_budget = self._ai_record_usage_from_registry(
@@ -2776,6 +3331,7 @@ class BayaanKioskApi(http.Controller):
             "budget": final_budget,
             "claims": claims,
             "visualizations": visualizations,
+            "productProposal": product_proposal,
             "explanation": parsed.get("summary") or parsed.get("explanation") or "",
         }
         yield "final", self._ai_dashboard_response(query, locale, plan, report_pack, provider_result, audit=False)
@@ -3327,8 +3883,8 @@ class BayaanKioskApi(http.Controller):
         if employee.kiosk_id:
             self._require_kiosk_scope(employee.kiosk_id, "shift_close")
         Attendance = request.env["bayaan.attendance"].sudo()
-        check_in = payload.get("check_in") or payload.get("checkIn") or fields.Datetime.now()
-        check_out = payload.get("check_out") or payload.get("checkOut")
+        check_in = self._client_user_datetime(payload.get("check_in") or payload.get("checkIn")) or fields.Datetime.now()
+        check_out = self._client_user_datetime(payload.get("check_out") or payload.get("checkOut"))
         manual_hours = self._float_value(payload.get("manual_hours") or payload.get("manualHours"), 0.0)
         note = payload.get("note")
         attendance = Attendance.search([
@@ -3407,6 +3963,66 @@ class BayaanKioskApi(http.Controller):
             payload=payload,
         )
         return self._serialize_operating_expense(expense)
+
+    def _serialize_finance_adjustment(self, adjustment):
+        return {
+            "id": adjustment.id,
+            "date": fields.Date.to_string(adjustment.date),
+            "category": adjustment.category,
+            "amount": adjustment.amount,
+            "note": adjustment.note or "",
+            "createdBy": adjustment.created_by_id.name,
+        }
+
+    @http.route("/bayaan/api/finance_adjustment", type="jsonrpc", auth="user")
+    def finance_adjustment(self, **kwargs):
+        payload = self._payload(kwargs)
+        Adjustment = request.env["bayaan.finance.adjustment"].sudo()
+        action = (payload.get("action") or payload.get("type") or "").lower()
+        # List when explicitly requested or when no adjustment fields are supplied.
+        is_list = action in ("read", "list") or (
+            not action and not payload.get("category") and not payload.get("amount")
+        )
+        if is_list:
+            if not (self._is_bayaan_manager() or self._is_bayaan_accountant()):
+                raise UserError("Only Bayaan managers or accountants can read finance adjustments.")
+            today = fields.Date.context_today(request.env.user)
+            date_from = payload.get("date_from") or payload.get("dateFrom") or today.replace(day=1)
+            rows = Adjustment.search([
+                ("company_id", "=", request.env.company.id),
+                ("date", ">=", date_from),
+            ], order="date desc, id desc", limit=200)
+            return {"adjustments": [self._serialize_finance_adjustment(row) for row in rows]}
+        if action in ("delete", "remove"):
+            self._require_manager_scope("delete finance adjustments")
+            row = Adjustment.browse(int(payload.get("id") or 0))
+            if not row.exists() or row.company_id != request.env.company:
+                raise UserError("Finance adjustment not found.")
+            self._audit_event("finance", "adjustment.deleted", "Finance adjustment removed: %s" % row.name,
+                              row.category, record=row, severity="warning", payload=payload)
+            row.unlink()
+            return {"deleted": True}
+        # default: create
+        self._require_manager_scope("record finance adjustments")
+        category = (payload.get("category") or "").lower()
+        if category not in ("revenue", "cogs", "waste_loss", "other"):
+            raise UserError("Unsupported finance adjustment category: %s" % (category or "empty value"))
+        amount = self._float_value(payload.get("amount"), 0.0)
+        if not amount:
+            raise UserError("Finance adjustment amount cannot be zero.")
+        note = (payload.get("note") or payload.get("reason") or "").strip()
+        if not note:
+            raise UserError("Finance adjustment needs a reason.")
+        adjustment = Adjustment.create({
+            "date": payload.get("date") or fields.Date.context_today(request.env.user),
+            "category": category,
+            "amount": amount,
+            "note": note,
+            "company_id": request.env.company.id,
+        })
+        self._audit_event("finance", "adjustment.created", "Finance adjustment: %s" % adjustment.name,
+                          "%s %.0f" % (category, amount), record=adjustment, severity="warning", payload=payload)
+        return self._serialize_finance_adjustment(adjustment)
 
     @http.route("/bayaan/api/hr_schedule", type="jsonrpc", auth="user")
     def hr_schedule(self, **kwargs):
@@ -3999,6 +4615,129 @@ class BayaanKioskApi(http.Controller):
             "product": self._serialize_stock_item(product),
         }
 
+    @http.route("/bayaan/api/product_create_bundle", type="jsonrpc", auth="user")
+    def product_create_bundle(self, **kwargs):
+        """AI-drafted, human-confirmed product + recipe creation (single transaction).
+
+        This is the only write path for the AI Insights "create product" workflow.
+        The AI never calls it — the human-confirmed draft card does. Product and
+        recipe are created in ONE Odoo transaction, so any error (e.g. a bad recipe
+        line) rolls back BOTH and never leaves an orphan product flagged
+        missing_recipe; it emits a single audit event. The chosen consumption_mode is
+        respected rather than force-set, so 'finished'/'none' products skip the recipe
+        while 'recipe'/'hybrid' products require one. Guarded by both procurement and
+        manager scope, the same deterministic guards the individual create routes use."""
+        self._require_procurement_scope()
+        self._require_manager_scope("create products with recipes")
+        payload = self._payload(kwargs)
+        name = self._clean_product_name(payload.get("name"))
+        if not name:
+            raise UserError("Product name is required.")
+
+        mode = payload.get("consumption_mode") or payload.get("consumptionMode") or "recipe"
+        if mode not in ("recipe", "finished", "hybrid", "none"):
+            raise UserError("Invalid Bayaan consumption mode: %s" % mode)
+
+        recipe_payload = payload.get("recipe") if isinstance(payload.get("recipe"), dict) else {}
+        ingredients = recipe_payload.get("ingredients") or payload.get("ingredients") or []
+        if mode in ("recipe", "hybrid") and not ingredients:
+            raise UserError("A %s product needs at least one recipe ingredient." % mode)
+
+        # Product template — mirrors product_catalog's value-building helpers so the
+        # created record is identical to one made through the normal catalog route.
+        category = request.env.ref("product.product_category_all", raise_if_not_found=False)
+        category_name = (payload.get("category") or "").strip()
+        if category_name:
+            category = request.env["product.category"].sudo().search([("name", "=", category_name)], limit=1)
+            if not category:
+                category = request.env["product.category"].sudo().create({"name": category_name})
+
+        uom = self._uom(payload.get("uom"), request.env.ref("uom.product_uom_unit"))
+        values = {
+            "name": name,
+            "list_price": self._float_value(payload.get("list_price") or payload.get("listPrice"), 0.0),
+            "standard_price": self._float_value(payload.get("standard_price") or payload.get("standardPrice"), 0.0),
+            "available_in_pos": payload.get("available_in_pos", payload.get("availableInPos", True)),
+            "bayaan_consumption_mode": mode,
+            "uom_id": uom.id,
+            "type": "consu",
+            "is_storable": True,
+            "company_id": request.env.company.id,
+            "default_code": self._unique_product_code(payload.get("code") or payload.get("default_code"), name),
+        }
+        values.update(self._stock_plan_payload_values(payload, include_defaults=True))
+        if category:
+            values["categ_id"] = category.id
+        image_value = self._product_image_value(payload)
+        if image_value is not None:
+            values["image_1920"] = image_value
+        pos_options_value = self._pos_options_value(payload)
+        if pos_options_value is not None:
+            values["bayaan_pos_options"] = pos_options_value
+
+        template = request.env["product.template"].sudo().create(values)
+        product = template.product_variant_id
+
+        # Recipe — same transaction, same logic as /recipe_version, but the chosen
+        # mode is preserved (recipe_version force-sets 'recipe'; the bundle must not).
+        recipe = request.env["bayaan.recipe"].sudo().browse()
+        if ingredients:
+            recipe_lines = []
+            for line in ingredients:
+                if not isinstance(line, dict):
+                    continue
+                ingredient = self._require_product(line.get("ingredient") or line.get("ingredientId"))
+                qty = self._float_value(line.get("qty"))
+                if qty <= 0:
+                    raise UserError("Recipe quantity must be greater than zero for %s." % ingredient.display_name)
+                uom = self._uom(line.get("uom"), ingredient.uom_id)
+                # Expand a kiosk-made component (e.g. a combo that lists "Cappuccino") into
+                # its raw ingredients so the product deducts real stock items, not another
+                # product that has no stock of its own. Finished/raw components pass through.
+                for comp, comp_qty, comp_uom in self._expand_recipe_component(ingredient, qty, uom):
+                    recipe_lines.append((0, 0, {
+                        "ingredient_id": comp.id,
+                        "qty": comp_qty,
+                        "uom_id": comp_uom.id,
+                    }))
+            if not recipe_lines:
+                raise UserError("A Bayaan recipe needs at least one valid ingredient.")
+            recipe = request.env["bayaan.recipe"].sudo().create({
+                "product_id": product.id,
+                "version_label": recipe_payload.get("version") or payload.get("version") or "v1",
+                "effective_from": (
+                    recipe_payload.get("effectiveFrom") or recipe_payload.get("effective_from")
+                    or payload.get("effective_from") or fields.Datetime.now()
+                ),
+                "waste_allowance_percent": (
+                    recipe_payload.get("wasteAllowancePercent")
+                    or recipe_payload.get("waste_allowance_percent") or 0
+                ),
+                "line_ids": recipe_lines,
+            })
+            if payload.get("submit", True):
+                recipe.action_activate()
+
+        self._audit_event(
+            "catalog",
+            "product.bundle_created",
+            "Product created with recipe: %s" % product.display_name,
+            "Mode %s, %s ingredient line(s), POS %s" % (
+                mode, len(recipe.line_ids) if recipe else 0, product.available_in_pos,
+            ),
+            record=product,
+            severity="success",
+            payload=payload,
+        )
+        return {
+            "engine": "odoo_pos",
+            "product": self._serialize_stock_item(product),
+            "product_id": product.id,
+            "recipe_id": recipe.id if recipe else False,
+            "recipe_state": recipe.state if recipe else "",
+            "estimated_unit_cost": recipe.estimated_unit_cost if recipe else 0.0,
+        }
+
     def _bayaan_local_datetime(self, value):
         """Single timezone authority for every UI-facing timestamp.
 
@@ -4011,6 +4750,107 @@ class BayaanKioskApi(http.Controller):
         if not value:
             return False
         return fields.Datetime.to_string(fields.Datetime.context_timestamp(request.env.user, value))
+
+    def _serialize_shift_close(self, close, waste_cost=0.0, payment_totals=None):
+        """Single source for the close-row shape used by both chain_bootstrap
+        and the shift_close_history route, so today's close and historical
+        closes render identically in the UI. ``payment_totals`` (the cash /
+        digital / card split) and ``waste_cost`` are passed in by the caller
+        that already has them batched; every other field is derived from the
+        close record itself, keeping this method request-context-light."""
+        payment_totals = payment_totals or {}
+
+        def _status(record):
+            if record.manager_review_state == "approved":
+                return "approved"
+            if record.manager_review_state == "rejected":
+                return "issue"
+            if record.funds_uncounted:
+                return "issue"
+            if not record.closed_at:
+                return "open"
+            has_cash_variance = bool(record.cash_variance)
+            has_stock_variance = any(line.variance_qty for line in record.stock_count_line_ids)
+            return "issue" if has_cash_variance or has_stock_variance else "pending"
+
+        def _investigation(record):
+            if record.manager_review_state == "approved":
+                return "Approved by %s" % (record.manager_reviewed_by_id.name or "manager")
+            if record.manager_review_state == "rejected":
+                return "Rejected - investigation open"
+            if record.funds_uncounted:
+                return "Auto-closed - funds not counted"
+            if not record.closed_at:
+                return "Waiting for count"
+            if record.investigation_status == "open":
+                return "Investigation open"
+            return "Manager review" if _status(record) == "pending" else "Investigation open"
+
+        def _notes(record):
+            if record.manager_note:
+                return record.manager_note
+            snapshot = record.stock_count_json if isinstance(record.stock_count_json, dict) else {}
+            return snapshot.get("manager_notes") or snapshot.get("notes") or ""
+
+        recipe_issue_orders = close.pos_order_ids.filtered(
+            lambda order: order.bayaan_consumption_state in ("missing_recipe", "failed")
+        )
+        opened_local = self._bayaan_local_datetime(close.opened_at)
+        return {
+            "id": close.id,
+            "name": close.name,
+            "date": (opened_local or "")[:10] or False,
+            "kioskId": close.kiosk_id.kiosk_code,
+            "kioskName": close.kiosk_id.name,
+            "city": close.kiosk_id.city,
+            "cashier": close.cashier_id.name,
+            "openedAt": opened_local,
+            "closedAt": self._bayaan_local_datetime(close.closed_at),
+            "sales": sum(close.pos_order_ids.mapped("amount_total")),
+            "expectedCash": close.expected_cash,
+            "countedCash": close.actual_cash,
+            "cashVariance": close.cash_variance,
+            "cashPayments": payment_totals.get("cash", 0.0),
+            "digitalPayments": payment_totals.get("digital", 0.0),
+            "expectedCard": close.expected_card or payment_totals.get("card", payment_totals.get("digital", 0.0)),
+            "countedCard": close.actual_card,
+            "cardVariance": close.card_variance,
+            "wasteCost": waste_cost,
+            "status": _status(close),
+            "investigationStatus": _investigation(close),
+            "notes": _notes(close),
+            "managerReviewState": close.manager_review_state,
+            "autoClosed": close.auto_closed,
+            "fundsUncounted": close.funds_uncounted,
+            "managerReviewedBy": close.manager_reviewed_by_id.name,
+            "managerReviewedAt": self._bayaan_local_datetime(close.manager_reviewed_at),
+            "recipePostingIssues": len(recipe_issue_orders),
+            "recipePostingIssueOrders": recipe_issue_orders.mapped("name")[:5],
+            "stock": [{
+                "item": line.product_id.display_name,
+                "unit": line.uom_id.name,
+                "expected": line.expected_qty,
+                "actual": line.actual_qty,
+                "variance": line.variance_qty,
+                "value": line.variance_qty * line.product_id.standard_price,
+            } for line in close.stock_count_line_ids],
+            # The authoritative variance-loop inputs for THIS close's window
+            # (opening + received - consumed - waste = expected), computed at
+            # close time by _populate_ingredient_variance. The UI must render
+            # these instead of re-deriving from today's snapshot.
+            "varianceInputs": [{
+                "item": line.ingredient_id.display_name,
+                "unit": line.uom_id.name,
+                "opening": line.opening_qty,
+                "received": line.received_qty,
+                "consumed": line.consumed_qty,
+                "waste": line.waste_qty,
+                "expected": line.expected_qty,
+                "actual": line.actual_qty,
+                "variance": line.variance_qty,
+                "value": line.variance_value,
+            } for line in close.ingredient_variance_line_ids],
+        }
 
     @http.route("/bayaan/api/chain_bootstrap", type="jsonrpc", auth="user")
     def chain_bootstrap(self, **kwargs):
@@ -4039,6 +4879,7 @@ class BayaanKioskApi(http.Controller):
         Attendance = request.env["bayaan.attendance"].sudo()
         Adjustment = request.env["bayaan.payroll.adjustment"].sudo()
         Expense = request.env["bayaan.operating.expense"].sudo()
+        FinanceAdjustment = request.env["bayaan.finance.adjustment"].sudo()
         Employee = request.env["bayaan.employee"].sudo()
         can_read_chain = self._is_chain_read_user()
 
@@ -4529,14 +5370,13 @@ class BayaanKioskApi(http.Controller):
             ("estimated_cost", ">", 50000),
         ])
 
-        week_start = today_start - timedelta(days=today_start.weekday())
-        month_start = today_start.replace(day=1)
-        year_start = today_start.replace(month=1, day=1)
-
-        def report_period_summary(start, end):
-            start_date = start.date()
-            end_date = end.date()
-            end_inclusive = end_date - timedelta(days=1)
+        def report_period_summary(start_date, end_inclusive):
+            # start_date / end_inclusive are Baghdad-local dates; convert to the matching
+            # UTC instants so the datetime domains line up with the local calendar day
+            # (otherwise the week/month start lands one day early in UTC and drops a day).
+            start = self._report_datetime(start_date, None)
+            end = self._report_datetime(end_inclusive, None, end_of_day=True)
+            end_date = end_inclusive + timedelta(days=1)
             period_sale_domain = [
                 ("company_id", "=", company.id),
                 ("state", "in", ["paid", "done", "invoiced"]),
@@ -4604,27 +5444,90 @@ class BayaanKioskApi(http.Controller):
             period_stock_variance = read_group_sum(ShiftClose, period_closing_domain, "ingredient_variance_value")
             period_variance_impact = period_cash_variance + period_stock_variance
             period_expenses = read_group_sum(Expense, period_expense_domain, "amount")
-            payroll_runs = PayrollRun.search(period_payroll_domain)
-            period_payroll = 0.0
-            payroll_covered_ranges = []
-            for payroll_run in payroll_runs:
-                run_days = max((payroll_run.date_to - payroll_run.date_from).days + 1, 1)
-                overlap_from = max(payroll_run.date_from, start_date)
-                overlap_to = min(payroll_run.date_to, end_inclusive)
-                overlap_days = max((overlap_to - overlap_from).days + 1, 0)
-                period_payroll += payroll_run.total_net * (overlap_days / run_days)
-                if overlap_days:
-                    payroll_covered_ranges.append((overlap_from, overlap_to))
-            uncovered_payroll_ranges = uncovered_date_ranges(start_date, end_inclusive, payroll_covered_ranges)
-            if uncovered_payroll_ranges:
-                period_payroll += salary_accrual_for_ranges(uncovered_payroll_ranges)
-                period_payroll += approved_adjustment_impact_for_ranges(
-                    period_adjustment_scope_domain,
-                    uncovered_payroll_ranges,
-                )
+            # Finance payroll cost for the period = each active employee's monthly salary
+            # prorated over the period's days, plus approved adjustments in the period.
+            # Deliberately decoupled from the HR payroll runs: a run's net is always a full
+            # month of pay regardless of its date span, and managers can create several
+            # overlapping runs (e.g. clicking "Review payroll" while a monthly run exists),
+            # so deriving the period cost from runs double-counted / mis-prorated payroll.
+            payroll_runs = PayrollRun.search(period_payroll_domain)   # kept for sourceCounts
+            period_salary_accrual = salary_accrual_for_ranges([(start_date, end_inclusive)])
+            period_payroll = period_salary_accrual + approved_adjustment_impact_for_ranges(
+                period_adjustment_scope_domain,
+                [(start_date, end_inclusive)],
+            )
             period_payroll = max(period_payroll, 0.0)
-            period_net_profit = period_revenue - period_cogs - period_waste + period_variance_impact
+            # Per-kiosk P&L for this period (drives the Finance "By kiosk" tab timeframe).
+            period_sales_by_kiosk = {}
+            period_orders_by_kiosk = {}
+            for kiosk_rec, amount_sum, row_count in PosOrder._read_group(
+                period_sale_domain, ["bayaan_kiosk_id"], ["amount_total:sum", "__count"]
+            ):
+                kid = kiosk_rec.id if kiosk_rec else False
+                period_sales_by_kiosk[kid] = amount_sum or 0.0
+                period_orders_by_kiosk[kid] = row_count or 0
+            period_cogs_by_kiosk = {
+                (g[0].id if g[0] else False): (g[1] or 0.0)
+                for g in Consumption._read_group(period_consumption_domain, ["kiosk_id"], ["total_cost:sum"])
+            }
+            period_waste_by_kiosk = {
+                (g[0].id if g[0] else False): (g[1] or 0.0)
+                for g in Waste._read_group(period_waste_domain, ["kiosk_id"], ["estimated_cost:sum"])
+            }
+            monthly_salary_total = sum(payroll_employees.mapped("monthly_salary")) or 0.0
+            accrual_factor = (period_salary_accrual / monthly_salary_total) if monthly_salary_total else 0.0
+            period_staff_by_kiosk = {}
+            for employee in payroll_employees:
+                if employee.kiosk_id:
+                    period_staff_by_kiosk[employee.kiosk_id.id] = (
+                        period_staff_by_kiosk.get(employee.kiosk_id.id, 0.0)
+                        + employee.monthly_salary * accrual_factor
+                    )
+            period_by_kiosk = []
+            for kiosk in kiosks:
+                k_sales = period_sales_by_kiosk.get(kiosk.id, 0.0)
+                k_cogs = period_cogs_by_kiosk.get(kiosk.id, 0.0)
+                k_waste = period_waste_by_kiosk.get(kiosk.id, 0.0)
+                k_staff = period_staff_by_kiosk.get(kiosk.id, 0.0)
+                k_profit = k_sales - k_cogs - k_waste - k_staff
+                period_by_kiosk.append({
+                    "kioskId": kiosk.kiosk_code,
+                    "name": kiosk.name,
+                    "city": kiosk.city,
+                    "orders": int(period_orders_by_kiosk.get(kiosk.id, 0)),
+                    "sales": round(k_sales, 2),
+                    "cogs": round(k_cogs, 2),
+                    "wasteCost": round(k_waste, 2),
+                    "staffCost": round(k_staff, 2),
+                    "grossProfit": round(k_sales - k_cogs, 2),
+                    "approxProfit": round(k_profit, 2),
+                    "margin": round((k_profit / k_sales) * 100, 1) if k_sales else 0.0,
+                })
+            period_by_kiosk.sort(key=lambda row: (-row["sales"], row["kioskId"]))
+            # Manual P&L adjustments (real practice deviates from the calculation).
+            finance_adjustments = FinanceAdjustment.search([
+                ("company_id", "=", company.id),
+                ("date", ">=", start_date),
+                ("date", "<", end_date),
+            ])
+            adj_revenue = sum(finance_adjustments.filtered(lambda a: a.category == "revenue").mapped("amount"))
+            adj_cogs = sum(finance_adjustments.filtered(lambda a: a.category == "cogs").mapped("amount"))
+            adj_waste = sum(finance_adjustments.filtered(lambda a: a.category == "waste_loss").mapped("amount"))
+            adj_other = sum(finance_adjustments.filtered(lambda a: a.category == "other").mapped("amount"))
+            manual_net_impact = adj_revenue - adj_cogs - adj_waste + adj_other
+            period_net_profit = (
+                period_revenue - period_cogs - period_waste + period_variance_impact + manual_net_impact
+            )
             return {
+                "byKiosk": period_by_kiosk,
+                "manualAdjustments": {
+                    "revenue": adj_revenue,
+                    "cogs": adj_cogs,
+                    "wasteLoss": adj_waste,
+                    "other": adj_other,
+                    "net": manual_net_impact,
+                    "count": len(finance_adjustments),
+                },
                 "revenue": period_revenue,
                 "orders": PosOrder.search_count(period_sale_domain),
                 "cogs": period_cogs,
@@ -4653,10 +5556,10 @@ class BayaanKioskApi(http.Controller):
             }
 
         report_periods = {
-            "daily": report_period_summary(today_start, today_end),
-            "weekly": report_period_summary(week_start, today_end),
-            "monthly": report_period_summary(month_start, today_end),
-            "yearly": report_period_summary(year_start, today_end),
+            "daily": report_period_summary(today, today),
+            "weekly": report_period_summary(today - timedelta(days=today.weekday()), today),
+            "monthly": report_period_summary(today.replace(day=1), today),
+            "yearly": report_period_summary(today.replace(month=1, day=1), today),
         }
 
         kiosk_summaries = {
@@ -4666,6 +5569,8 @@ class BayaanKioskApi(http.Controller):
                 "city": kiosk.city,
                 "orders": 0,
                 "sales": 0.0,
+                "cogs": 0.0,
+                "staffCost": 0.0,
                 "payments": empty_payment_split(),
                 "wasteCost": 0.0,
                 "stockItems": 0,
@@ -4709,6 +5614,19 @@ class BayaanKioskApi(http.Controller):
             row = kiosk_summaries.get(entry.kiosk_id.id)
             if row:
                 row["wasteCost"] += entry.estimated_cost
+        # Deterministic per-kiosk COGS from the immutable consumption ledger (today scope,
+        # matching `sales`). Traces back to bayaan.consumption.ledger rows.
+        for ledger in consumption:
+            row = kiosk_summaries.get(ledger.kiosk_id.id)
+            if row:
+                row["cogs"] += ledger.total_cost
+        # Per-kiosk staff cost: prorated daily share of each kiosk-assigned employee's
+        # monthly salary. Office staff (no kiosk) stay as company overhead, not per-kiosk.
+        days_this_month = max(days_in_month(today), 1)
+        for employee in payroll_employees:
+            row = kiosk_summaries.get(employee.kiosk_id.id)
+            if row:
+                row["staffCost"] += employee.monthly_salary / days_this_month
         for close in closings:
             row = kiosk_summaries.get(close.kiosk_id.id)
             if not row:
@@ -4733,6 +5651,14 @@ class BayaanKioskApi(http.Controller):
             row["stockHealth"] = stock_health
             row["status"] = status
             row["payments"] = finalize_payment_split(row["payments"])
+            # Approximate daily profit per kiosk (labelled approximate in the UI): every
+            # input is a deterministic system number — sales, ledger COGS, waste, salary.
+            row["cogs"] = round(row["cogs"], 2)
+            row["staffCost"] = round(row["staffCost"], 2)
+            row["grossProfit"] = round(row["sales"] - row["cogs"], 2)
+            approx_profit = row["sales"] - row["cogs"] - row["wasteCost"] - row["staffCost"]
+            row["approxProfit"] = round(approx_profit, 2)
+            row["margin"] = round((approx_profit / row["sales"]) * 100, 1) if row["sales"] else 0.0
             by_kiosk_summary.append(row)
 
         hr_snapshot = self._hr_schedule_snapshot({})
@@ -4913,6 +5839,7 @@ class BayaanKioskApi(http.Controller):
                 "lines": [{
                     "product": line.product_id.default_code or line.product_id.display_name,
                     "qty": line.product_qty,
+                    "received_qty": line.qty_received,
                     "uom": line.product_uom_id.name,
                     "price_unit": line.price_unit,
                     "subtotal": line.price_subtotal,
@@ -4935,42 +5862,14 @@ class BayaanKioskApi(http.Controller):
             "kiosk_stock_rows": kiosk_stock_rows,
             "transfers": transfer_rows,
             "suggested_transfers": suggested_transfer_rows,
-            "closings": [{
-                "id": close.id,
-                "name": close.name,
-                "kioskId": close.kiosk_id.kiosk_code,
-                "kioskName": close.kiosk_id.name,
-                "city": close.kiosk_id.city,
-                "cashier": close.cashier_id.name,
-                "openedAt": self._bayaan_local_datetime(close.opened_at),
-                "closedAt": self._bayaan_local_datetime(close.closed_at),
-                "sales": sum(close.pos_order_ids.mapped("amount_total")),
-                "expectedCash": close.expected_cash,
-                "countedCash": close.actual_cash,
-                "cashVariance": close.cash_variance,
-                "cashPayments": close_payment_totals.get(close.id, {}).get("cash", 0.0),
-                "digitalPayments": close_payment_totals.get(close.id, {}).get("digital", 0.0),
-                "expectedCard": close.expected_card or close_payment_totals.get(close.id, {}).get("card", close_payment_totals.get(close.id, {}).get("digital", 0.0)),
-                "countedCard": close.actual_card,
-                "cardVariance": close.card_variance,
-                "wasteCost": waste_cost_by_kiosk.get(close.kiosk_id.id, 0.0),
-                "status": close_status(close),
-                "investigationStatus": close_investigation_status(close),
-                "notes": close_notes(close),
-                "managerReviewState": close.manager_review_state,
-                "managerReviewedBy": close.manager_reviewed_by_id.name,
-                "managerReviewedAt": self._bayaan_local_datetime(close.manager_reviewed_at),
-                "recipePostingIssues": len(close_recipe_posting_issues(close)),
-                "recipePostingIssueOrders": close_recipe_posting_issues(close).mapped("name")[:5],
-                "stock": [{
-                    "item": line.product_id.display_name,
-                    "unit": line.uom_id.name,
-                    "expected": line.expected_qty,
-                    "actual": line.actual_qty,
-                    "variance": line.variance_qty,
-                    "value": line.variance_qty * line.product_id.standard_price,
-                } for line in close.stock_count_line_ids],
-            } for close in closings],
+            "closings": [
+                self._serialize_shift_close(
+                    close,
+                    waste_cost=waste_cost_by_kiosk.get(close.kiosk_id.id, 0.0),
+                    payment_totals=close_payment_totals.get(close.id) or {},
+                )
+                for close in closings
+            ],
             "today": {
                 "orders": [{
                     "name": sale.name,
@@ -5034,6 +5933,206 @@ class BayaanKioskApi(http.Controller):
                     "create_date": self._bayaan_local_datetime(entry.create_date),
                 } for entry in waste],
             },
+        }
+
+    @http.route("/bayaan/api/shift_close_history", type="jsonrpc", auth="user")
+    def shift_close_history(self, **kwargs):
+        """Historical daily closes across a date range. chain_bootstrap only
+        returns *today's* closes (by design, to keep the snapshot today-scoped);
+        this read-only route surfaces past closes so the closes list and each
+        kiosk's "Daily closings" tab can show dated history. Odoo stays the
+        single source of truth — this only visualises records it already owns."""
+        payload = self._payload(kwargs)
+        company = request.env.company
+        ShiftClose = request.env["bayaan.shift.close"].sudo()
+        Kiosk = request.env["bayaan.kiosk"].sudo()
+        Waste = request.env["bayaan.waste.entry"].sudo()
+        today = fields.Date.context_today(request.env.user)
+
+        def _bound(value, end_of_day, fallback):
+            if value:
+                try:
+                    return self._report_datetime(fields.Date.from_string(value), None, end_of_day=end_of_day)
+                except (ValueError, TypeError):
+                    pass
+            return fallback
+
+        end = _bound(
+            payload.get("date_to") or payload.get("dateTo"),
+            True,
+            self._report_datetime(today, None, end_of_day=True),
+        )
+        start = _bound(
+            payload.get("date_from") or payload.get("dateFrom"),
+            False,
+            self._report_datetime(today, None) - timedelta(days=30),
+        )
+
+        domain = [
+            ("company_id", "=", company.id),
+            ("opened_at", ">=", start),
+            ("opened_at", "<", end),
+        ]
+        # Role/kiosk scoping mirrors chain_bootstrap: non-chain users only see
+        # the closes for kiosks they manage/supervise/cashier.
+        if not self._is_chain_read_user():
+            user = request.env.user
+            scoped = Kiosk.search([
+                ("active", "=", True),
+                ("company_id", "=", company.id),
+                "|", "|",
+                ("manager_user_id", "=", user.id),
+                ("supervisor_user_id", "=", user.id),
+                ("cashier_user_ids", "in", [user.id]),
+            ])
+            domain += [("kiosk_id", "in", scoped.ids or [0])]
+
+        kiosk_code = payload.get("kiosk")
+        if kiosk_code:
+            kiosk = Kiosk.search([
+                ("kiosk_code", "=", kiosk_code),
+                ("company_id", "=", company.id),
+            ], limit=1)
+            domain += [("kiosk_id", "=", kiosk.id if kiosk else 0)]
+
+        closes = ShiftClose.search(domain, order="opened_at desc, id desc", limit=1000)
+
+        # Bucket waste cost per close (kiosk + its own [opened, closed] window)
+        # in one query, so each historical row reflects its day's waste.
+        waste_by_close = {}
+        if closes:
+            span_start = min(closes.mapped("opened_at"))
+            span_end = max(close.closed_at or close.opened_at for close in closes)
+            waste_entries = Waste.search([
+                ("company_id", "=", company.id),
+                ("kiosk_id", "in", closes.mapped("kiosk_id").ids),
+                ("create_date", ">=", span_start),
+                ("create_date", "<=", span_end),
+            ])
+            for close in closes:
+                window_end = close.closed_at or close.opened_at
+                waste_by_close[close.id] = sum(
+                    entry.estimated_cost
+                    for entry in waste_entries
+                    if entry.kiosk_id.id == close.kiosk_id.id
+                    and close.opened_at <= entry.create_date <= window_end
+                )
+
+        return {
+            "closings": [
+                self._serialize_shift_close(close, waste_cost=waste_by_close.get(close.id, 0.0))
+                for close in closes
+            ],
+            "from": self._bayaan_local_datetime(start),
+            "to": self._bayaan_local_datetime(end),
+        }
+
+    def _bayaan_pos_order_payload(self, sale):
+        """Serialize one pos.order exactly like chain_bootstrap's today.orders rows,
+        so the Sales & POS list maps period history identically to today's orders."""
+        return {
+            "name": sale.name,
+            "kiosk": sale.bayaan_kiosk_id.kiosk_code,
+            "pos_config": sale.config_id.name,
+            "cashier": sale.user_id.name,
+            "date_order": self._bayaan_local_datetime(sale.date_order),
+            "amount_total": sale.amount_total,
+            "state": sale.state,
+            "consumption_state": sale.bayaan_consumption_state,
+            "payments": [{
+                "method": payment.payment_method_id.name,
+                "category": self._payment_gateway_info(payment.payment_method_id)["category"],
+                "provider": self._payment_gateway_info(payment.payment_method_id),
+                "amount": payment.amount,
+            } for payment in sale.payment_ids],
+            "lines": [{
+                "product": line.product_id.display_name,
+                "qty": line.qty,
+                "price_subtotal_incl": line.price_subtotal_incl,
+            } for line in sale.lines],
+        }
+
+    @http.route("/bayaan/api/pos_orders_history", type="jsonrpc", auth="user")
+    def pos_orders_history(self, **kwargs):
+        """POS orders for a selected time scope (daily/weekly/monthly/yearly) or an
+        explicit date range. chain_bootstrap only ships *today's* orders to keep the
+        snapshot light; this read-only route lets the Sales & POS list follow the
+        global scope dropdown. Boundaries match the reportPeriods summaries (Baghdad
+        civil day -> week start Monday -> month start -> year start). Odoo stays the
+        single source of truth — this only reads pos.order rows it already owns."""
+        payload = self._payload(kwargs)
+        company = request.env.company
+        PosOrder = request.env["pos.order"].sudo()
+        Kiosk = request.env["bayaan.kiosk"].sudo()
+        today = fields.Date.context_today(request.env.user)
+
+        scope = str(payload.get("scope") or payload.get("period") or "daily").strip().lower()
+        if scope in ("week", "weekly"):
+            start_date = today - timedelta(days=today.weekday())
+        elif scope in ("month", "monthly"):
+            start_date = today.replace(day=1)
+        elif scope in ("year", "yearly"):
+            start_date = today.replace(month=1, day=1)
+        else:
+            start_date = today
+
+        def _as_date(value):
+            try:
+                return fields.Date.from_string(value) if value else None
+            except (ValueError, TypeError):
+                return None
+
+        explicit_from = _as_date(payload.get("date_from") or payload.get("dateFrom"))
+        explicit_to = _as_date(payload.get("date_to") or payload.get("dateTo"))
+        if explicit_from:
+            start_date = explicit_from
+        end_date = explicit_to or today
+
+        start = self._report_datetime(start_date, None)
+        end = self._report_datetime(end_date, None, end_of_day=True)
+
+        sale_domain = [
+            ("company_id", "=", company.id),
+            ("date_order", ">=", start),
+            ("date_order", "<", end),
+            ("state", "not in", ["draft", "cancel"]),
+        ]
+        # Role/kiosk scoping mirrors chain_bootstrap: non-chain users only see their
+        # own kiosks' orders.
+        if not self._is_chain_read_user():
+            user = request.env.user
+            scoped = Kiosk.search([
+                ("active", "=", True),
+                ("company_id", "=", company.id),
+                "|", "|",
+                ("manager_user_id", "=", user.id),
+                ("supervisor_user_id", "=", user.id),
+                ("cashier_user_ids", "in", [user.id]),
+            ])
+            sale_domain += [
+                "|",
+                ("bayaan_kiosk_id", "in", scoped.ids or [0]),
+                ("config_id", "in", scoped.mapped("pos_config_id").ids or [0]),
+            ]
+
+        kiosk_code = payload.get("kiosk")
+        if kiosk_code:
+            kiosk = Kiosk.search([
+                ("kiosk_code", "=", kiosk_code),
+                ("company_id", "=", company.id),
+            ], limit=1)
+            sale_domain += [
+                "|",
+                ("bayaan_kiosk_id", "=", kiosk.id if kiosk else 0),
+                ("config_id", "=", kiosk.pos_config_id.id if kiosk else 0),
+            ]
+
+        sales = PosOrder.search(sale_domain, order="date_order desc, id desc", limit=2000)
+        return {
+            "scope": scope,
+            "from": self._bayaan_local_datetime(start),
+            "to": self._bayaan_local_datetime(end),
+            "orders": [self._bayaan_pos_order_payload(sale) for sale in sales],
         }
 
     @http.route("/bayaan/api/peak_hour_report", type="jsonrpc", auth="user")
@@ -5261,16 +6360,32 @@ class BayaanKioskApi(http.Controller):
         return total
 
     def _open_kiosk_session(self, kiosk, cashier_user, opening_cash=0.0):
-        """Find an open pos.session for this kiosk's pos.config, or open one."""
+        """Find an open pos.session for this kiosk's pos.config, or open one.
+
+        Lazy safety net: if the open session belongs to a PRIOR business day, the
+        cashier never closed yesterday — finalize it (Z-report + a flagged
+        funds-uncounted bayaan close) before opening a fresh session, so each
+        business day gets its own session instead of one that grows forever.
+        """
         Session = request.env["pos.session"].sudo()
+        ShiftClose = request.env["bayaan.shift.close"].sudo()
+        today = ShiftClose._bayaan_local_day(fields.Datetime.now())
         existing = Session.search([
             ("config_id", "=", kiosk.pos_config_id.id),
             ("state", "in", ("opening_control", "opened")),
         ], order="start_at desc", limit=1)
         if existing:
-            if existing.state == "opening_control":
-                existing.action_pos_session_open()
-            return existing
+            stale = ShiftClose._bayaan_local_day(existing.start_at or fields.Datetime.now()) < today
+            if stale:
+                # Prior-day session left open -> auto-close it, then open a fresh one.
+                ShiftClose._bayaan_auto_close_session(existing, kiosk, reason="lazy_on_open")
+                existing.invalidate_recordset(["state"])
+            if existing.state != "closed":
+                # Either current-day, or the auto-close could not finalize it;
+                # keep using it rather than risk two open sessions for one config.
+                if existing.state == "opening_control":
+                    existing.action_pos_session_open()
+                return existing
         session = Session.with_user(cashier_user.id).create({
             "config_id": kiosk.pos_config_id.id,
             "user_id": cashier_user.id,
@@ -5555,12 +6670,24 @@ class BayaanKioskApi(http.Controller):
         self._require_kiosk_scope(kiosk, "waste")
         product = self._sale_product(payload.get("item"), payload.get("name"))
         qty = self._float_value(payload.get("qty"), 1.0)
-        entry = request.env["bayaan.waste.entry"].sudo().create({
+        WasteEntry = request.env["bayaan.waste.entry"].sudo()
+        # Idempotency: a queued waste that is auto-retried (network blip after the
+        # server already committed) must not scrap the ingredient twice. Mirror the
+        # pos.order dedup so the variance loop is never silently doubled.
+        external_id = payload.get("external_id") or payload.get("externalId") or ""
+        if external_id:
+            existing = WasteEntry.search(
+                [("external_id", "=", external_id), ("kiosk_id", "=", kiosk.id)], limit=1
+            )
+            if existing:
+                return {"id": existing.id, "state": existing.state, "scrap_ids": existing.scrap_ids.ids, "idempotent": True}
+        entry = WasteEntry.create({
             "kiosk_id": kiosk.id,
             "product_id": product.id,
             "qty": qty,
             "reason": payload.get("reason") or "Waste",
             "estimated_cost": self._waste_estimated_cost(product, qty),
+            "external_id": external_id or False,
         })
         entry.action_post()
         self._audit_event(
@@ -5592,6 +6719,23 @@ class BayaanKioskApi(http.Controller):
         self._require_kiosk_scope(kiosk, "stock_request")
         if not payload.get("origin") and not payload.get("external_id") and not payload.get("externalId"):
             payload = dict(payload, origin="Kiosk stock request - %s" % kiosk.kiosk_code)
+        # Dedup: if this kiosk already has an OPEN request (not yet received/cancelled),
+        # return it instead of stacking duplicate drafts when the cashier taps again.
+        request_origin = payload.get("origin")
+        if request_origin:
+            existing = request.env["stock.picking"].sudo().search([
+                ("origin", "=", str(request_origin)[:255]),
+                ("location_dest_id", "=", kiosk.stock_location_id.id),
+                ("picking_type_id.code", "=", "internal"),
+                ("bayaan_transfer_state", "not in", ["received", "cancelled"]),
+                ("state", "not in", ["done", "cancel"]),
+            ], order="id desc", limit=1)
+            if existing:
+                result = self._serialize_picking_action(existing)
+                if isinstance(result, dict):
+                    result["requested"] = True
+                    result["deduplicated"] = True
+                return result
         return self._create_kiosk_draft_transfer(kiosk, payload, requested=True)
 
     def _create_kiosk_draft_transfer(self, kiosk, payload, requested=False):
@@ -5921,6 +7065,171 @@ class BayaanKioskApi(http.Controller):
             "pickings": [self._serialize_picking_action(picking) for picking in order.picking_ids],
         }
 
+    @http.route("/bayaan/api/invoice_commit", type="jsonrpc", auth="user")
+    def invoice_commit(self, **kwargs):
+        """AI-drafted, human-confirmed supplier invoice -> supplier + PO + receipt
+        in ONE transaction. The AI never reaches here — the confirmed draft form
+        does. Every line must already carry a human-resolved productId (we refuse a
+        receipt against a guessed product). Supplier creation, PO, invoice
+        attachment, confirm, and the warehouse receipt all live in one savepoint so
+        any failure rolls back everything (no orphan confirmed PO). One audit event
+        is emitted only after the whole sequence succeeds, since it auto-publishes a
+        realtime event. Procurement-scoped, matching create_supplier/purchase_order/
+        purchase_order_action."""
+        self._require_procurement_scope()
+        payload = self._payload(kwargs)
+        raw_supplier = payload.get("supplier")
+        supplier = raw_supplier if isinstance(raw_supplier, dict) else {}
+        supplier_name = (
+            supplier.get("name")
+            or payload.get("supplier_name")
+            or (raw_supplier if isinstance(raw_supplier, str) else "")
+            or ""
+        ).strip()
+        if not supplier_name:
+            raise UserError("Supplier name is required.")
+        # Refuse a foreign-currency invoice rather than silently booking its prices
+        # verbatim in the company currency (there is no FX rate source here). The human
+        # converts the line prices first, or records the purchase manually.
+        declared_currency = str(payload.get("currency") or "").strip().upper()
+        company_currency = (request.env.company.currency_id.name or "").upper()
+        if declared_currency and company_currency and declared_currency != company_currency:
+            raise UserError(
+                "Invoice currency %s differs from the company currency %s. Convert the "
+                "line prices to %s before receiving, or record this purchase manually."
+                % (declared_currency, company_currency, company_currency)
+            )
+        invoice_ref = (payload.get("invoice_ref") or payload.get("invoiceRef") or "").strip()
+        lines = payload.get("lines") or payload.get("items") or []
+        if not lines:
+            raise UserError("The invoice needs at least one line.")
+
+        # Pre-flight: resolve every line to a real product BEFORE any write. A line
+        # without a resolved product means the human did not map/create it.
+        resolved = []
+        for line in lines:
+            if not isinstance(line, dict):
+                continue
+            ref = line.get("productId") or line.get("product_id") or line.get("product") or line.get("item")
+            if not ref:
+                raise UserError("Every invoice line must be matched to a product before receiving.")
+            product = self._require_product(ref)
+            qty = self._float_value(line.get("qty"))
+            if qty <= 0:
+                raise UserError("Quantity must be greater than zero for %s." % product.display_name)
+            price = self._float_value(line.get("unitPrice") or line.get("unit_price") or line.get("rate"), 0.0)
+            if price < 0:
+                raise UserError("Unit price cannot be negative for %s." % product.display_name)
+            resolved.append((product, qty, price))
+        if not resolved:
+            raise UserError("The invoice needs at least one valid line.")
+
+        warehouse = self._warehouse(payload.get("warehouse") or payload.get("warehouseId") or payload.get("to_warehouse"))
+
+        with request.env.cr.savepoint():
+            Partner = request.env["res.partner"].sudo()
+            # Case-insensitive supplier match so "Baghdad Cup Co" and "baghdad cup co"
+            # do not mint duplicate partners.
+            partner = Partner.search([
+                ("name", "=ilike", supplier_name),
+                "|", ("company_id", "=", False), ("company_id", "=", request.env.company.id),
+            ], limit=1)
+            partner_vals = {"supplier_rank": 1}
+            address = (supplier.get("address") or "").strip()
+            category = (supplier.get("category") or "").strip()
+            if address:
+                partner_vals["street"] = address
+            if category:
+                partner_vals["bayaan_supplier_category"] = category
+            if partner:
+                partner.write(partner_vals)
+                partner.supplier_rank = max(partner.supplier_rank, 1)
+            else:
+                partner_vals.update({"name": supplier_name, "company_id": request.env.company.id})
+                partner = Partner.create(partner_vals)
+
+            # Idempotency: a retry / double-confirm of the same vendor invoice must not
+            # create a second PO + receipt (which would double warehouse stock). When the
+            # invoice carries a vendor reference, return the prior PO instead of creating
+            # a duplicate. (partner_ref is stamped by _attach_purchase_invoice below.)
+            if invoice_ref:
+                prior = request.env["purchase.order"].sudo().search([
+                    ("partner_id", "=", partner.id),
+                    ("partner_ref", "=", invoice_ref),
+                    ("company_id", "=", request.env.company.id),
+                    ("state", "not in", ("cancel",)),
+                ], limit=1)
+                if prior:
+                    prior_receipt_state = (
+                        "none" if not prior.picking_ids
+                        else "done" if all(picking.state == "done" for picking in prior.picking_ids)
+                        else "open"
+                    )
+                    return {
+                        "engine": "odoo_pos",
+                        "po_id": prior.id,
+                        "name": prior.name,
+                        "state": prior.state,
+                        "receipt_state": prior_receipt_state,
+                        "supplier": partner.name,
+                        "idempotent": True,
+                    }
+
+            order_lines = [(0, 0, {
+                "product_id": product.id,
+                "product_qty": qty,
+                "product_uom_id": product.uom_id.id,
+                "price_unit": price,
+                "date_planned": fields.Datetime.now(),
+            }) for (product, qty, price) in resolved]
+            order_vals = {
+                "partner_id": partner.id,
+                # Use the real invoice date when supplied (so the PO document date matches
+                # the paper), falling back to now(). date_planned stays now() — it is a
+                # planning field, not the document date.
+                "date_order": self._client_datetime(payload.get("invoice_date") or payload.get("invoiceDate")) or fields.Datetime.now(),
+                "date_planned": fields.Datetime.now(),
+                "order_line": order_lines,
+            }
+            if warehouse and warehouse.in_type_id:
+                order_vals["picking_type_id"] = warehouse.in_type_id.id
+            order = request.env["purchase.order"].sudo().create(order_vals)
+            self._attach_purchase_invoice(order, payload)
+            order.button_confirm()
+
+            open_pickings = order.picking_ids.filtered(lambda picking: picking.state not in ("done", "cancel"))
+            if not open_pickings:
+                raise UserError("No warehouse receipt was created for %s." % order.name)
+            for picking in open_pickings:
+                self._validate_picking(picking)
+            order.invalidate_recordset()
+            receipt_state = (
+                "none" if not order.picking_ids
+                else "done" if all(picking.state == "done" for picking in order.picking_ids)
+                else "open"
+            )
+            order_name = order.name
+            order_state = order.state
+            partner_name = partner.name
+
+        self._audit_event(
+            "procurement",
+            "invoice_received",
+            "Invoice received: %s" % order_name,
+            "%s - %s line(s), receipt %s" % (partner_name, len(resolved), receipt_state),
+            record=order,
+            severity="success",
+            payload=payload,
+        )
+        return {
+            "engine": "odoo_pos",
+            "po_id": order.id,
+            "name": order_name,
+            "state": order_state,
+            "receipt_state": receipt_state,
+            "supplier": partner_name,
+        }
+
     @http.route("/bayaan/api/landed_cost", type="jsonrpc", auth="user")
     def landed_cost(self, **kwargs):
         self._require_procurement_scope()
@@ -5955,6 +7264,25 @@ class BayaanKioskApi(http.Controller):
             return parsed
         except ValueError:
             return fields.Datetime.to_datetime(text)
+
+    def _client_user_datetime(self, value):
+        """Inverse of _bayaan_local_datetime for client-entered wall-clock times.
+        Naive values are interpreted in the user's timezone (Asia/Baghdad for
+        this client) and converted to the naive UTC the ORM stores; values with
+        an explicit offset/'Z' are converted from that offset."""
+        if not value:
+            return False
+        if isinstance(value, datetime):
+            return value
+        text = str(value).strip()
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return fields.Datetime.to_datetime(text)
+        if parsed.tzinfo is None:
+            tz = pytz.timezone(request.env.user.tz or "Asia/Baghdad")
+            parsed = tz.localize(parsed)
+        return parsed.astimezone(pytz.UTC).replace(tzinfo=None)
 
     @http.route("/bayaan/api/shift_close", type="jsonrpc", auth="user")
     def shift_close(self, **kwargs):

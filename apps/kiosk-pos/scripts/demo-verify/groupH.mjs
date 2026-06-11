@@ -45,7 +45,7 @@ export async function runGroupH(browser, rec) {
     try {
       const sales = Math.round((await api("/bayaan/api/chain_bootstrap", cookie))?.summary?.totals?.salesToday || 0);
       await adminLogin(page, "owner@miza.iq");
-      await gotoAdmin(page, "AI Insights");
+      await gotoAdmin(page, "AI Assistant");
       await page.waitForTimeout(2500);
       const before = (await bodyText(page)).length;
       await page.getByRole("button", { name: /Today'?s brief/ }).first().click().catch(() => {});
