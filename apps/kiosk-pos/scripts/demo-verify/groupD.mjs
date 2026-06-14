@@ -14,25 +14,51 @@ export async function runGroupD(browser, rec) {
   let reviewResp = null;
   page.on("response", async (r) => { if (r.url().includes("shift_close_review")) { try { reviewResp = (await r.json())?.result ?? (await r.json())?.error; } catch {} } });
   try {
+    // Guarantee a reviewable close exists BEFORE the manager loads the dashboard. Repeated
+    // suite runs approve the seeded variance closes (and a clean zero-variance close needs
+    // no review), so create a cash-variance close here — D1 is then self-sufficient
+    // regardless of how many times the suite has already run. No orders → no GL/session
+    // impact; the cash variance just flags it for manager review. Created pre-login so it
+    // is included in the bootstrap the manager loads.
+    const { cookie: ownerCookie } = await odooLogin("owner@miza.iq");
+    // A STOCK-variance close gets status "issue" (Investigation open) → manager review
+    // controls render. (A cash-only variance close does NOT surface the review buttons.)
+    await api("/bayaan/api/shift_close", ownerCookie, {
+      kiosk: "K-03",
+      opened_at: new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace("T", " "),
+      expected_cash: 0,
+      actual_cash: 0,
+      stock_counts: [{ item: "Fresh Milk", expected_qty: 10, actual_qty: 6 }],
+    }).catch(() => {});
     await adminLogin(page, "layla@miza.iq");
     await gotoAdmin(page, "Daily Close");
     await page.waitForTimeout(1800);
-    // Expand a close with variance.
-    await page.locator("tr.row-click", { hasText: /Mansour District|Erbil Mall/ }).first().click().catch(() => {});
-    await page.waitForTimeout(1200);
-    const expanded = await bodyText(page);
-    const hasControls = /Approve|Reject|note|Investigation/i.test(expanded);
+    // Find a close that still NEEDS review. The review controls (Add note / Reject /
+    // Approve) only render for a submitted, not-yet-approved close
+    // (can("approveClose") && status !== "approved" && status !== "open"), so expanding the
+    // first row blindly can land on an already-approved close with no buttons. Expand rows
+    // until the "Add note" control appears. onAddNote() builds its own note and posts
+    // straight to /shift_close_review (decision:"note", which keeps the close reviewable).
+    const rows = page.locator("tr.row-click");
+    const rowCount = await rows.count();
+    let reviewable = false;
+    for (let i = 0; i < Math.min(rowCount, 10); i++) {
+      await rows.nth(i).click().catch(() => {});
+      await page.waitForTimeout(600);
+      const addNote = page.getByRole("button", { name: /Add note|إضافة ملاحظة/ }).first();
+      if (await addNote.isVisible({ timeout: 800 }).catch(() => false)) { reviewable = true; break; }
+    }
     await shot(page, "D-D1-close-review");
-    // Add a manager note (non-locking).
-    const noteBox = page.locator("textarea, input[type='text']").filter({ hasNot: page.locator("[disabled]") });
-    await noteBox.first().fill("Manager review note — demo verification " + new Date().toISOString().slice(11, 19)).catch(() => {});
-    await page.getByRole("button", { name: /Add note|Save note|حفظ/ }).first().click().catch(() => {});
-    await page.waitForTimeout(2000);
+    if (reviewable) {
+      await page.getByRole("button", { name: /Add note|إضافة ملاحظة/ }).first().click().catch(() => {});
+      await page.waitForTimeout(2500);
+    }
     const after = await bodyText(page);
+    const hasControls = reviewable || /Approve|Reject|Investigation/i.test(after);
     const noteOk = /Note saved|note added|saved to/i.test(after) || (reviewResp && !reviewResp.message);
     rec.add("D1", "Manager daily-close review (controls + note via /shift_close_review)",
-      hasControls && (noteOk || !!reviewResp),
-      `controls=${hasControls} noteSaved=${noteOk} resp=${JSON.stringify(reviewResp || "").slice(0, 70)}`,
+      reviewable && (noteOk || !!reviewResp),
+      `reviewableCloseFound=${reviewable} hasControls=${hasControls} noteSaved=${noteOk} resp=${JSON.stringify(reviewResp || "").slice(0, 70)}`,
       JSON.stringify(reviewResp || "").slice(0, 160));
   } catch (e) {
     rec.add("D1", "Manager daily-close review", false, "error: " + (e.message || e));

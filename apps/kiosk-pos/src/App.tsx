@@ -313,7 +313,7 @@ function AdminPanel({
           </div>
           <div className="admin-actions">
             <span className={`badge ${sourceOfTruth.enabled ? "good" : "watch"}`}>
-              {sourceOfTruth.enabled ? "Live backend" : "Demo mode"}
+              {sourceOfTruth.enabled ? "Live backend" : "No backend connected"}
             </span>
             <button className="btn subtle-btn"><Search size={15} />{t(text.search, lang)}</button>
             <button className="icon-btn" aria-label="Notifications"><Bell size={16} /></button>

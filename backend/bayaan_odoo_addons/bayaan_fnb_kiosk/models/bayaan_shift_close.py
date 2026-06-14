@@ -270,6 +270,62 @@ class BayaanShiftClose(models.Model):
             self.sudo()._bayaan_auto_close_session(session, kiosk, reason="cron")
 
     @api.model
+    def _bayaan_finalize_pos_sessions(self, sessions, counted_cash=None):
+        """Close Bayaan-managed pos.sessions through Odoo's OFFICIAL close workflow so
+        each session posts its own Z-report account.move (revenue + native VAT + the
+        cash / card-outstanding clearing) — exactly what a real Odoo deployment does.
+        Revenue therefore comes from the session move (NOT bayaan.gl); the Bayaan layer
+        keeps owning the deterministic recipe COGS / waste / variance only.
+
+        Refuses a session with draft orders. For cash_control sessions it sets the
+        counted closing balance (``counted_cash`` per session id, else the expected =
+        opening + cash payments, so an automated close shows no spurious drawer
+        difference; a real counted difference posts to the cash journal's loss/profit
+        account and hits the GL). Raises if the official close does not balance or does
+        not reach 'closed', so the caller fails visibly and atomically rather than
+        leaving a half-closed session."""
+        closed = self.env["pos.session"].sudo()
+        counted_cash = counted_cash or {}
+        for session in sessions.sudo():
+            if session.state == "closed":
+                closed |= session
+                continue
+            drafts = session.order_ids.filtered(lambda order: order.state == "draft")
+            if drafts:
+                raise UserError(
+                    "Cannot close the POS session for %s: %d order(s) are still in draft. "
+                    "Finalize or void them before closing."
+                    % (session.config_id.display_name, len(drafts)))
+            if session.state == "opening_control":
+                session.action_pos_session_open()
+            if session.config_id.cash_control:
+                counted = counted_cash.get(session.id)
+                if counted is None:
+                    # Use Odoo's OWN expected closing balance so there is no spurious drawer
+                    # over/short on an automated or rebuild close. A real counted difference
+                    # is passed explicitly via counted_cash for an operator's live close.
+                    counted = session.cash_register_balance_end
+                session.cash_register_balance_end_real = counted
+            result = session.action_pos_session_closing_control()
+            session.invalidate_recordset(["state", "move_id"])
+            if session.state != "closed":
+                # _validate_session rolls back and returns the Force-Close wizard action
+                # when the Z-report move does not balance; surface the exact imbalance
+                # (it rides in the wizard's amount_to_balance) instead of a silent half-close.
+                detail = ""
+                if isinstance(result, dict) and result.get("res_model") == "pos.close.session.wizard" and result.get("res_id"):
+                    wizard = self.env["pos.close.session.wizard"].sudo().browse(result["res_id"])
+                    if wizard.exists():
+                        detail = (" — its Z-report accounting move is out of balance by %s "
+                                  "(usually a tax or account-configuration issue)"
+                                  % wizard.amount_to_balance)
+                raise UserError(
+                    "The official POS close did not complete for %s%s. No books were posted; "
+                    "resolve the session in Odoo and retry." % (session.config_id.display_name, detail))
+            closed |= session
+        return closed
+
+    @api.model
     def _bayaan_auto_close_session(self, session, kiosk, reason="cron"):
         """Finalize one Odoo pos.session with system-estimated balances (so the
         accounting stays balanced) and create a flagged bayaan.shift.close.
@@ -278,13 +334,11 @@ class BayaanShiftClose(models.Model):
         session = session.sudo()
         opened_at = session.start_at or fields.Datetime.now()
         try:
-            if session.state in ("opening_control", "opened", "closing_control"):
-                if session.config_id.cash_control:
-                    # No physical count happened; treat counted == expected so the
-                    # cash difference is zero and the books stay balanced. Bayaan
-                    # flags funds_uncounted separately so the day is not trusted.
-                    session.cash_register_balance_end_real = session.cash_register_balance_end
-                session.with_company(session.config_id.company_id).action_pos_session_closing_control()
+            # Bayaan posts the formal books deterministically (revenue / COGS / waste
+            # via bayaan.gl), so the Odoo session is finalized WITHOUT its own Z-report
+            # move (that would double-post revenue + reintroduce POS-receivable/
+            # outstanding clearing). Cache-safe ORM close + draft-order guard (no raw SQL).
+            self._bayaan_finalize_pos_sessions(session)
         except Exception as error:  # noqa: BLE001 - a close must never crash the cron
             self._bayaan_emit_close_audit(
                 kiosk, None, "critical",
@@ -303,6 +357,16 @@ class BayaanShiftClose(models.Model):
 
         closed_at = session.stop_at or fields.Datetime.now()
         business_day = self._bayaan_local_day(opened_at)
+        # Post this kiosk's formal books for the business day (revenue / COGS / waste),
+        # idempotent per kiosk+day. Failure is surfaced, never silent.
+        try:
+            self.env["bayaan.gl"].sudo()._bayaan_post_kiosk_day(kiosk, business_day)
+        except Exception as gl_error:  # noqa: BLE001
+            self._bayaan_emit_close_audit(
+                kiosk, None, "critical",
+                "Books posting failed for %s" % kiosk.name,
+                "GL posting failed during auto-close (%s): %s" % (reason, gl_error),
+            )
         already = self.sudo().search([("kiosk_id", "=", kiosk.id)]).filtered(
             lambda c: c.closed_at and self._bayaan_local_day(c.closed_at) == business_day
         )

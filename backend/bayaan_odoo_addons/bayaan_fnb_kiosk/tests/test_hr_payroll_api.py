@@ -1,3 +1,6 @@
+import calendar
+from datetime import timedelta
+
 from odoo import fields
 from odoo.tests.common import HttpCase, tagged
 
@@ -19,6 +22,16 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
         self.authenticate("admin", "admin")
 
     def test_payroll_run_uses_attendance_and_approved_adjustments(self):
+        # Dates derive from the current month (not hard-coded May) so the live
+        # month-to-date hr_snapshot / chain report always includes them.
+        today = fields.Date.context_today(self.env.user)
+        month_start = today.replace(day=1)
+        days_in_month = calendar.monthrange(today.year, today.month)[1]
+        month_end = today.replace(day=days_in_month)
+        run_from = fields.Date.to_string(month_start)
+        run_to = fields.Date.to_string(month_end)
+        work_in = "%s 08:00:00" % fields.Date.to_string(today)
+        adj_day = fields.Date.to_string(today)
         employee = self._jsonrpc("/bayaan/api/hr_employee", {
             "name": "Maya Payroll Test",
             "role": "cashier",
@@ -31,7 +44,7 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
 
         attendance = self._jsonrpc("/bayaan/api/hr_attendance", {
             "employee": employee["result"]["id"],
-            "check_in": "2026-05-01 08:00:00",
+            "check_in": work_in,
             "manual_hours": 184.0,
             "note": "May payroll baseline hours",
         })
@@ -40,7 +53,7 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
         self.assertAlmostEqual(attendance["result"]["workedHours"], 184.0)
         duplicate_attendance = self._jsonrpc("/bayaan/api/hr_attendance", {
             "employee": employee["result"]["id"],
-            "check_in": "2026-05-01 08:00:00",
+            "check_in": work_in,
             "manual_hours": 184.0,
             "note": "May payroll baseline hours",
         })
@@ -54,7 +67,7 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
             "name": "Generator top-up",
             "category": "Utilities",
             "amount": 44000.0,
-            "date": "2026-05-10",
+            "date": adj_day,
             "note": "Payroll-adjacent store operating cost",
         })
         if "error" in expense:
@@ -63,7 +76,7 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
             "name": "Generator top-up",
             "category": "Utilities",
             "amount": 44000.0,
-            "date": "2026-05-10",
+            "date": adj_day,
             "note": "Payroll-adjacent store operating cost",
         })
         if "error" in duplicate_expense:
@@ -96,7 +109,7 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
 
         bonus = self._jsonrpc("/bayaan/api/payroll_adjustment", {
             "employee": employee["result"]["id"],
-            "date": "2026-05-10",
+            "date": adj_day,
             "type": "bonus",
             "amount": 100000.0,
             "reason": "Sales target bonus",
@@ -108,7 +121,7 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
 
         duplicate_bonus = self._jsonrpc("/bayaan/api/payroll_adjustment", {
             "employee": employee["result"]["id"],
-            "date": "2026-05-10",
+            "date": adj_day,
             "type": "bonus",
             "amount": 100000.0,
             "reason": "Sales target bonus",
@@ -121,7 +134,7 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
 
         shortage = self._jsonrpc("/bayaan/api/payroll_adjustment", {
             "employee": employee["result"]["id"],
-            "date": "2026-05-10",
+            "date": adj_day,
             "type": "cash_shortage",
             "amount": 25000.0,
             "reason": "Approved cash shortage test",
@@ -131,7 +144,7 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
         self.assertEqual(shortage["result"]["state"], "draft")
         duplicate_shortage = self._jsonrpc("/bayaan/api/payroll_adjustment", {
             "employee": employee["result"]["id"],
-            "date": "2026-05-10",
+            "date": adj_day,
             "type": "cash_shortage",
             "amount": 25000.0,
             "reason": "Approved cash shortage test",
@@ -143,8 +156,8 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
 
         run = self._jsonrpc("/bayaan/api/payroll_run", {
             "name": "May Payroll Test",
-            "date_from": "2026-05-01",
-            "date_to": "2026-05-31",
+            "date_from": run_from,
+            "date_to": run_to,
             "compute": True,
         })
         if "error" in run:
@@ -166,7 +179,7 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
 
         approved_shortage = self._jsonrpc("/bayaan/api/payroll_adjustment", {
             "employee": employee["result"]["id"],
-            "date": "2026-05-10",
+            "date": adj_day,
             "type": "cash_shortage",
             "amount": 25000.0,
             "reason": "Approved cash shortage test",
@@ -218,8 +231,8 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
 
         duplicate_run = self._jsonrpc("/bayaan/api/payroll_run", {
             "name": "May Payroll Test",
-            "date_from": "2026-05-01",
-            "date_to": "2026-05-31",
+            "date_from": run_from,
+            "date_to": run_to,
             "compute": True,
         })
         if "error" in duplicate_run:
@@ -259,17 +272,19 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
         if "error" in chain:
             self.fail("chain_bootstrap errored: %s" % chain["error"])
         monthly = chain["result"]["summary"]["reportPeriods"]["monthly"]
-        run_start = fields.Date.to_date("2026-05-01")
-        run_end = fields.Date.to_date("2026-05-31")
+        run_start = fields.Date.to_date(run_from)
+        run_end = fields.Date.to_date(run_to)
         month_to_date = fields.Date.context_today(self.env.user)
         overlap_from = max(run_start, month_to_date.replace(day=1))
         overlap_to = min(run_end, month_to_date)
         overlap_days = max((overlap_to - overlap_from).days + 1, 0)
         run_days = (run_end - run_start).days + 1
-        self.assertAlmostEqual(
-            monthly["payrollExpense"],
-            paid["result"]["totals"]["net"] * (overlap_days / run_days),
-        )
+        # payrollExpense is the deterministic month-to-date salary accrual (base salary
+        # prorated by days) PLUS approved adjustments dated in the period — deliberately
+        # decoupled from the run net (chain_bootstrap payroll accrual). Base 1.76M accrues
+        # by month-to-date days; the approved bonus (+100k) and cash shortage (-25k) post in full.
+        expected_payroll = 1760000.0 * (overlap_days / run_days) + 100000.0 - 25000.0
+        self.assertAlmostEqual(monthly["payrollExpense"], expected_payroll, places=2)
         self.assertGreaterEqual(monthly["operatingExpenses"], 44000.0)
         self.assertAlmostEqual(
             monthly["netProfitAfterPayroll"],
@@ -281,7 +296,7 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
 
         late_adjustment = self._jsonrpc("/bayaan/api/payroll_adjustment", {
             "employee": employee["result"]["id"],
-            "date": "2026-05-10",
+            "date": adj_day,
             "type": "cash_shortage",
             "amount": 10000.0,
             "reason": "Late shortage after paid payroll",
@@ -290,6 +305,12 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
         self.assertIn("already approved or paid", str(late_adjustment["error"]))
 
     def test_chain_bootstrap_accrues_payroll_days_not_covered_by_partial_run(self):
+        # Dates derive from the current month (not hard-coded) so the live
+        # month-to-date chain report always overlaps the run period.
+        today = fields.Date.context_today(self.env.user)
+        month_start = today.replace(day=1)
+        # A run covering only part of the month-to-date, so the chain accrues the rest.
+        partial_to = today - timedelta(days=1) if today.day > 1 else today
         employee = self._jsonrpc("/bayaan/api/hr_employee", {
             "name": "Partial Payroll Coverage",
             "role": "cashier",
@@ -301,9 +322,9 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
             self.fail("partial payroll employee errored: %s" % employee["error"])
 
         partial_run = self._jsonrpc("/bayaan/api/payroll_run", {
-            "name": "Partial May Payroll",
-            "date_from": "2026-05-01",
-            "date_to": "2026-05-15",
+            "name": "Partial Month Payroll",
+            "date_from": fields.Date.to_string(month_start),
+            "date_to": fields.Date.to_string(partial_to),
             "compute": True,
         })
         if "error" in partial_run:
@@ -313,8 +334,13 @@ class TestHrPayrollApi(BayaanTestBase, HttpCase):
         if "error" in chain:
             self.fail("partial chain_bootstrap errored: %s" % chain["error"])
         monthly = chain["result"]["summary"]["reportPeriods"]["monthly"]
+        # The partial run is counted in sourceCounts, but payrollExpense is the deterministic
+        # month-to-date salary accrual (decoupled from the run net): the 3.1M salary prorated
+        # over the month-to-date days. It does not mirror the run's full-month net.
+        days_in_month = calendar.monthrange(today.year, today.month)[1]
+        expected_accrual = 3100000.0 * (today.day / days_in_month)
         self.assertEqual(monthly["sourceCounts"]["payrollRunRows"], 1)
-        self.assertGreater(monthly["payrollExpense"], partial_run["result"]["totals"]["net"])
+        self.assertAlmostEqual(monthly["payrollExpense"], expected_accrual, places=2)
 
     def test_kiosk_work_week_flags_missing_coverage_until_staffed(self):
         first_employee = self._jsonrpc("/bayaan/api/hr_employee", {

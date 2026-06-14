@@ -8,13 +8,13 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run --pool threads",
-    "smoke": "node scripts/smoke.mjs",
     "smoke:live": "node scripts/live-odoo-smoke.mjs",
     "smoke:simulation": "node scripts/simulation-smoke.mjs",
     "simulation:audit": "vitest run src/simulation/peakSimulation.test.ts --pool threads",
     "gate:wiring": "node scripts/wiring-gate.mjs",
-    "verify": "npm test && npm run gate:wiring && npm run build && npm run smoke",
-    "verify:live": "npm run verify && npm run smoke:live"
+    "verify": "npm test && npm run gate:wiring && npm run build",
+    "verify:live": "npm run verify && node scripts/demo-verify/verify-accounting.mjs && node scripts/demo-verify/verify-finance-vs-ledger.mjs && node scripts/demo-verify/accountant-audit.mjs && npm run smoke:live",
+    "demo:verify:full": "node scripts/demo-verify/run-all.mjs"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.5",

@@ -1,7 +1,7 @@
 // Group H — deeper interactions & edge cases (card payment, live AI answer, manager
 // approve-with-variance + lock, kiosk drill-down, reports export, recipe edit, empty-cart
 // guard, Arabic render, mobile). MUTATES (H1 card sale, H3 approve). Re-seed after.
-import { makePage, adminLogin, gotoAdmin, bodyText, has, numRe, shot, api, odooLogin, URL } from "./lib.mjs";
+import { makePage, adminLogin, gotoAdmin, bodyText, has, numRe, shot, api, odooLogin, URL, handleModifierPopup, closeKioskSession } from "./lib.mjs";
 
 export async function runGroupH(browser, rec) {
   const { cookie } = await odooLogin("owner@miza.iq");
@@ -23,6 +23,8 @@ export async function runGroupH(browser, rec) {
       await openP; await page.waitForTimeout(3000);
       await page.locator("button.card, .card").filter({ hasText: /Cappuccino/ }).first().click().catch(() => {});
       await page.waitForTimeout(700);
+      // Cappuccino is a recipe product → handle the size/modifier popup before Charge.
+      await handleModifierPopup(page);
       await page.getByRole("button", { name: /Charge/ }).first().click().catch(() => {});
       await page.waitForTimeout(1200);
       const saleP = page.waitForResponse((r) => r.url().includes("kiosk_sale"), { timeout: 20000 }).catch(() => null);
@@ -35,6 +37,15 @@ export async function runGroupH(browser, rec) {
       rec.add("H1", "Card payment completes and posts a pos.order",
         /Payment complete/i.test(done) && after > before && sale && !sale.message,
         `complete=${/Payment complete/i.test(done)} orders ${before}→${after}; resp=${JSON.stringify(sale || "").slice(0, 70)}`, "");
+      // Tie-preserving cleanup: close the session this card sale opened so the day's sale
+      // posts its Z-report move and the books stay tied. Card sale → cash collected = 0.
+      let orderName = sale && sale.name;
+      if (!orderName) {
+        const bb = await api("/bayaan/api/chain_bootstrap", cookie);
+        const orders = bb?.today?.orders || [];
+        orderName = orders.length ? orders[orders.length - 1].name : null;
+      }
+      if (orderName) await closeKioskSession(cookie, "K-01", [orderName], 0).catch(() => {});
     } catch (e) { rec.add("H1", "Card payment", false, "error: " + (e.message || e)); }
     finally { await page._context.close(); }
   }
@@ -56,7 +67,10 @@ export async function runGroupH(browser, rec) {
         if (answer.length > before + 150) { grew = true; if (numRe(sales).test(answer)) break; }
       }
       const cites = numRe(sales).test(answer);
-      const errored = /\b(error|failed|invalid api key|quota exceeded|unable to)\b/i.test(answer) && !/no error/i.test(answer);
+      // Only treat GENUINE AI-failure phrases as errors. A financial answer legitimately
+      // contains words like "error rate", "failed orders", or "margin of error", so the
+      // bare tokens "error"/"failed" produce false positives — match real failure phrasing.
+      const errored = /invalid api key|quota exceeded|rate limit|service unavailable|an error occurred|unable to (answer|process|generate|complete)|failed to (generate|respond|fetch|load|process)|i('| a)m sorry, (but )?i (can('|no)t|could not)/i.test(answer);
       await shot(page, "H-H2-ai-answer");
       rec.add("H2", "AI Insights live LLM answers with traceable numbers",
         grew && !errored, `responded=${grew} citesLiveSales(${sales})=${cites} errored=${errored}`,

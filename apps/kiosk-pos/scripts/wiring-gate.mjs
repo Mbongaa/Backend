@@ -25,7 +25,6 @@ const realtimeTests = read("../../backend/bayaan_odoo_addons/bayaan_fnb_kiosk/te
 const packageJson = read("package.json");
 const makefile = read("../../Makefile");
 const liveSmoke = read("scripts/live-odoo-smoke.mjs");
-const smoke = read("scripts/smoke.mjs");
 const studioReferenceDashboard = [
   "../bayaan-dashboard/README.md",
   "../bayaan-dashboard/src/app/(main)/dashboard/layout.tsx",
@@ -159,13 +158,6 @@ assert(studioInventory.includes("Kiosk stock needs"), "Studio inventory screen m
 assert(!studioInventory.includes("Kiosk live stock needs"), "Studio inventory screen must not label stock-needs rows as live");
 assert(exact.includes('normalized === "dispatched"'), "Stock transfer actions must expose a dispatched receive step");
 assert(!exact.includes("return rows.slice(0, 12).map((transfer) => ({"), "Odoo transfer rows must not cap outstanding POS/admin transfers at 12");
-assert(smoke.includes("assertStockAllocationReleaseGate"), "Smoke release gate must protect Stock & Allocation table/chart layout");
-assert(smoke.includes(".recharts-surface"), "Smoke release gate must protect the Studio/Recharts inventory health pie");
-assert(smoke.includes("stock transfer did not expose and persist the receive action"), "Smoke release gate must protect the transfer receive action");
-assert(smoke.includes("Kiosk stock needs"), "Smoke must verify source-neutral Stock & Allocation wording");
-assert(!smoke.includes("Kiosk live stock needs"), "Smoke must not require ambiguous live Stock & Allocation wording");
-assert(smoke.includes('"Demo pattern"'), "Smoke release gate must verify waste demo data is explicitly labeled");
-assert(!smoke.includes('"Pattern detected"'), "Smoke release gate must not expect the old ambiguous waste heading");
 
 assert(exact.includes("function POSClose"), "POS close screen missing");
 assert(exact.includes('setScreen("close")'), "POS end-shift must open the close screen");
@@ -188,7 +180,9 @@ assert(posPayment.includes("/bayaan/api/chain_bootstrap"), "POS payment source-e
 assert(posPayment.includes("pickTender(cashTender.id)"), "POS payment quick cash must use the configured source cash method id");
 assert(!posPayment.includes("const tenderOptions = ["), "POS payment must not define the old unguarded fixed provider list");
 assert(!posPayment.includes("tenderOptions.slice(2)"), "POS payment must not append hard-coded wallet providers outside demo mode");
-assert(bayaanProvider.includes('const sourceOnlyWithoutBackend = mode === "live" && !hasBackend'), "Bayaan provider must distinguish live-only without backend from demo mode");
+assert(bayaanProvider.includes('const sourceOnlyWithoutBackend = !hasBackend'), "Bayaan provider must treat a missing backend as source-only (live-only product has no demo mode)");
+assert(bayaanProvider.includes('export type BayaanMode = "live"'), "Bayaan provider must collapse the mode type to live-only (no demo mode)");
+assert(!bayaanProvider.includes("DEMO_AUTH"), "Bayaan provider must not fabricate a demo auth user");
 assert(bayaanProvider.includes("Connect the source engine before recording source sales"), "Bayaan provider must reject source sale submissions without a backend");
 assert(bayaanProvider.includes("Connect the source engine before recording source waste"), "Bayaan provider must reject source waste submissions without a backend");
 assert(bayaanProvider.includes("Connect the source engine before creating source stock transfers"), "Bayaan provider must reject source stock-transfer submissions without a backend");
@@ -238,17 +232,18 @@ assert(hrPayroll.includes("Connect the source engine before approving source pay
 assert(hrPayroll.includes("Connect the source engine before marking source payroll paid"), "HR payroll source payroll payment must not fall back to browser demo state without a source engine");
 assert(!hrPayroll.includes("const scheduleRows = liveOnly"), "HR payroll must not treat simulation/source schedules as demo schedules");
 assert(!hrPayroll.includes("...localShifts.filter((shift) => !liveShiftIds.has"), "HR payroll source schedules must not append local demo shifts");
-assert(exact.includes("staff: <HRPayrollScreen lang={lang} bootstrap={dashboardBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>"), "Admin staff screen must receive live gateway props without demo bootstrap fallback");
+assert(exact.includes("staff: <HRPayrollScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} caps={caps}/>"), "Admin staff screen must receive the guarded scoped bootstrap and live gateway props");
 assert(exact.includes("noSourceStaffLoaded"), "Staff empty states must use source-neutral staff wording");
 assert(exact.includes("noSourceKioskStock"), "POS stock empty state must use source-neutral kiosk stock wording");
 assert(exact.includes("noSourceKiosksLoaded"), "Kiosk select empty states must use source-neutral kiosk wording");
 assert(exact.includes("noSourceWarehousesLoaded"), "Warehouse select empty states must use source-neutral warehouse wording");
 assert(exact.includes("No source suppliers loaded"), "Supplier empty states must use source-neutral supplier wording");
-assert(auditRail.includes("allowDemoFallback ? demoAuditEvents() : []"), "Audit rail must not seed demo events in live-only/source mode");
-assert(auditRail.includes('setStatus(allowDemoFallback ? "demo" : "source-missing")'), "Audit rail must show an honest source-missing state instead of demo events");
+assert(auditRail.includes("setEvents([])") && auditRail.includes('setStatus("source-missing")'), "Audit rail must show an honest empty source-missing state, never demo events");
+assert(!auditRail.includes("demoAuditEvents"), "Audit rail must not seed demo events in the live-only product");
+assert(!auditRail.includes("allowDemoFallback"), "Audit rail must not carry a demo-fallback flag in the live-only product");
 assert(auditRail.includes("No source audit events loaded"), "Audit rail source-empty state must not display demo audit events");
-assert(adminPanel.includes("allowDemoFallback={!liveOnlySelected}"), "Admin audit rail must disable demo audit events when live-only mode is selected");
-if (studioReferenceDashboard) {
+assert(adminPanel.includes("<AuditLogRail lang={lang} sourceOfTruth={sourceOfTruth}/>"), "Admin audit rail must render without any demo-fallback flag in the live-only product");
+if (studioReferenceDashboard.trim()) {
   assert(studioReferenceDashboard.includes("Studio/reference dashboard only"), "Studio dashboard README must disclose that it is demo/reference only");
   assert(studioReferenceDashboard.includes("Studio reference only"), "Studio dashboard app shell must show a demo/reference warning");
   assert(studioReferenceDashboard.includes("DEMO STREAM"), "Studio dashboard stream widgets must label animated rows as demo");
@@ -265,7 +260,7 @@ assert(!exact.includes("No live kiosks loaded"), "Kiosk select empty states must
 assert(!exact.includes("No live warehouses loaded"), "Warehouse select empty states must not imply live evidence");
 assert(!exact.includes("No live suppliers loaded"), "Supplier empty states must not imply live evidence");
 assert(!exact.includes("No live inventory items loaded"), "Inventory item empty states must not imply live evidence");
-assert(exact.includes('stock_location_id: "LOC-MAIN"'), "Demo central warehouse must point at the demo stock location so its on-hand quantity is not rendered as zero");
+assert(!exact.includes('stock_location_id: "LOC-MAIN"'), "Live-only build must not ship the demo central-warehouse stock location");
 assert(exact.includes('location: "Central warehouse", locationKey: "central-warehouse"'), "Demo inventory fallback must use the same central warehouse label/key as source stock rows");
 assert(inventoryScreen.includes('centralWarehouse?.name || centralWarehouse?.code || (sourceDriven ? "" : DEFAULT_WAREHOUSE_NAME)'), "Inventory source-driven mode must not use the demo warehouse fallback");
 assert(inventoryScreen.includes("...(sourceDriven ? [] : MOCK.suppliers.map"), "Inventory source-driven mode must not include demo supplier options");
@@ -342,18 +337,15 @@ assert(exact.includes("Source POS orders"), "POS order tables must label source 
 assert(exact.includes("Demo POS orders"), "POS order tables must label demo rows explicitly");
 assert(exact.includes("sourceDriven && order.date"), "POS order table must not stamp source rows with the fixed demo date");
 assert(!exact.includes('"Live POS orders"'), "Admin POS order tables must not label demo/source rows as live without source evidence");
-assert(smoke.includes('"Demo POS orders"'), "Smoke must verify explicit demo labeling on Sales & POS");
-assert(!smoke.includes('"Live POS orders"'), "Smoke must not require the old ambiguous live POS order label");
-assert(!smoke.includes('"Zain Cash", "FIB"'), "Admin smoke must not require specific mock payment providers");
-assert(adminPanel.includes('status: liveBackendActive ? "syncing" : liveOnlySelected ? "missing" : "demo"'), "Admin shell live-only mode must not initialize with demo sync status");
-assert(adminPanel.includes("bootstrap: liveOnlySelected ? EMPTY_ENGINE_SNAPSHOT : null"), "Admin shell live-only mode must not initialize with a demo-capable null bootstrap");
+assert(adminPanel.includes('status: liveBackendActive ? "syncing" : "missing"'), "Admin shell (live-only) must initialize with a source sync status, never a demo one");
+assert(adminPanel.includes("bootstrap: EMPTY_ENGINE_SNAPSHOT"), "Admin shell (live-only) must initialize with the empty source snapshot, never a demo-capable null bootstrap");
 assert(adminPanel.includes("const dashboardSync = useMemo(() =>"), "Admin shell must derive a source-empty dashboard sync object for live-only rendering");
 assert(adminPanel.includes("bootstrap: sync.bootstrap || EMPTY_ENGINE_SNAPSHOT"), "Admin shell live-only render path must not pass demo-capable null bootstrap to screens");
 assert(adminPanel.includes("const dashboardBootstrap = dashboardSync.bootstrap"), "Admin shell must centralize the guarded dashboard bootstrap");
 assert(adminPanel.includes("const adminSourceDriven = isSourceDrivenPayload(dashboardBootstrap)"), "Admin shell headers must use shared source-driven detection");
-assert(adminPanel.includes("bootstrap={dashboardBootstrap}"), "Admin shell screens must receive the guarded dashboard bootstrap");
+assert(adminPanel.includes("bootstrap={scopedBootstrap}"), "Admin shell screens must receive the guarded scoped dashboard bootstrap");
 assert(adminPanel.includes("sync={dashboardSync}"), "Admin shell inventory/setup screens must receive guarded sync state");
-assert(adminPanel.includes("DataModeToggle bayaan={bayaan} lang={lang} bootstrap={dashboardBootstrap}"), "Admin mode toggle must use the guarded dashboard bootstrap");
+assert(!adminPanel.includes("DataModeToggle"), "Live-only admin shell must not wire a demo/live data-mode toggle");
 assert(!adminPanel.includes("const adminSourceDriven = isSourceDrivenPayload(sync.bootstrap)"), "Admin shell must not derive source/demo labels from raw sync bootstrap");
 assert(adminPanel.includes("const sourceOverviewSub"), "Admin shell overview subtitle must derive from source counts");
 assert(adminPanel.includes("sub: adminSourceDriven ? sourceOverviewSub"), "Admin shell overview subtitle must not show the fixed demo date in source mode");
@@ -367,8 +359,8 @@ assert(exact.includes("function AdminSidebar({ active, setActive, lang, navBadge
 assert(exact.includes("Object.prototype.hasOwnProperty.call(navBadges, it.id)"), "Admin sidebar must distinguish explicit zero badge overrides from demo defaults");
 assert(!exact.includes("Kiosk live stock needs"), "Exact runtime must not expose ambiguous live Stock & Allocation wording");
 assert(!adminPanel.includes("live needs"), "Admin Stock & Allocation subtitle must not imply live evidence for source/demo-neutral stock needs");
-assert(overviewScreen.includes("fiscalSalesRowsFromSummary(summary, allowDemoFallback)"), "Overview sales flow must use guarded fiscal sales rows");
-assert(overviewScreen.includes("fiscalSalesTargetFromSummary(summary, allowDemoFallback)"), "Overview sales flow target must not default to a demo target in live/simulation mode");
+assert(!overviewScreen.includes("allowDemoFallback"), "Live-only Overview sales flow must not pass a demo-fallback prop");
+assert(overviewScreen.includes("ScopedSalesFlowChart"), "Overview sales flow must use the scope-aware sales chart");
 assert(overviewScreen.includes("No AI summary until verified engine rows are synced."), "Overview AI summary must go empty until verified source rows exist");
 assert(wasteScreen.includes("wasteReasonRowsFor(wasteRows)"), "Waste screen must derive reason rows from source-backed waste rows");
 assert(wasteScreen.includes("weeklyMetrics.waste"), "Waste 7-day KPI must read report metrics instead of a fixed value");
@@ -378,7 +370,7 @@ assert(!wasteScreen.includes("Croissants account for 42%"), "Waste screen must n
 assert(!wasteScreen.includes("by AI"), "Waste screen must not claim AI flagged anomalies when it is showing source rules");
 assert(!wasteScreen.includes("Connect Odoo"), "Waste screen visible copy must not expose Odoo branding");
 assert(!wasteScreen.includes("Odoo returns"), "Waste screen empty state must refer to the source engine, not Odoo");
-assert(reportsScreen.includes("fiscalSalesRowsFromSummary(summary, allowDemoFallback)"), "Reports fiscal sales chart must use guarded fiscal sales rows");
+assert(reportsScreen.includes("canUseDemoFallback(bootstrap)"), "Reports sales flow must guard demo rows behind canUseDemoFallback");
 assert(reportsScreen.includes("source-backed scheduler"), "Reports scheduling action must not pretend a live scheduler exists");
 assert(reportsScreen.includes("managementReportRows.map"), "Reports management pack must render derived rows");
 assert(exact.includes("const paymentGatewayRows = (payments, includeCatalog = true)"), "Payment gateway rows must support hiding catalog-only providers in source-driven mode");

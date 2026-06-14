@@ -94,6 +94,25 @@ class TestAiDashboardApi(BayaanTestBase, HttpCase):
         })
         self.assertIn("error", response)
 
+    def test_ai_image_generate_degrades_without_credentials(self):
+        """The image-draft route is read-only: with no provider configured it must
+        return the graceful unconfigured contract (no crash, no record created)."""
+        response = self._jsonrpc("/bayaan/api/ai_image_generate", {
+            "name": "Espresso",
+            "category": "Coffee",
+        })
+        if "error" in response:
+            self.fail("ai_image_generate errored: %s" % response["error"])
+        result = response["result"]
+        self.assertEqual(result.get("engine"), "odoo_pos")
+        self.assertFalse(result.get("configured"))
+        self.assertIsNone(result.get("imageBase64"))
+        self.assertTrue(result.get("error"))
+
+    def test_ai_image_generate_requires_product_name(self):
+        response = self._jsonrpc("/bayaan/api/ai_image_generate", {"name": "  "})
+        self.assertIn("error", response)
+
     def test_ai_dashboard_stream_returns_final_source_backed_event_without_credentials(self):
         response = self.opener.post(
             self.base_url() + "/bayaan/api/ai_dashboard_stream",

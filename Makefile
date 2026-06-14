@@ -18,7 +18,7 @@ help:
 > @echo "  make dev       — start the Vite dev server (no Odoo)"
 > @echo "  make build     — type-check and build the dashboard"
 > @echo "  make test      — run frontend domain tests"
-> @echo "  make smoke     — run the Playwright smoke test"
+> @echo "  make smoke     — run the live Odoo Playwright smoke test"
 > @echo "  make verify    — full release gate: frontend verify + Odoo addon tests"
 > @echo ""
 > @echo "Docker / live stack:"
@@ -43,7 +43,7 @@ test: install
 > cd $(APP_DIR) && npm test
 
 smoke: build
-> cd $(APP_DIR) && npm run smoke
+> cd $(APP_DIR) && npm run smoke:live
 
 verify: install
 > cd $(APP_DIR) && npm run verify

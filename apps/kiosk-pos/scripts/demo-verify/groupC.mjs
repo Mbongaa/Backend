@@ -1,5 +1,5 @@
 // Group C — Cashier POS flow (login: zainab, kiosk K-01). MUTATES the live demo DB.
-import { makePage, adminLogin, bodyText, shot, api, odooLogin } from "./lib.mjs";
+import { makePage, adminLogin, bodyText, shot, api, odooLogin, closeKioskSession } from "./lib.mjs";
 
 const sum = (a) => a.reduce((s, x) => s + x, 0);
 
@@ -49,10 +49,22 @@ export async function runGroupC(browser, rec) {
     await shot(page, "C-C1-shift-open");
 
     // --- C2: build cart (Cappuccino recipe + Cheesecake finished) ---
+    // Recipe/made-to-order products open a size/modifier popup before they add to the
+    // cart; finished goods (cake slice) add straight. Handle the popup when it appears.
+    const handleModifierPopup = async () => {
+      const body = await bodyText(page);
+      if (/Choose|\bSize\b|الحجم|اختر|Medium|Large|Small/i.test(body)) {
+        await page.getByRole("button", { name: /Medium|^M$|متوسط/ }).first().click().catch(() => {});
+        await page.getByRole("button", { name: /Add to (order|cart)|إضافة|^Add$/ }).first().click().catch(() => {});
+        await page.waitForTimeout(600);
+      }
+    };
     await page.locator("button.card, .card").filter({ hasText: /Cappuccino/ }).first().click().catch(() => {});
     await page.waitForTimeout(700);
+    await handleModifierPopup();
     await page.locator("button.card, .card").filter({ hasText: /Cheesecake/ }).first().click().catch(() => {});
     await page.waitForTimeout(900);
+    await handleModifierPopup();
     // Read Subtotal / VAT / Total trio from the sale rail text.
     const cartTxt = await bodyText(page);
     const pick = (re) => { const m = cartTxt.match(re); return m ? Number(m[1].replace(/[.,\s]/g, "")) : null; };
@@ -61,9 +73,18 @@ export async function runGroupC(browser, rec) {
       vat: pick(/VAT[\s\S]{0,15}?IQD\s*([\d,]+)/i),
       total: pick(/\bTotal[\s\S]{0,15}?IQD\s*([\d,]+)/i),
     };
-    const vatOk = trio.sub != null && trio.vat != null && trio.total != null && Math.abs(trio.sub + trio.vat - trio.total) <= 1;
-    rec.add("C2", "Cart math: Subtotal + VAT == Total (VAT-inclusive)",
-      vatOk, vatOk ? `${trio.sub} + ${trio.vat} = ${trio.total}` : `could not verify trio: ${JSON.stringify(trio)}`,
+    // Iraq is 0% VAT by default, so the cart rail shows ONLY a Total line (the Subtotal/VAT
+    // breakdown renders only when vatRatePct > 0). Accept either: a full Subtotal+VAT==Total
+    // breakdown, or — at 0% VAT — a present, positive Total with no breakdown (sub==total, vat==0).
+    const vatOk = trio.total != null && trio.total > 0 && (
+      (trio.sub != null && trio.vat != null && Math.abs(trio.sub + trio.vat - trio.total) <= 1)
+      || (trio.sub == null && trio.vat == null)
+    );
+    rec.add("C2", "Cart math: Subtotal + VAT == Total (Total-only at 0% VAT)",
+      vatOk,
+      vatOk
+        ? (trio.vat != null ? `${trio.sub} + ${trio.vat} = ${trio.total}` : `Total ${trio.total} (0% VAT — no breakdown line, by design)`)
+        : `could not verify trio: ${JSON.stringify(trio)}`,
       JSON.stringify(trio));
     await shot(page, "C-C2-cart");
 
@@ -131,9 +152,36 @@ export async function runGroupC(browser, rec) {
       rec.add("C6", "Record waste from POS", false, "error: " + (e.message || e));
     }
 
-    rec.add("C7", "Daily close from POS (manual gate)", true,
-      "skipped automated close to preserve the open K-01 session for the demo; close flow covered by D1 review",
-      "");
+    // --- C7: cashier ends shift -> real daily close (tie-preserving) ---
+    // A verification run must NOT leave the books untied. The earlier version skipped
+    // the close "to preserve the open session", which left this group's paid sale in an
+    // open session with no Z-report move — so a post-run reconcile showed POS gross >
+    // posted revenue (Codex NO-GO #2). Now C7 runs the official close so the session
+    // posts its Z-report account.move and the ledger ties again. Group D's close review
+    // works off historical closed sessions, so it does not need this one left open.
+    let closeOk = false;
+    let closeDetail = "no new order to close";
+    let closeRaw = "";
+    try {
+      if (newOrder) {
+        const cashAmt = Number(newOrder.amount_total || trio.total || 0);
+        // Clean count (counted == current kiosk qty == expected) → ~0 ingredient variance,
+        // so the close does not pollute the Daily Close screen with a scary loss.
+        const closeResp = await closeKioskSession(cookie, "K-01", [newOrder.name], cashAmt);
+        // The close route lets any finalize failure propagate, so a returned id with no
+        // error message means the native close posted the Z-report move successfully.
+        closeOk = !!(closeResp && closeResp.id && !closeResp.message && !closeResp.error);
+        const afterClose = await snapshot(cookie);
+        closeDetail = closeOk
+          ? `close ${closeResp.name || closeResp.id} posted; closings ${before.closings}→${afterClose.closings}`
+          : `close failed: ${JSON.stringify(closeResp).slice(0, 160)}`;
+        closeRaw = JSON.stringify(closeResp).slice(0, 200);
+      }
+    } catch (e) {
+      closeDetail = "error: " + (e.message || e);
+    }
+    rec.add("C7", "Cashier daily close posts Z-report move (tie-preserving, /shift_close)",
+      closeOk, closeDetail, closeRaw);
   } catch (e) {
     rec.add("CX", "Cashier POS flow crashed", false, (e.message || String(e)));
   } finally {

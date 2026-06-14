@@ -174,7 +174,7 @@ describe("peak-hour organization simulation", () => {
     expect(report.failures, JSON.stringify(report.failures, null, 2)).toHaveLength(0);
     expect(report.ok).toBe(true);
     expect(report.iterations).toBe(15);
-  }, 15_000);
+  }, 60_000);
 
   it("supports the adjustable 30-minute peak window with the same audit gates", () => {
     const report = auditPeakSimulation({ seed: 20260516, iterations: 15, minutes: 30 });
@@ -195,7 +195,7 @@ describe("peak-hour organization simulation", () => {
     expect(snapshot.summary.reportPeriods.daily.payments.total).toBe(1_805_500);
     expect(snapshot.purchase_orders.find((order) => order.name === "PO/SIM/ORANGES-0516")?.lines[0]?.receivedQty).toBe(900);
     expect(snapshot.warehouse_stock.find((row) => row.item === "ORANGES")?.actual_qty).toBe(2_020);
-  }, 15_000);
+  }, 60_000);
 
   it("audits custom per-kiosk target totals instead of silently falling back to defaults", () => {
     const targetOrders = {

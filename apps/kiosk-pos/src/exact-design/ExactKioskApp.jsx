@@ -850,6 +850,11 @@ function CatalogProvider({ children }) {
             image: p.image,
             price: p.price,
             sizes: p.sizes,
+            // Carry the product's own category (and any per-product modifier groups) so
+            // modifier resolution works on the "All" tab too — otherwise a coffee opened
+            // from "All" loses its size/milk/extras and falls back to a synthesized size.
+            category: p.category,
+            modifierGroups: Array.isArray(p.modifierGroups) ? p.modifierGroups : undefined,
           });
         });
         return Array.from(groups.values()).filter((g) => g.items.length > 0);
@@ -991,6 +996,7 @@ const Icon = ({ name, size = 14, stroke = 1.5, className = "", style }) => {
     eye: <><path d="M2 12C2 12 6 5 12 5C18 5 22 12 22 12C22 12 18 19 12 19C6 19 2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></>,
     flag: <><path d="M5 22V4C5 3 6 2 7 2H17L15 6L17 10H7"/></>,
     mail: <><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7L12 13L21 7"/></>,
+    info: <><circle cx="12" cy="12" r="9"/><path d="M12 11V16"/><path d="M12 8H12.01"/></>,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -2172,20 +2178,6 @@ const normalizeRealtimeAuditEvent = (event) => ({
   occurredAt: event.occurredAt || new Date().toISOString(),
 });
 
-const demoAuditEvents = () => (MOCK.ai?.auditLog || []).map((event) => ({
-  id: event.id,
-  title: event.actionEn,
-  detail: event.detailEn,
-  actor: event.actor,
-  action: "demo.audit",
-  eventType: "demo",
-  severity: event.approver ? "success" : "info",
-  reference: event.ref,
-  model: event.ref,
-  kiosk: "",
-  occurredAt: event.at,
-}));
-
 const readFileAsBase64 = (file) => new Promise((resolve, reject) => {
   if (!file) {
     resolve("");
@@ -2213,14 +2205,18 @@ function Modal({ open, onClose, title, sub, width = 460, children }) {
     };
   }, [open, onClose]);
   if (!open) return null;
-  return (
+  const overlay = (
     <div onClick={onClose}
       role="dialog"
       aria-modal="true"
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 80, display: "grid", placeItems: "center", padding: 20 }}>
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 80, display: "flex", flexDirection: "column", overflowY: "auto", padding: 20 }}>
       <div onClick={(e) => e.stopPropagation()}
         className="card"
-        style={{ width: "100%", maxWidth: width, background: "var(--paper)", borderRadius: 12, padding: 20, boxShadow: "0 24px 48px rgba(0,0,0,0.18)" }}>
+        // `margin: auto` centers the card both ways when it fits; when the card is
+        // taller than the viewport, auto margins collapse to 0 and the overlay scrolls,
+        // so both the top and the bottom (e.g. the Save button) stay reachable —
+        // unlike grid/flex center-alignment, which clips the overflowing top.
+        style={{ width: "100%", maxWidth: width, margin: "auto", background: "var(--paper)", borderRadius: 12, padding: 20, boxShadow: "0 24px 48px rgba(0,0,0,0.18)" }}>
         <div className="between" style={{ marginBottom: 14, alignItems: "flex-start", gap: 12 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 500, fontSize: 14 }}>{title}</div>
@@ -2236,44 +2232,15 @@ function Modal({ open, onClose, title, sub, width = 460, children }) {
       </div>
     </div>
   );
+  // Portal the overlay up to the `.app-frame` root. Rendered inline, the modal nests
+  // inside each page's `.fade-up` wrapper, whose `transform` keyframes establish a
+  // containing block for `position: fixed` descendants — so on a scrolled page the
+  // overlay anchors to the top of the scrolled content instead of the viewport, and
+  // the user has to scroll up to see it. `.app-frame` carries data-theme/dir/lang and
+  // has no transformed ancestor, so the cascade (incl. dark mode + RTL) is preserved.
+  if (typeof document === "undefined") return overlay;
+  return createPortal(overlay, document.querySelector(".app-frame") || document.body);
 }
-
-const DEMO_WAREHOUSE_SETUP = {
-  engine: "demo",
-  company: { id: "demo", name: "Bayaan Demo Company" },
-  warehouses: [
-    { id: "WH-MAIN", name: "Central Warehouse", code: "MAIN", stock_location_id: "LOC-MAIN", stock_location: "Central Warehouse / Stock" },
-  ],
-  locations: [
-    { id: "LOC-MAIN", name: "Stock", complete_name: "Central Warehouse / Stock", kind: "central", quantity: 12340, reserved_quantity: 0 },
-    ...MOCK.kiosks.map((kiosk) => ({
-      id: `LOC-${kiosk.id}`,
-      name: `${kiosk.id} Stock`,
-      complete_name: `Central Warehouse / Stock / ${kiosk.id} ${kiosk.name}`,
-      kind: "kiosk",
-      quantity: Math.round(kiosk.stockHealth * 9),
-      reserved_quantity: Math.round(kiosk.wasteLoad / 5),
-    })),
-  ],
-  kiosks: MOCK.kiosks.map((kiosk) => ({
-    id: kiosk.id,
-    name: kiosk.name,
-    kiosk_code: kiosk.id,
-    active: true,
-    city: kiosk.city,
-    area: kiosk.city,
-    stock_location: `Central Warehouse / Stock / ${kiosk.id} ${kiosk.name}`,
-    pos_config: `${kiosk.id} POS`,
-    picking_type: `${kiosk.id} POS Delivery`,
-    stock_deduction_policy: kiosk.status === "crit" ? "strict" : "warning",
-  })),
-  pos_configs: MOCK.kiosks.map((kiosk) => ({
-    id: `POS-${kiosk.id}`,
-    name: `${kiosk.id} POS`,
-    source_location: `Central Warehouse / Stock / ${kiosk.id} ${kiosk.name}`,
-    active: true,
-  })),
-};
 
 // Per-kiosk approximate daily P&L straight from the deterministic byKiosk summary
 // (sales / ledger COGS / waste / prorated staff cost). Today scope, matching byKiosk.
@@ -3532,6 +3499,8 @@ const odooPosMenu = (bootstrap) => {
       image: product.image,
       price: product.price,
       sizes: product.sizes?.length ? product.sizes : ["S"],
+      // Carry the real category so modifier resolution works on the "All" tab too.
+      category,
       modifierGroups: Array.isArray(product.modifierGroups) ? product.modifierGroups : [],
     });
   });
@@ -5569,7 +5538,6 @@ function RankIndicator({ rank }) {
 function OverviewScreen({ lang, bootstrap, scope = "Daily" }) {
   const ar = lang === "ar";
   const liveOnly = isLiveOnlyPayload(bootstrap);
-  const allowDemoFallback = canUseDemoFallback(bootstrap);
   const isDailyScope = !scope || scope === "Daily";
   // Per-kiosk rows follow the global scope via the shared scope-aware helper.
   const sourceKiosks = useMemo(() => odooKioskRows(bootstrap, scope), [bootstrap, scope]);
@@ -5578,8 +5546,6 @@ function OverviewScreen({ lang, bootstrap, scope = "Daily" }) {
   const summary = useMemo(() => odooSummary(bootstrap), [bootstrap]);
   // Scope-aware order list (period orders for non-daily) feeding the Sales-flow chart.
   const flowOrders = useMemo(() => unwrapOdoo(bootstrap)?.today?.orders || [], [bootstrap]);
-  const simulationActive = isSimulationPayload(bootstrap) || isSimulationRuntime();
-  const simulationPulseRows = useMemo(() => odooMinutePulse(bootstrap), [bootstrap]);
   const sourceDriven = isSourceDrivenPayload(bootstrap);
   const liveProductRows = useMemo(() => {
     if (!sourceDriven) return [];
@@ -5918,7 +5884,10 @@ function OverviewScreen({ lang, bootstrap, scope = "Daily" }) {
       ? (ar ? "هذا الأسبوع" : "this week")
       : scope === "Yearly"
         ? (ar ? "هذه السنة" : "this year")
-        : ui(ar, "today");
+        // Lowercase "today" to stay consistent with the other scope subtitles
+        // (this week / this month / this year) and to read correctly inside the
+        // "Total sales today" / "by revenue - today" labels.
+        : (ar ? "اليوم" : "today");
   const planDelta = sourceDriven
     ? (ar ? "المحرك فقط" : "engine only")
     : scope === "Monthly"
@@ -6316,7 +6285,7 @@ function OverviewScreen({ lang, bootstrap, scope = "Daily" }) {
             <div>
               <div className="ov-kpi-row">
                 <div>
-                  <div className="ov-kpi-label">{ar ? "الإيرادات" : "Total sales today"}</div>
+                  <div className="ov-kpi-label">{ar ? `الإيرادات ${scopeSubtitle}` : `Total sales ${scopeSubtitle}`}</div>
                   <div className="ov-kpi-delta" style={{ color: sourceDriven ? "var(--ink-3)" : "var(--pos)" }}>{planDelta}</div>
                 </div>
                 <div className="ov-kpi-value">
@@ -6413,17 +6382,13 @@ function OverviewScreen({ lang, bootstrap, scope = "Daily" }) {
             <div className="ov-section-head">
               <div className="ov-section-title">
                 <span className="hourly-pulse-tone-dot" />
-                {simulationActive ? ui(ar, "simulationPulse") : (ar ? "تدفق المبيعات" : "Sales flow")}
+                {ar ? "تدفق المبيعات" : "Sales flow"}
               </div>
               <span className="t-small subtle" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>
-                {simulationActive ? (ar ? "طلب الدقيقة" : "minute demand") : scopeSubtitle}
+                {scopeSubtitle}
               </span>
             </div>
-            {simulationActive && simulationPulseRows ? (
-              <HourlyPulse data={simulationPulseRows} currentHour={14} />
-            ) : (
-              <ScopedSalesFlowChart orders={flowOrders} scope={scope} ar={ar} allowDemoFallback={canUseDemoFallback(bootstrap)} />
-            )}
+            <ScopedSalesFlowChart orders={flowOrders} scope={scope} ar={ar} />
           </div>
 
           <div className="ov-section">
@@ -9146,6 +9111,33 @@ function AiProductDraftForm({ proposal, lang }) {
     }
   };
 
+  // AI product photo draft: the backend builds the prompt from the product name and
+  // returns base64 into the same image slot the manual upload uses — the human still
+  // reviews it on the card and nothing is stored until Confirm.
+  const [aiImageBusy, setAiImageBusy] = useStateIns(false);
+  const generateImage = async () => {
+    if (!form.name.trim()) { showToast(ar ? "اكتب اسم المنتج أولاً" : "Enter the product name first", "warn"); return; }
+    if (!gateway?.generateProductImage) {
+      showToast(ar ? "اربط الخلفية المباشرة لتوليد الصور" : "Connect the live backend to generate images", "warn");
+      return;
+    }
+    setAiImageBusy(true);
+    try {
+      const result = unwrapOdoo(await gateway.generateProductImage({
+        name: form.name.trim(),
+        category: form.category.trim() || undefined,
+      }));
+      const base64 = result?.imageBase64;
+      if (!base64) throw new Error(result?.error || (ar ? "تعذّر توليد الصورة" : "Could not generate the image"));
+      const mimeType = result?.mimeType || "image/png";
+      setImage({ base64, mimeType, dataUrl: `data:${mimeType};base64,${base64}`, name: ar ? "صورة مولّدة بالذكاء" : "AI-generated image" });
+    } catch (error) {
+      showToast(compactError(error) || (ar ? "تعذّر توليد الصورة" : "Could not generate the image"), "warn");
+    } finally {
+      setAiImageBusy(false);
+    }
+  };
+
   const requiresRecipe = form.consumptionMode === "recipe" || form.consumptionMode === "hybrid";
   const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
   const setIngredient = (idx, key, value) => setForm((prev) => ({
@@ -9252,31 +9244,58 @@ function AiProductDraftForm({ proposal, lang }) {
         </div>
       )}
 
-      <div>
-        <label style={labelStyle}>{ar ? "اسم المنتج" : "Product name"}</label>
-        <input style={inputStyle} value={form.name} onChange={(e) => set("name", e.target.value)} placeholder={ar ? "مثال: عصير مانجو" : "e.g. Mango Smoothie"}/>
-      </div>
-
-      <div>
-        <label style={labelStyle}>{ar ? "صورة المنتج (اختياري)" : "Product image (optional)"}</label>
+      {/* Image hero: the product photo owns the left half of the row; name +
+          generate/upload controls own the right half. The pane doubles as the
+          dropzone/upload target and shows a spinner overlay while generating. */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "stretch" }}>
         <label
           onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => { e.preventDefault(); pickImage(e.dataTransfer?.files?.[0]); }}
-          style={{ border: "1px dashed var(--line)", borderRadius: 6, padding: image ? 8 : 14, display: "flex", gap: 10, alignItems: "center", cursor: "pointer", justifyContent: image ? "space-between" : "center" }}
+          onDrop={(e) => { e.preventDefault(); if (!aiImageBusy) pickImage(e.dataTransfer?.files?.[0]); }}
+          style={{ position: "relative", display: "grid", placeItems: "center", aspectRatio: "1 / 1", minHeight: 150, border: image ? "1px solid var(--line)" : "1px dashed var(--line)", borderRadius: 8, overflow: "hidden", cursor: aiImageBusy ? "progress" : "pointer", background: "var(--surface-sunk)" }}
         >
-          {image ? (
-            <>
-              <span className="row" style={{ gap: 8, alignItems: "center", minWidth: 0 }}>
-                <img src={image.dataUrl} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4 }}/>
-                <span className="t-small" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>{image.name}</span>
-              </span>
-              <button type="button" className="btn btn-ghost" style={{ height: 26, fontSize: 11 }} onClick={(e) => { e.preventDefault(); e.stopPropagation(); setImage(null); }}>{ar ? "إزالة" : "Remove"}</button>
-            </>
-          ) : (
-            <span className="t-small subtle" style={{ fontSize: 11.5 }}>{ar ? "اسحب صورة هنا أو انقر للاختيار" : "Drag an image here or click to choose"}</span>
+          {image && (
+            <img src={image.dataUrl} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}/>
           )}
-          <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => pickImage(e.target.files?.[0])}/>
+          {aiImageBusy ? (
+            <>
+              <span style={{ position: "absolute", inset: 0, background: "var(--surface)", opacity: 0.78 }}/>
+              <span style={{ position: "relative", display: "grid", gap: 8, placeItems: "center", textAlign: "center", padding: 10 }}>
+                <span className="assistant-artifact-loader-icon"/>
+                <span className="t-small" style={{ fontSize: 11.5, fontWeight: 600 }}>{ar ? "جارٍ توليد الصورة…" : "Generating image…"}</span>
+              </span>
+            </>
+          ) : !image && (
+            <span className="t-small subtle" style={{ fontSize: 11.5, textAlign: "center", lineHeight: 1.6, padding: 12 }}>
+              {ar ? "لا توجد صورة بعد — اسحب صورة هنا أو انقر للاختيار" : "No image yet — drag one here or click to choose"}
+            </span>
+          )}
+          <input type="file" accept="image/*" style={{ display: "none" }} disabled={aiImageBusy} onChange={(e) => pickImage(e.target.files?.[0])}/>
         </label>
+
+        <div style={{ display: "grid", gap: 8, alignContent: "start" }}>
+          <div>
+            <label style={labelStyle}>{ar ? "اسم المنتج" : "Product name"}</label>
+            <input style={inputStyle} value={form.name} onChange={(e) => set("name", e.target.value)} placeholder={ar ? "مثال: عصير مانجو" : "e.g. Mango Smoothie"}/>
+          </div>
+          <span className="t-small subtle" style={{ fontSize: 11, lineHeight: 1.5 }}>
+            {ar ? "ولّد صورة المنتج من الاسم بالذكاء، أو ارفع صورتك الخاصة." : "Generate a product photo from the name with AI, or upload your own."}
+          </span>
+          <button type="button" className="btn btn-accent" style={{ height: 30, fontSize: 12 }} disabled={aiImageBusy} onClick={generateImage}>
+            {aiImageBusy
+              ? (ar ? "جارٍ توليد الصورة…" : "Generating image…")
+              : image
+                ? (ar ? "إعادة التوليد بالذكاء" : "Regenerate with AI")
+                : (ar ? "توليد صورة بالذكاء" : "Generate image with AI")}
+          </button>
+          {image && !aiImageBusy && (
+            <button type="button" className="btn btn-ghost" style={{ height: 28, fontSize: 11.5 }} onClick={() => setImage(null)}>
+              {ar ? "إزالة الصورة" : "Remove image"}
+            </button>
+          )}
+          {image?.name && !aiImageBusy && (
+            <span className="t-small subtle" style={{ fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{image.name}</span>
+          )}
+        </div>
       </div>
 
       <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, padding: 10, display: "grid", gap: 8 }}>
@@ -11362,8 +11381,13 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
   const [tick, setTick] = useState(0);
   const sourceDriven = isSourceDrivenPayload(bootstrap);
   const animateDemoMetrics = canUseDemoFallback(bootstrap);
+  const scopeWord = scope === "Monthly" ? (ar ? "هذا الشهر" : "this month")
+    : scope === "Weekly" ? (ar ? "هذا الأسبوع" : "this week")
+      : scope === "Yearly" ? (ar ? "هذه السنة" : "this year")
+        : (ar ? "اليوم" : "today");
+  const revenueScopeLabel = ar ? `الإيراد ${scopeWord}` : `Revenue ${scopeWord}`;
 
-  const setup = unwrapOdoo(sync?.warehouseSetup) || DEMO_WAREHOUSE_SETUP;
+  const setup = unwrapOdoo(sync?.warehouseSetup) || EMPTY_WAREHOUSE_SETUP;
   const enabled = Boolean(sourceOfTruth?.enabled);
   const [kioskModalOpen, setKioskModalOpen] = useState(false);
   const [kioskBusy, setKioskBusy] = useState(false);
@@ -11472,7 +11496,7 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
         <KPI label={ar ? "النشطة" : "Active"} value={String(rows.length)} footer={ar ? `${counts.good} سليم · ${counts.warn} مراقبة · ${counts.crit} حرج` : `${counts.good} ok · ${counts.warn} watch · ${counts.crit} crit`}/>
-        <KPI label={ar ? "إيراد اليوم" : "Today's revenue"} value={fmtMoney(totalRevenue)} delta={revenueDelta} deltaDir={sourceDriven ? "flat" : "up"}/>
+        <KPI label={revenueScopeLabel} value={fmtMoney(totalRevenue)} delta={revenueDelta} deltaDir={sourceDriven ? "flat" : "up"}/>
         <KPI label={ar ? "متوسط المخزون" : "Avg inventory"} value={`${counts.avgInv}%`} footer={ar ? "عبر الشبكة" : "across fleet"}/>
         <KPI label={ar ? "متوسط الهدر" : "Avg waste"} value={`${counts.avgWaste}%`} delta={`${ar ? "الهدف" : "target"} ${WASTE_TARGET}%`} deltaDir={parseFloat(counts.avgWaste) <= WASTE_TARGET ? "up" : "down"}/>
       </div>
@@ -11545,7 +11569,7 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
                 <th scope="col">{ar ? "الكشك" : "Kiosk"}</th>
                 <th scope="col">{ar ? "المدينة" : "City"}</th>
                 <th scope="col">{ar ? "الحالة" : "Status"}</th>
-                <th scope="col" style={{ textAlign: "end" }}>{ar ? "إيراد اليوم" : "Revenue today"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{revenueScopeLabel}</th>
                 <th scope="col" style={{ textAlign: "end" }}>{ar ? "الطلبات" : "Orders"}</th>
                 <th scope="col" style={{ width: 160 }}>{ar ? "المخزون" : "Inventory"}</th>
                 <th scope="col" style={{ width: 160 }}>{ar ? "الهدر" : "Waste"}</th>
@@ -11855,6 +11879,24 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
   // Per-kiosk dated close history. chain_bootstrap only ships today's close, so
   // the "Daily closings" tab pulls the full history for this kiosk to list rows.
   const [closeHistory, setCloseHistory] = useState([]);
+  // Per-kiosk one-time / capital costs (kiosk build, equipment, fit-out),
+  // capitalized as real fixed assets in Odoo and tagged to this branch.
+  const [capexData, setCapexData] = useState(null);
+  const [capexNonce, setCapexNonce] = useState(0);
+  const [capexModalOpen, setCapexModalOpen] = useState(false);
+  const [capexBusy, setCapexBusy] = useState(false);
+  const [capexDraft, setCapexDraft] = useState({
+    name: "", category: "equipment", amount: "", date: "", usefulLifeMonths: 36, supplier: "", note: "",
+  });
+  useEffect(() => {
+    if (tab !== "capex" || !sourceOfTruth?.enabled || typeof sourceOfTruth.getKioskCapex !== "function") return;
+    let cancelled = false;
+    setCapexData(null);
+    sourceOfTruth.getKioskCapex({ kiosk: selectedKioskId })
+      .then((res) => { if (!cancelled) setCapexData(res || { capex: [], totals: {} }); })
+      .catch(() => { if (!cancelled) setCapexData({ capex: [], totals: {} }); });
+    return () => { cancelled = true; };
+  }, [tab, sourceOfTruth, selectedKioskId, capexNonce]);
   useEffect(() => {
     if (!sourceOfTruth?.enabled || typeof sourceOfTruth.getShiftCloseHistory !== "function") return;
     let cancelled = false;
@@ -11949,6 +11991,7 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
     { id: "sessions", label: ar ? "جلسات POS" : "POS sessions" },
     { id: "closings", label: ar ? "الإغلاقات" : "Daily closings" },
     { id: "staff", label: ar ? "الموظفون" : "Staff" },
+    { id: "capex", label: ar ? "التأسيس والأصول" : "Setup & assets" },
   ];
 
   const renderStatus = (status) => {
@@ -12103,7 +12146,7 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
       <SectionHead
         title={ar ? "جلسات POS" : "POS sessions"}
         sub={sourceDriven
-          ? (ar ? "لا تُعرض إلا الجلسات القادمة من مصدر Bayaan/Odoo" : "Only Bayaan/Odoo source session rows are shown here")
+          ? (ar ? "لا تُعرض إلا الجلسات القادمة من مصدر Bayaan" : "Only Bayaan source session rows are shown here")
           : (ar ? "جلسات تجريبية للواجهة فقط" : "Demo session rows for the interface only")} />
       <table className="tbl">
         <tbody>
@@ -12741,6 +12784,138 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
     </div>
   );
 
+  const CAPEX_CATEGORY_LABELS = {
+    equipment: { en: "Equipment (machines, fridges)", ar: "معدات (آلات، ثلاجات)" },
+    fit_out: { en: "Fit-out / construction", ar: "تجهيز / إنشاء" },
+    manufacturing: { en: "Kiosk manufacturing / build", ar: "تصنيع / بناء الكشك" },
+    signage: { en: "Signage & branding", ar: "لافتات وعلامة تجارية" },
+    furniture: { en: "Furniture & fixtures", ar: "أثاث وتجهيزات" },
+    license_deposit: { en: "License / deposit", ar: "رخصة / تأمين" },
+    other: { en: "Other one-time cost", ar: "تكلفة لمرة واحدة أخرى" },
+  };
+  const capexCatLabel = (category) => {
+    const entry = CAPEX_CATEGORY_LABELS[category];
+    return entry ? (ar ? entry.ar : entry.en) : category;
+  };
+  const capexStateBadge = (state) => {
+    if (state === "posted") return <span className="badge badge-pos">{ar ? "مُرسمل" : "Capitalized"}</span>;
+    if (state === "failed") return <span className="badge badge-crit">{ar ? "فشل الترحيل" : "Posting failed"}</span>;
+    if (state === "reversed") return <span className="badge">{ar ? "ملغى" : "Reversed"}</span>;
+    return <span className="badge">{state}</span>;
+  };
+  const submitCapex = async (event) => {
+    event.preventDefault();
+    const amount = Number(capexDraft.amount || 0);
+    if (!capexDraft.name.trim() || !amount) {
+      showToast(ar ? "أدخل الاسم والمبلغ" : "Enter a name and amount", "warn");
+      return;
+    }
+    if (!sourceOfTruth?.enabled) {
+      showToast(ar ? "اربط المحرك أولاً" : "Connect the engine before recording costs", "warn");
+      return;
+    }
+    setCapexBusy(true);
+    try {
+      const res = await sourceOfTruth.submitKioskCapex({
+        kiosk: selectedKioskId,
+        name: capexDraft.name.trim(),
+        amount,
+        category: capexDraft.category,
+        date: capexDraft.date || undefined,
+        usefulLifeMonths: Number(capexDraft.usefulLifeMonths) || 0,
+        supplier: capexDraft.supplier.trim() || undefined,
+        note: capexDraft.note.trim() || undefined,
+      });
+      if (res && res.state === "failed") {
+        showToast((ar ? "تعذّر ترحيل القيد: " : "Could not capitalize: ") + (res.error || ""), "warn");
+      } else {
+        showToast(ar ? "تم رسملة التكلفة كأصل ثابت" : "Cost capitalized as a fixed asset", "success");
+      }
+      setCapexModalOpen(false);
+      setCapexDraft({ name: "", category: "equipment", amount: "", date: "", usefulLifeMonths: 36, supplier: "", note: "" });
+      setCapexNonce((n) => n + 1);
+      await refreshOdoo?.();
+    } catch (error) {
+      showToast(compactError(error) || (ar ? "تعذّر الحفظ" : "Could not save"), "warn");
+    } finally {
+      setCapexBusy(false);
+    }
+  };
+  const capexRows = capexData?.capex || [];
+  const capexTotals = capexData?.totals || {};
+  const renderCapex = () => (
+    <div className="col" style={{ gap: 14 }}>
+      <div className="card card-pad">
+        <div className="between" style={{ gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div className="t-h2">{ar ? "تكاليف التأسيس والأصول لمرة واحدة" : "Setup & one-time assets"}</div>
+            <div className="t-small subtle" style={{ maxWidth: 620 }}>
+              {ar
+                ? "بناء الكشك والمعدات والتجهيز — تُرسمل كأصول ثابتة حقيقية وتُنسب إلى مركز تكلفة هذا الفرع. تظهر في الميزانية العمومية ودفتر الأستاذ."
+                : "Kiosk build, equipment and fit-out — capitalized as real fixed assets, tagged to this branch's cost center. They appear in the Balance Sheet and General Ledger."}
+            </div>
+          </div>
+          <button className="btn btn-primary" onClick={() => setCapexModalOpen(true)} style={{ height: 30, fontSize: 12 }}>
+            <Icon name="plus" size={12}/>{ar ? "إضافة تكلفة" : "Add cost"}
+          </button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginTop: 14 }}>
+          <KPI label={ar ? "رأس المال المستثمر" : "Invested capital"} value={fmtMoney(capexTotals.invested || 0)} footer={ar ? `${capexTotals.posted || 0} أصل مُرسمل` : `${capexTotals.posted || 0} capitalized`} size="lg"/>
+          <KPI label={ar ? "صافي القيمة الدفترية" : "Net book value"} value={fmtMoney(capexTotals.netBookValue || 0)} footer={ar ? "بعد الإهلاك" : "after depreciation"} size="lg"/>
+          <KPI label={ar ? "عدد البنود" : "Items"} value={String(capexTotals.count || 0)} delta={capexTotals.failed ? (ar ? `${capexTotals.failed} فشل` : `${capexTotals.failed} failed`) : undefined} deltaDir={capexTotals.failed ? "down" : "flat"} size="lg"/>
+        </div>
+      </div>
+
+      {!sourceOfTruth?.enabled ? (
+        <div className="card card-pad"><div className="ai-block" style={{ fontSize: 14 }}>{ar ? "اربط المحرك المحاسبي لتسجيل ورسملة التكاليف لمرة واحدة." : "Connect the accounting engine to record and capitalize one-time costs."}</div></div>
+      ) : (
+        <div className="card">
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl" style={{ minWidth: 820 }}>
+              <thead>
+                <tr>
+                  <th scope="col">{ar ? "البند" : "Item"}</th>
+                  <th scope="col">{ar ? "الفئة" : "Category"}</th>
+                  <th scope="col">{ar ? "التاريخ" : "Date"}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "التكلفة" : "Cost"}</th>
+                  <th scope="col" style={{ textAlign: "end" }}>{ar ? "صافي القيمة" : "Net book value"}</th>
+                  <th scope="col">{ar ? "القيد المحاسبي" : "Accounting entry"}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {capexRows.map((row) => (
+                  <tr key={row.id}>
+                    <td>
+                      <div style={{ fontWeight: 500 }}>{row.name}</div>
+                      {row.supplier && <div className="t-micro muted">{row.supplier}</div>}
+                    </td>
+                    <td><span className="badge">{capexCatLabel(row.category)}</span></td>
+                    <td className="t-num muted">{row.date}</td>
+                    <td className="t-num" style={{ textAlign: "end", fontWeight: 600 }}>{fmtMoney(row.amount)}</td>
+                    <td className="t-num" style={{ textAlign: "end" }}>
+                      {fmtMoney(row.netBookValue)}
+                      {row.usefulLifeMonths > 0 && <div className="t-micro muted">{ar ? `إهلاك ${fmtMoney(row.monthlyDepreciation)}/شهر` : `${fmtMoney(row.monthlyDepreciation)}/mo`}</div>}
+                    </td>
+                    <td>
+                      <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                        {capexStateBadge(row.state)}
+                        {row.moveName && <span className="t-micro muted">{row.moveName}{row.assetAccount ? ` · ${row.assetAccount}` : ""}</span>}
+                      </div>
+                      {row.state === "failed" && row.error && <div className="t-micro" style={{ color: "var(--crit)" }}>{row.error}</div>}
+                    </td>
+                  </tr>
+                ))}
+                {!capexRows.length && (
+                  <tr><td colSpan={6} className="muted">{capexData ? (ar ? "لم تُسجّل أي تكاليف تأسيس لهذا الكشك بعد" : "No setup costs recorded for this kiosk yet") : (ar ? "جارٍ التحميل…" : "Loading…")}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   const content = {
     overview: renderOverview(),
     sales: renderOrders(),
@@ -12750,6 +12925,7 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
     sessions: renderSessions(),
     closings: renderClosings(),
     staff: renderStaff(),
+    capex: renderCapex(),
   }[tab];
 
   return (
@@ -12779,6 +12955,65 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
       </div>
 
       {content}
+
+      <Modal open={capexModalOpen} onClose={() => setCapexModalOpen(false)} width={520}
+        title={ar ? "إضافة تكلفة تأسيس لمرة واحدة" : "Add a one-time setup cost"}
+        sub={ar ? `تُرسمل كأصل ثابت وتُنسب إلى ${selectedKioskId}` : `Capitalized as a fixed asset, tagged to ${selectedKioskId}`}>
+        <form onSubmit={submitCapex} className="col" style={{ gap: 10 }}>
+          <div className="col" style={{ gap: 4 }}>
+            <label className="t-micro">{ar ? "البند" : "Item"}</label>
+            <input className="input" value={capexDraft.name} autoFocus
+              onChange={(e) => setCapexDraft((d) => ({ ...d, name: e.target.value }))}
+              placeholder={ar ? "مثال: ماكينة إسبريسو، تجهيز الكشك" : "e.g. Espresso machine, kiosk fit-out"}/>
+          </div>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ gap: 4, flex: 1 }}>
+              <label className="t-micro">{ar ? "الفئة" : "Category"}</label>
+              <select className="input" value={capexDraft.category}
+                onChange={(e) => setCapexDraft((d) => ({ ...d, category: e.target.value }))}>
+                {Object.keys(CAPEX_CATEGORY_LABELS).map((key) => (
+                  <option key={key} value={key}>{capexCatLabel(key)}</option>
+                ))}
+              </select>
+            </div>
+            <div className="col" style={{ gap: 4, width: 150 }}>
+              <label className="t-micro">{ar ? "المبلغ" : "Amount"}</label>
+              <input className="input" type="number" step={1000} value={capexDraft.amount}
+                onChange={(e) => setCapexDraft((d) => ({ ...d, amount: e.target.value }))}
+                placeholder="e.g. 1500000"/>
+            </div>
+          </div>
+          <div className="row" style={{ gap: 10 }}>
+            <div className="col" style={{ gap: 4, flex: 1 }}>
+              <label className="t-micro">{ar ? "تاريخ الشراء" : "Acquisition date"}</label>
+              <input className="input" type="date" value={capexDraft.date}
+                onChange={(e) => setCapexDraft((d) => ({ ...d, date: e.target.value }))}/>
+            </div>
+            <div className="col" style={{ gap: 4, width: 150 }}>
+              <label className="t-micro">{ar ? "العمر الإنتاجي (شهور)" : "Useful life (months)"}</label>
+              <input className="input" type="number" step={1} value={capexDraft.usefulLifeMonths}
+                onChange={(e) => setCapexDraft((d) => ({ ...d, usefulLifeMonths: e.target.value }))}/>
+            </div>
+          </div>
+          <div className="col" style={{ gap: 4 }}>
+            <label className="t-micro">{ar ? "المورّد (اختياري)" : "Supplier (optional)"}</label>
+            <input className="input" value={capexDraft.supplier}
+              onChange={(e) => setCapexDraft((d) => ({ ...d, supplier: e.target.value }))}
+              placeholder={ar ? "اسم المورّد" : "Vendor name"}/>
+          </div>
+          <div className="col" style={{ gap: 4 }}>
+            <label className="t-micro">{ar ? "ملاحظة (اختياري)" : "Note (optional)"}</label>
+            <input className="input" value={capexDraft.note}
+              onChange={(e) => setCapexDraft((d) => ({ ...d, note: e.target.value }))}/>
+          </div>
+          <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+            <button type="button" className="btn btn-ghost" onClick={() => setCapexModalOpen(false)}>{ar ? "إلغاء" : "Cancel"}</button>
+            <button type="submit" className="btn btn-primary" disabled={capexBusy}>
+              {capexBusy ? (ar ? "جارٍ الحفظ…" : "Saving…") : (ar ? "رسملة التكلفة" : "Capitalize cost")}
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }
@@ -12881,7 +13116,7 @@ function RealtimeWarehouseCard({ node, lang }) {
 
 function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
   const ar = lang === "ar";
-  const setup = unwrapOdoo(sync?.warehouseSetup) || DEMO_WAREHOUSE_SETUP;
+  const setup = unwrapOdoo(sync?.warehouseSetup) || EMPTY_WAREHOUSE_SETUP;
   const liveOnly = isLiveOnlyPayload(sync?.warehouseSetup);
   const [view, setView] = useState("cards");
   const [scope, setScope] = useState("all");
@@ -14199,8 +14434,9 @@ const INVESTIGATION_STATUS_AR = {
   "Rejected - investigation open": "مرفوض - تحقيق مفتوح",
 };
 
-function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
+function ClosingScreen({ lang, bootstrap, sourceOfTruth, caps = null }) {
   const ar = lang === "ar";
+  const can = (k) => !caps || caps[k] !== false;
   const { showToast } = useToast();
   const seed = odooClosingRows(bootstrap);
   const [closings, setClosings] = useState(seed);
@@ -14445,7 +14681,7 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
                     <td className="muted">{investigationLabel}</td>
                     <td onClick={(e) => e.stopPropagation()} style={{ width: 110, textAlign: "end" }}>
                       <div className="row" style={{ gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
-                        {c.status !== "approved" && c.status !== "open" && (
+                        {can("approveClose") && c.status !== "approved" && c.status !== "open" && (
                           <>
                             <button
                               type="button"
@@ -14580,7 +14816,7 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth }) {
                                 ))}
                               </tbody>
                             </table>
-                            {c.status !== "approved" && c.status !== "open" && (
+                            {can("approveClose") && c.status !== "approved" && c.status !== "open" && (
                               <div className="row" style={{ gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
                                 <button className="btn btn-ghost" style={{ height: 30, fontSize: 12 }} onClick={() => onAddNote(c)} disabled={busyId === c.id}>
                                   <Icon name="flag" size={12}/>{ar ? "إضافة ملاحظة" : "Add note"}
@@ -15516,8 +15752,9 @@ const editorInput = {
 };
 
 // =============== SUPPLIERS ===============
-function SuppliersScreen({ lang, bootstrap, sync, sourceOfTruth, refreshOdoo }) {
+function SuppliersScreen({ lang, bootstrap, sync, sourceOfTruth, refreshOdoo, caps = null }) {
   const ar = lang === "ar";
+  const can = (k) => !caps || caps[k] !== false;
   const { showToast } = useToast();
   const liveOnly = isLiveOnlyPayload(bootstrap);
   const sourceDriven = isSourceDrivenPayload(bootstrap);
@@ -15941,9 +16178,11 @@ function SuppliersScreen({ lang, bootstrap, sync, sourceOfTruth, refreshOdoo }) 
               <div className="t-h2">{ar ? "طلبات الشراء المفتوحة" : "Open purchase orders"}</div>
               <div className="t-small subtle">{ar ? "المشتريات التي تغير تكلفة المنتج" : "Invoice-first purchases assigned to a receiving warehouse"}</div>
             </div>
-            <button className="btn btn-ghost" onClick={() => openPoModal()} style={{ height: 28, fontSize: 12 }}>
-              <Icon name="plus" size={12}/>{ar ? "طلب شراء" : "Upload invoice"}
-            </button>
+            {can("createPurchase") && (
+              <button className="btn btn-ghost" onClick={() => openPoModal()} style={{ height: 28, fontSize: 12 }}>
+                <Icon name="plus" size={12}/>{ar ? "طلب شراء" : "Upload invoice"}
+              </button>
+            )}
           </div>
           <table className="tbl">
             <thead>
@@ -15968,7 +16207,7 @@ function SuppliersScreen({ lang, bootstrap, sync, sourceOfTruth, refreshOdoo }) 
                   <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(po.value)}</td>
                   <td style={{ textAlign: "end" }}>
                     <span className={`badge ${purchaseStatusClass(po.status)}`}>{arTerm(lang, po.status)}</span>
-                    {nextPurchaseAction(po.status) && (
+                    {can("createPurchase") && nextPurchaseAction(po.status) && (
                       <button className="btn btn-ghost" onClick={() => advancePoStatus(po, nextPurchaseAction(po.status))}
                         disabled={poActionBusy === po.po}
                         style={{ height: 24, fontSize: 11, marginInlineStart: 6 }}>
@@ -16059,7 +16298,9 @@ function SuppliersScreen({ lang, bootstrap, sync, sourceOfTruth, refreshOdoo }) 
             <select className="input" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 150 }}>
               {supplierCategories.map((category) => <option key={category} value={category}>{category === "all" ? arTerm(lang, "All categories") : arTerm(lang, category)}</option>)}
             </select>
-            <button className="btn btn-primary" onClick={() => setSupplierModalOpen(true)} style={{ height: 28, fontSize: 12 }}><Icon name="plus" size={12}/>{ar ? "مورد جديد" : "Add supplier"}</button>
+            {can("manageSuppliers") && (
+              <button className="btn btn-primary" onClick={() => setSupplierModalOpen(true)} style={{ height: 28, fontSize: 12 }}><Icon name="plus" size={12}/>{ar ? "مورد جديد" : "Add supplier"}</button>
+            )}
           </div>
         </div>
         <table className="tbl">
@@ -16090,7 +16331,9 @@ function SuppliersScreen({ lang, bootstrap, sync, sourceOfTruth, refreshOdoo }) 
                 <td><span className="badge">{arTerm(lang, s.deliveryCategory || "Review")}</span></td>
                 <td className="muted">{arTerm(lang, s.lastOrder)}</td>
                 <td style={{ textAlign: "end" }}>
-                  <button className="btn btn-ghost" onClick={() => openPoModal(s)} style={{ height: 24, fontSize: 11 }}>{ar ? "طلب جديد" : "Upload invoice"}</button>
+                  {can("createPurchase") && (
+                    <button className="btn btn-ghost" onClick={() => openPoModal(s)} style={{ height: 24, fontSize: 11 }}>{ar ? "طلب جديد" : "Upload invoice"}</button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -16366,8 +16609,9 @@ function StaffScreen({ lang, bootstrap }) {
   );
 }
 
-function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
+function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, caps = null }) {
   const ar = lang === "ar";
+  const can = (k) => !caps || caps[k] !== false;
   const { showToast } = useToast();
   const liveOnly = isLiveOnlyPayload(bootstrap);
   const simulationDriven = isSimulationPayload(bootstrap);
@@ -17374,15 +17618,21 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
             <button className="btn btn-ghost" onClick={() => setAdjustmentModalOpen(true)} style={{ height: 30, fontSize: 12 }}>
               <Icon name="plus" size={12}/>{ui(ar, "adjustment")}
             </button>
-            <button className="btn btn-ghost" onClick={reviewPayroll} style={{ height: 30, fontSize: 12 }}>
-              <Icon name="check" size={12}/>{ar ? "مراجعة الرواتب" : "Review payroll"}
-            </button>
-            <button className="btn btn-primary" onClick={approvePayroll} style={{ height: 30, fontSize: 12 }}>
-              <Icon name="check" size={12}/>{ar ? "اعتماد الرواتب" : "Approve payroll"}
-            </button>
-            <button className="btn btn-ghost" onClick={markPayrollPaid} style={{ height: 30, fontSize: 12 }}>
-              <Icon name="cash" size={12}/>{ar ? "تعليم كمدفوع" : "Mark paid"}
-            </button>
+            {can("runPayroll") && (
+              <button className="btn btn-ghost" onClick={reviewPayroll} style={{ height: 30, fontSize: 12 }}>
+                <Icon name="check" size={12}/>{ar ? "مراجعة الرواتب" : "Review payroll"}
+              </button>
+            )}
+            {can("runPayroll") && (
+              <button className="btn btn-primary" onClick={approvePayroll} style={{ height: 30, fontSize: 12 }}>
+                <Icon name="check" size={12}/>{ar ? "اعتماد الرواتب" : "Approve payroll"}
+              </button>
+            )}
+            {can("runPayroll") && (
+              <button className="btn btn-ghost" onClick={markPayrollPaid} style={{ height: 30, fontSize: 12 }}>
+                <Icon name="cash" size={12}/>{ar ? "تعليم كمدفوع" : "Mark paid"}
+              </button>
+            )}
             <button className="btn btn-ghost" onClick={exportPayroll} style={{ height: 30, fontSize: 12 }}>
               <Icon name="download" size={12}/>{ui(ar, "exportPayroll")}
             </button>
@@ -17398,9 +17648,11 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
             <div className="t-h2">{ar ? "متطلبات التغطية" : "Coverage requirements"}</div>
             <div className="t-small subtle">{ar ? "كم موظفاً من كل دور يحتاجه كل كشك — تُقاس الفجوات مقابلها" : "How many of each role each kiosk needs — coverage gaps are measured against these"}</div>
           </div>
-          <button className="btn btn-primary" onClick={() => setCoverageModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
-            <Icon name="plus" size={12}/>{ar ? "متطلب" : "Requirement"}
-          </button>
+          {can("editStaff") && (
+            <button className="btn btn-primary" onClick={() => setCoverageModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
+              <Icon name="plus" size={12}/>{ar ? "متطلب" : "Requirement"}
+            </button>
+          )}
         </div>
         <table className="tbl">
           <thead>
@@ -17479,9 +17731,11 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
               <div className="t-h2">{ui(ar, "workWeek")}</div>
               <div className="t-small subtle">{ar ? "ورديات مؤرخة مرتبطة بالأكشاك" : "Weekly plan by kiosk, day, and role"}</div>
             </div>
-            <button className="btn btn-primary" onClick={() => openShiftEditor(null, selectedWeekStart)} style={{ height: 28, fontSize: 12 }}>
-              <Icon name="plus" size={12}/>{ui(ar, "assignShift")}
-            </button>
+            {can("editStaff") && (
+              <button className="btn btn-primary" onClick={() => openShiftEditor(null, selectedWeekStart)} style={{ height: 28, fontSize: 12 }}>
+                <Icon name="plus" size={12}/>{ui(ar, "assignShift")}
+              </button>
+            )}
           </div>
           <div className="staff-roster-summary-grid">
             <div className="staff-roster-summary-item">
@@ -17528,9 +17782,11 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
               <option value="all">{ui(ar, "allKiosks")}</option>
               {kioskOptions.map((kiosk) => <option key={kiosk.id} value={kiosk.id}>{arTerm(lang, kiosk.label)}</option>)}
             </select>
-            <button className="btn btn-primary" onClick={() => openShiftEditor(null, selectedWeekStart)} style={{ height: 30, fontSize: 12 }}>
-              <Icon name="plus" size={12}/>{ui(ar, "assignShift")}
-            </button>
+            {can("editStaff") && (
+              <button className="btn btn-primary" onClick={() => openShiftEditor(null, selectedWeekStart)} style={{ height: 30, fontSize: 12 }}>
+                <Icon name="plus" size={12}/>{ui(ar, "assignShift")}
+              </button>
+            )}
           </div>
         </div>
         <div className="staff-week-grid">
@@ -17546,9 +17802,11 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                     <div className="t-micro">{day.label}</div>
                     <div className="staff-day-date">{day.shortDate}</div>
                   </div>
-                  <button className="btn btn-quiet staff-day-add" onClick={() => openShiftEditor(null, day.date)} aria-label={ar ? `إضافة وردية ليوم ${day.label}` : `Add shift for ${day.label}`}>
-                    <Icon name="plus" size={12}/>
-                  </button>
+                  {can("editStaff") && (
+                    <button className="btn btn-quiet staff-day-add" onClick={() => openShiftEditor(null, day.date)} aria-label={ar ? `إضافة وردية ليوم ${day.label}` : `Add shift for ${day.label}`}>
+                      <Icon name="plus" size={12}/>
+                    </button>
+                  )}
                 </div>
                 {dayGaps.map((gap) => (
                   <div className="staff-gap-row" key={`${gap.ruleId || gap.kiosk}-${gap.date || day.date}-${gap.role}-${gap.startHour}`}>
@@ -17706,9 +17964,11 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
             </div>
             <div className="row" style={{ gap: 6 }}>
               <span className="badge">{fmtMoney(adjustmentTotal)} {ar ? "تعديل صافي" : "net adj."}</span>
-              <button className="btn btn-ghost" onClick={() => setAttendanceModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
-                <Icon name="clock" size={12}/>{ui(ar, "recordAttendance")}
-              </button>
+              {can("editStaff") && (
+                <button className="btn btn-ghost" onClick={() => setAttendanceModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
+                  <Icon name="clock" size={12}/>{ui(ar, "recordAttendance")}
+                </button>
+              )}
             </div>
           </div>
           <table className="tbl">
@@ -17775,7 +18035,7 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
                     <span className={`badge ${row.status === "hold" ? "badge-warn" : row.status === "approved" ? "badge-pos" : ""}`}>{arTerm(lang, row.status)}</span>
                   </td>
                   <td style={{ textAlign: "end" }}>
-                    {row.status === "hold" ? (
+                    {row.status === "hold" && can("runPayroll") ? (
                       <div className="row" style={{ justifyContent: "flex-end", gap: 6 }}>
                         <button className="btn btn-ghost" onClick={() => resolvePayrollAdjustment(row, "reject")} style={{ height: 26, fontSize: 11 }}>
                           {ar ? "رفض التعديل" : "Reject adjustment"}
@@ -17812,9 +18072,11 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
             <select className="input" value={kioskFilter} onChange={(event) => setKioskFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 132 }}>
               {kiosks.map((kiosk) => <option key={kiosk} value={kiosk}>{kiosk === "all" ? ui(ar, "allKiosks") : arTerm(lang, kiosk)}</option>)}
             </select>
-            <button className="btn btn-primary" onClick={() => setStaffModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
-              <Icon name="plus" size={12}/> {ar ? "موظف جديد" : "Add staff"}
-            </button>
+            {can("editStaff") && (
+              <button className="btn btn-primary" onClick={() => setStaffModalOpen(true)} style={{ height: 28, fontSize: 12 }}>
+                <Icon name="plus" size={12}/> {ar ? "موظف جديد" : "Add staff"}
+              </button>
+            )}
           </div>
         </div>
         <table className="tbl">
@@ -18563,6 +18825,1392 @@ function ReportsScreen({ lang, bootstrap, mode = "reports", sourceOfTruth, refre
 
 
 
+/* ===== screens/accounting.jsx ===== */
+
+/* ============================================================
+   Accounting workspace — the FORMAL Odoo books.
+   Reads real account.move / account.move.line through
+   /bayaan/api/accounting_report. General Ledger, Journal
+   Entries, Trial Balance, Income Statement, Balance Sheet and
+   Chart of Accounts — the deterministic source of truth the
+   client's accountant audits. AI never touches these numbers.
+   ============================================================ */
+
+const ACCOUNT_TYPE_LABELS = {
+  asset_receivable: { en: "Receivable", ar: "ذمم مدينة" },
+  asset_cash: { en: "Bank & Cash", ar: "النقد والبنك" },
+  asset_current: { en: "Current Asset", ar: "أصل متداول" },
+  asset_non_current: { en: "Non-current Asset", ar: "أصل غير متداول" },
+  asset_prepayments: { en: "Prepayment", ar: "مصروف مدفوع مقدماً" },
+  asset_fixed: { en: "Fixed Asset", ar: "أصل ثابت" },
+  liability_payable: { en: "Payable", ar: "ذمم دائنة" },
+  liability_current: { en: "Current Liability", ar: "التزام متداول" },
+  liability_non_current: { en: "Non-current Liability", ar: "التزام غير متداول" },
+  liability_credit_card: { en: "Credit Card", ar: "بطاقة ائتمان" },
+  equity: { en: "Equity", ar: "حقوق الملكية" },
+  equity_unaffected: { en: "Current Year Earnings", ar: "أرباح السنة الحالية" },
+  income: { en: "Income", ar: "إيراد" },
+  income_other: { en: "Other Income", ar: "إيراد آخر" },
+  expense: { en: "Expense", ar: "مصروف" },
+  expense_direct_cost: { en: "Cost of Revenue", ar: "تكلفة الإيراد" },
+  expense_depreciation: { en: "Depreciation", ar: "إهلاك" },
+  expense_other: { en: "Other Expense", ar: "مصروف آخر" },
+};
+
+const ACCOUNTING_REPORT_BY_VIEW = {
+  gl: "ledger",
+  journals: "journals",
+  trialBalance: "trial_balance",
+  coa: "chart",
+  cashFlow: "cash_flow",
+  agedPayable: "aged_payable",
+  agedReceivable: "aged_receivable",
+  taxReport: "tax_report",
+};
+
+function accountTypeLabel(lang, type) {
+  const entry = ACCOUNT_TYPE_LABELS[type];
+  if (!entry) return type || "";
+  return lang === "ar" ? entry.ar : entry.en;
+}
+
+function localIsoDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function accountingPreset(kind) {
+  const now = new Date();
+  const today = localIsoDate(now);
+  if (kind === "today") return { from: today, to: today };
+  if (kind === "month") return { from: localIsoDate(new Date(now.getFullYear(), now.getMonth(), 1)), to: today };
+  if (kind === "quarter") {
+    const q = Math.floor(now.getMonth() / 3) * 3;
+    return { from: localIsoDate(new Date(now.getFullYear(), q, 1)), to: today };
+  }
+  if (kind === "year") return { from: localIsoDate(new Date(now.getFullYear(), 0, 1)), to: today };
+  return { from: localIsoDate(new Date(now.getFullYear(), now.getMonth(), 1)), to: today };
+}
+
+// Accounting convention: blank cell for a zero debit/credit so the eye follows real movement.
+function acctCell(value) {
+  return Number(value || 0) ? fmtMoney(Number(value)) : "";
+}
+
+// Client-side CSV export so the accountant can pull any ledger view into a spreadsheet.
+// The BOM keeps Excel happy with UTF-8 (Arabic account names).
+function downloadAccountingCsv(name, header, rows) {
+  if (typeof window === "undefined") return;
+  const esc = (value) => {
+    const s = String(value ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const body = [header, ...rows].map((row) => row.map(esc).join(",")).join("\n");
+  const blob = new Blob(["﻿" + body], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${name}-${localIsoDate(new Date())}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function AccountingTable({ children, minWidth = 720 }) {
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table className="tbl" style={{ minWidth }}>{children}</table>
+    </div>
+  );
+}
+
+function AccountingScreen({ lang, view = "gl", bootstrap, sourceOfTruth, scope = "Daily", caps = null }) {
+  void scope;
+  const ar = lang === "ar";
+  const can = (k) => !caps || caps[k] !== false;
+  const bayaan = useBayaan();
+  const engineReady = Boolean(sourceOfTruth?.enabled);
+  const canEdit = engineReady && ["accountant", "manager", "superadmin"].includes(bayaan.auth?.user?.primaryRole);
+  const initial = accountingPreset("month");
+  const [dateFrom, setDateFrom] = useState(initial.from);
+  const [dateTo, setDateTo] = useState(initial.to);
+  const [kiosk, setKiosk] = useState("all");
+  const [accountFilter, setAccountFilter] = useState("");
+  const [statementTab, setStatementTab] = useState("income");
+  const [coaType, setCoaType] = useState("all");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const { showToast } = useToast();
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [newEntryOpen, setNewEntryOpen] = useState(false);
+  const [chartAccounts, setChartAccounts] = useState([]);
+  const [detailMove, setDetailMove] = useState(null);
+  const [coaShowArchived, setCoaShowArchived] = useState(false);
+  const [accountModal, setAccountModal] = useState(null); // null | {} (new) | {id,code,name,type,active} (edit)
+
+  const kioskOptions = useMemo(() => {
+    const rows = odooKioskRows(bootstrap) || [];
+    return rows.map((row) => ({ code: row.kiosk_code || row.id, name: row.name || row.id })).filter((row) => row.code);
+  }, [bootstrap]);
+
+  const applyPreset = (kind) => {
+    const preset = accountingPreset(kind);
+    setDateFrom(preset.from);
+    setDateTo(preset.to);
+  };
+
+  const openNewEntry = async () => {
+    setNewEntryOpen(true);
+    if (!chartAccounts.length && engineReady) {
+      try {
+        const chart = await sourceOfTruth.getAccountingReport({ report: "chart", dateTo });
+        setChartAccounts((chart?.rows || []).map((r) => ({ code: r.code, name: r.name, type: r.type })).filter((r) => r.code));
+      } catch { /* picker stays empty; the accountant can still type a code */ }
+    }
+  };
+  const openDetail = async (moveId) => {
+    if (!moveId || !engineReady || typeof sourceOfTruth.getJournalEntryDetail !== "function") return;
+    setDetailMove({ id: moveId, loading: true });
+    try {
+      const detail = await sourceOfTruth.getJournalEntryDetail(moveId);
+      setDetailMove(detail);
+    } catch (e) {
+      showToast(compactError(e) || (ar ? "تعذّر تحميل القيد" : "Could not load the entry"), "warn");
+      setDetailMove(null);
+    }
+  };
+  const reverseEntry = async (moveId, reason) => {
+    if (!moveId) return;
+    const trimmedReason = (reason || "").trim();
+    if (!trimmedReason) {
+      showToast(ar ? "سبب العكس مطلوب" : "A reversal reason is required", "warn");
+      return;
+    }
+    try {
+      const res = await sourceOfTruth.reverseJournalEntry(moveId, trimmedReason);
+      showToast(ar ? `تم عكس القيد (${res?.name || ""})` : `Entry reversed (${res?.name || ""})`, "success");
+      setDetailMove(null);
+      setRefreshNonce((n) => n + 1);
+    } catch (e) {
+      showToast(compactError(e) || (ar ? "تعذّر عكس القيد" : "Could not reverse the entry"), "warn");
+    }
+  };
+  const payBill = async (moveId) => {
+    if (!moveId || !engineReady || typeof sourceOfTruth.registerPayment !== "function") return;
+    try {
+      const res = await sourceOfTruth.registerPayment(moveId);
+      showToast(ar ? `تم تسجيل الدفعة (${res?.name || ""})` : `Payment registered (${res?.name || ""})`, "success");
+      setRefreshNonce((n) => n + 1);
+    } catch (e) {
+      showToast(compactError(e) || (ar ? "تعذّر تسجيل الدفعة" : "Could not register the payment"), "warn");
+    }
+  };
+  const saveAccount = async (draft) => {
+    try {
+      await sourceOfTruth.saveChartAccount({
+        id: draft.id,
+        action: draft.action,
+        code: draft.code,
+        name: draft.name,
+        type: draft.type,
+        active: draft.active,
+      });
+      showToast(ar ? "تم حفظ الحساب" : "Account saved", "success");
+      setAccountModal(null);
+      setRefreshNonce((n) => n + 1);
+    } catch (e) {
+      showToast(compactError(e) || (ar ? "تعذّر حفظ الحساب" : "Could not save the account"), "warn");
+    }
+  };
+
+  useEffect(() => {
+    if (!engineReady) { setData(null); setError(null); setLoading(false); return; }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const common = { dateFrom, dateTo, kiosk: kiosk === "all" ? undefined : kiosk };
+    const run = async () => {
+      if (view === "statements") {
+        const [pnl, bs] = await Promise.all([
+          sourceOfTruth.getAccountingReport({ ...common, report: "pnl" }),
+          sourceOfTruth.getAccountingReport({ ...common, report: "balance_sheet" }),
+        ]);
+        return { pnl, bs };
+      }
+      const report = ACCOUNTING_REPORT_BY_VIEW[view] || "ledger";
+      return sourceOfTruth.getAccountingReport({
+        ...common,
+        report,
+        account: view === "gl" && accountFilter ? accountFilter.trim() : undefined,
+        includeArchived: view === "coa" ? coaShowArchived : undefined,
+      });
+    };
+    run()
+      .then((result) => { if (!cancelled) setData(result); })
+      .catch((err) => { if (!cancelled) { setError(compactError(err) || "Could not load accounting data"); setData(null); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [view, dateFrom, dateTo, kiosk, accountFilter, engineReady, sourceOfTruth, refreshNonce, coaShowArchived]);
+
+  const meta = (view === "statements" ? data?.pnl?.meta : data?.meta) || null;
+
+  const titles = {
+    gl: { en: "General ledger", ar: "دفتر الأستاذ العام" },
+    journals: { en: "Journal entries", ar: "قيود اليومية" },
+    trialBalance: { en: "Trial balance", ar: "ميزان المراجعة" },
+    statements: { en: "Income statement & Balance sheet", ar: "قائمة الدخل والميزانية العمومية" },
+    coa: { en: "Chart of accounts", ar: "دليل الحسابات" },
+    cashFlow: { en: "Cash flow statement", ar: "قائمة التدفقات النقدية" },
+    agedPayable: { en: "Aged payables", ar: "أعمار الذمم الدائنة" },
+    agedReceivable: { en: "Aged receivables", ar: "أعمار الذمم المدينة" },
+    taxReport: { en: "VAT / tax return", ar: "إقرار ضريبة القيمة المضافة" },
+  };
+  const subtitles = {
+    gl: { en: "Every posted journal item from the ledger, with a running balance.", ar: "كل قيد مرحّل من دفتر الأستاذ مع رصيد جارٍ." },
+    journals: { en: "Posted journal entries (POS sessions, bills, bank, manual).", ar: "القيود المرحّلة (جلسات البيع، الفواتير، البنك، اليدوية)." },
+    trialBalance: { en: "Opening, movement and closing balance per account — always balanced.", ar: "الرصيد الافتتاحي والحركة والختامي لكل حساب — متوازن دائماً." },
+    statements: { en: "Profit & loss and financial position from the real ledger.", ar: "الأرباح والخسائر والمركز المالي من الدفتر الحقيقي." },
+    coa: { en: "Every account in the books with its current balance.", ar: "كل حساب في الدفاتر مع رصيده الحالي." },
+    cashFlow: { en: "Cash in and out by counterpart account, with opening and closing cash.", ar: "النقد الوارد والصادر حسب الحساب المقابل مع الرصيد الافتتاحي والختامي." },
+    agedPayable: { en: "What the chain owes suppliers, bucketed by age (open bills only).", ar: "ما تدين به السلسلة للموردين موزّعاً حسب العمر (الفواتير المفتوحة فقط)." },
+    agedReceivable: { en: "What is owed to the chain, bucketed by age (open invoices only).", ar: "ما هو مستحق للسلسلة موزّعاً حسب العمر (الفواتير المفتوحة فقط)." },
+    taxReport: { en: "Taxable base and tax due per tax code for the period.", ar: "الأساس الخاضع والضريبة المستحقة لكل رمز ضريبي للفترة." },
+  };
+  const title = ar ? titles[view]?.ar : titles[view]?.en;
+  const subtitle = ar ? subtitles[view]?.ar : subtitles[view]?.en;
+
+  return (
+    <div className="col" style={{ gap: 14 }}>
+      <div className="card card-pad">
+        <div className="between" style={{ gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div>
+            <div className="row" style={{ gap: 8, alignItems: "center" }}>
+              <div className="t-h2">{title}</div>
+              <span className="badge"><span className="dot pos"></span>{ar ? "المحرك المحاسبي" : "accounting engine"}</span>
+            </div>
+            <div className="t-small subtle" style={{ marginTop: 2 }}>{subtitle}</div>
+            <div className="t-micro muted" style={{ marginTop: 4 }}>
+              {ar ? "المصدر: account.move / account.move.line — أرقام قطعية مدقّقة. الذكاء الاصطناعي لا يحسبها." : "Source: account.move / account.move.line — deterministic, auditable. AI never computes these."}
+            </div>
+          </div>
+          <button className="btn btn-ghost" onClick={() => { if (typeof window !== "undefined") window.print(); }}
+            data-testid="accounting-print" style={{ height: 28, fontSize: 12 }}>
+            <Icon name="fileText" size={12}/>{ar ? "طباعة / PDF" : "Print / PDF"}
+          </button>
+        </div>
+
+        <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
+          {[["month", ar ? "هذا الشهر" : "This month"], ["quarter", ar ? "هذا الربع" : "This quarter"], ["year", ar ? "هذه السنة" : "This year"], ["today", ar ? "اليوم" : "Today"]].map(([kind, label]) => (
+            <button key={kind} className="btn btn-quiet" onClick={() => applyPreset(kind)} style={{ height: 28, fontSize: 12 }}>{label}</button>
+          ))}
+          <span className="t-small subtle" style={{ marginInlineStart: 6 }}>{ar ? "من" : "From"}</span>
+          <input type="date" className="input" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)} style={{ height: 28, width: 150 }}/>
+          <span className="t-small subtle">{ar ? "إلى" : "To"}</span>
+          <input type="date" className="input" value={dateTo} min={dateFrom} onChange={(e) => setDateTo(e.target.value)} style={{ height: 28, width: 150 }}/>
+          <select className="input" value={kiosk} onChange={(e) => setKiosk(e.target.value)} style={{ height: 28, minWidth: 150 }}>
+            <option value="all">{ar ? "كل الفروع" : "All branches"}</option>
+            {kioskOptions.map((opt) => (
+              <option key={opt.code} value={opt.code}>{opt.code} — {arTerm(lang, opt.name)}</option>
+            ))}
+          </select>
+          {view === "gl" && (
+            <input className="input" value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)}
+              placeholder={ar ? "كود الحساب (مثال 101200)" : "Account code (e.g. 101200)"} style={{ height: 28, width: 180 }}/>
+          )}
+        </div>
+        {meta && (
+          <div className="t-micro muted" style={{ marginTop: 8 }}>
+            {meta.company} · {meta.currency} · {meta.dateFrom} → {meta.dateTo}{meta.kiosk ? ` · ${meta.kiosk}` : ""}
+          </div>
+        )}
+        {meta && meta.companyWide && (
+          <div className="t-micro" style={{ marginTop: 4, color: "var(--warn)" }}>
+            {ar
+              ? "ميزان المراجعة والميزانية العمومية يُعرضان على مستوى الشركة بالكامل (ليس حسب الفرع). للفرع، استخدم دفتر الأستاذ وقائمة الدخل."
+              : "Trial balance & balance sheet are shown company-wide (not per branch). For a single kiosk, use the General Ledger and Income Statement."}
+          </div>
+        )}
+      </div>
+
+      {!engineReady && (
+        <div className="card card-pad">
+          <div className="ai-block" style={{ fontSize: 14 }}>
+            {ar ? "اربط المحرك المحاسبي لعرض الدفاتر المحاسبية الحقيقية. هذه الشاشات تقرأ القيود المرحّلة مباشرة من المحرك المحاسبي." : "Connect the accounting engine to view the real accounting books. These screens read posted journal entries straight from the accounting engine."}
+          </div>
+        </div>
+      )}
+      {engineReady && loading && (
+        <div className="card card-pad"><div className="t-small subtle">{ar ? "جارٍ التحميل من المحرك…" : "Loading from the engine…"}</div></div>
+      )}
+      {engineReady && error && (
+        <div className="card card-pad"><div className="t-small" style={{ color: "var(--crit)" }}>{error}</div></div>
+      )}
+
+      {engineReady && !loading && !error && data && (
+        <>
+          {view === "gl" && <AccountingLedger data={data} lang={lang}/>}
+          {view === "journals" && <AccountingJournals data={data} lang={lang} canPost={canEdit} onNewEntry={openNewEntry} onRowClick={openDetail}/>}
+          {view === "trialBalance" && <AccountingTrialBalance data={data} lang={lang}/>}
+          {view === "statements" && (
+            <AccountingStatements data={data} lang={lang} tab={statementTab} setTab={setStatementTab}/>
+          )}
+          {view === "coa" && <AccountingChart data={data} lang={lang} typeFilter={coaType} setTypeFilter={setCoaType}
+            canEdit={canEdit} showArchived={coaShowArchived} setShowArchived={setCoaShowArchived}
+            onNewAccount={() => setAccountModal({})} onEditAccount={(row) => setAccountModal({ id: row.accountId, code: row.code, name: row.name, type: row.type, active: row.active })}/>}
+          {view === "cashFlow" && <AccountingCashFlow data={data} lang={lang}/>}
+          {view === "agedPayable" && <AccountingAged data={data} lang={lang} kind="payable" canPay={engineReady && can("registerPayment")} onPay={payBill}/>}
+          {view === "agedReceivable" && <AccountingAged data={data} lang={lang} kind="receivable"/>}
+          {view === "taxReport" && <AccountingTax data={data} lang={lang}/>}
+        </>
+      )}
+      {engineReady && !loading && !error && data && ["gl", "journals", "trialBalance", "coa"].includes(view) && !(data.rows || []).length && (
+        <div className="card card-pad">
+          <div className="between" style={{ gap: 10, flexWrap: "wrap" }}>
+            <div className="t-small subtle">{ar ? "لا توجد قيود مرحّلة في هذه الفترة." : "No posted entries in this period."}</div>
+            {view === "journals" && (
+              <button className="btn btn-primary" onClick={openNewEntry} style={{ height: 28, fontSize: 12 }}>
+                <Icon name="plus" size={12}/>{ar ? "قيد جديد" : "New journal entry"}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <JournalEntryModal open={newEntryOpen} onClose={() => setNewEntryOpen(false)} lang={lang}
+        sourceOfTruth={sourceOfTruth} chartAccounts={chartAccounts} kioskOptions={kioskOptions} defaultDate={dateTo}
+        showToast={showToast} onPosted={() => { setNewEntryOpen(false); setRefreshNonce((n) => n + 1); }}/>
+      <JournalEntryDetailModal move={detailMove} onClose={() => setDetailMove(null)} lang={lang}
+        canReverse={canEdit} onReverse={reverseEntry}/>
+      <ChartAccountModal draft={accountModal} onClose={() => setAccountModal(null)} onSave={saveAccount} lang={lang}/>
+    </div>
+  );
+}
+
+function AccountingLedger({ data, lang }) {
+  const ar = lang === "ar";
+  const rows = data.rows || [];
+  const totals = data.totals || {};
+  const exportCsv = () => downloadAccountingCsv(
+    "general-ledger",
+    ["Date", "Entry", "Journal", "Account code", "Account", "Label", "Debit", "Credit", "Balance"],
+    rows.map((r) => [r.date, r.move, r.journal, r.code, r.account, r.label || r.partner, r.debit, r.credit, r.balance]),
+  );
+  return (
+    <div className="card">
+      <div className="between" style={{ padding: "12px 18px", gap: 10, flexWrap: "wrap" }}>
+        <div className="t-small subtle">
+          {data.accountLabel
+            ? (ar ? `الحساب: ${data.accountLabel} · رصيد افتتاحي ${fmtMoney(data.opening || 0)}` : `Account: ${data.accountLabel} · opening ${fmtMoney(data.opening || 0)}`)
+            : (ar ? "كل الحسابات" : "All accounts")}
+        </div>
+        <div className="row" style={{ gap: 6, alignItems: "center" }}>
+          <span className="badge">{ar ? `${totals.count || 0} قيد` : `${totals.count || 0} lines`}</span>
+          <button className="btn btn-ghost" onClick={exportCsv} style={{ height: 28, fontSize: 12 }}><Icon name="download" size={12}/>CSV</button>
+        </div>
+      </div>
+      <AccountingTable minWidth={860}>
+        <thead>
+          <tr>
+            <th scope="col">{ar ? "التاريخ" : "Date"}</th>
+            <th scope="col">{ar ? "القيد" : "Entry"}</th>
+            <th scope="col">{ar ? "اليومية" : "Journal"}</th>
+            <th scope="col">{ar ? "الحساب" : "Account"}</th>
+            <th scope="col">{ar ? "البيان" : "Label"}</th>
+            <th scope="col" style={{ textAlign: "end" }}>{ar ? "مدين" : "Debit"}</th>
+            <th scope="col" style={{ textAlign: "end" }}>{ar ? "دائن" : "Credit"}</th>
+            <th scope="col" style={{ textAlign: "end" }}>{ar ? "الرصيد" : "Balance"}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id}>
+              <td className="t-num muted">{row.date}</td>
+              <td style={{ fontWeight: 500 }}>{row.move}</td>
+              <td><span className="badge">{row.journal}</span></td>
+              <td><div className="t-small" style={{ fontWeight: 500 }}>{row.code}</div><div className="t-micro muted">{row.account}</div></td>
+              <td className="t-small muted">{row.label || row.partner}</td>
+              <td className="t-num" style={{ textAlign: "end" }}>{acctCell(row.debit)}</td>
+              <td className="t-num" style={{ textAlign: "end" }}>{acctCell(row.credit)}</td>
+              <td className="t-num" style={{ textAlign: "end", fontWeight: 500 }}>{fmtMoney(row.balance)}</td>
+            </tr>
+          ))}
+          {!rows.length && (
+            <tr><td colSpan={8} className="muted">{ar ? "لا توجد قيود في هذه الفترة" : "No journal items in this period"}</td></tr>
+          )}
+        </tbody>
+        {rows.length > 0 && (
+          <tfoot>
+            <tr style={{ background: "var(--surface-2)", fontWeight: 600 }}>
+              <td colSpan={5}>{ar ? "الإجمالي" : "Total"}</td>
+              <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totals.debit || 0)}</td>
+              <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totals.credit || 0)}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        )}
+      </AccountingTable>
+      {data.truncated && (
+        <div className="t-micro muted" style={{ padding: "8px 18px" }}>
+          {ar ? "تم عرض الحد الأقصى من الصفوف — ضيّق الفترة أو حدّد حساباً." : "Row limit reached — narrow the period or filter by account to see more."}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AccountingJournals({ data, lang, canPost = false, onNewEntry, onRowClick }) {
+  const ar = lang === "ar";
+  const rows = data.rows || [];
+  const exportCsv = () => downloadAccountingCsv(
+    "journal-entries",
+    ["Date", "Entry", "Journal", "Reference", "Partner", "Lines", "Amount"],
+    rows.map((r) => [r.date, r.name, r.journal, r.ref, r.partner, r.lineCount, r.amount]),
+  );
+  return (
+    <div className="card">
+      <div className="between" style={{ padding: "12px 18px", gap: 10, flexWrap: "wrap" }}>
+        <div className="t-small subtle">{ar ? "القيود المرحّلة — انقر أي قيد لعرض بنوده" : "Posted entries — click any entry to see its lines"}</div>
+        <div className="row" style={{ gap: 6, alignItems: "center" }}>
+          <span className="badge">{ar ? `${rows.length} قيد` : `${rows.length} entries`}</span>
+          <button className="btn btn-ghost" onClick={exportCsv} style={{ height: 28, fontSize: 12 }}><Icon name="download" size={12}/>CSV</button>
+          {canPost && (
+            <button className="btn btn-primary" onClick={onNewEntry} style={{ height: 28, fontSize: 12 }}>
+              <Icon name="plus" size={12}/>{ar ? "قيد جديد" : "New journal entry"}
+            </button>
+          )}
+        </div>
+      </div>
+      <AccountingTable minWidth={820}>
+        <thead>
+          <tr>
+            <th scope="col">{ar ? "التاريخ" : "Date"}</th>
+            <th scope="col">{ar ? "القيد" : "Entry"}</th>
+            <th scope="col">{ar ? "اليومية" : "Journal"}</th>
+            <th scope="col">{ar ? "المرجع" : "Reference"}</th>
+            <th scope="col">{ar ? "الطرف" : "Partner"}</th>
+            <th scope="col" style={{ textAlign: "end" }}>{ar ? "البنود" : "Lines"}</th>
+            <th scope="col" style={{ textAlign: "end" }}>{ar ? "المبلغ" : "Amount"}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id} className="row-click" style={{ cursor: "pointer" }} onClick={() => onRowClick && onRowClick(row.id)}>
+              <td className="t-num muted">{row.date}</td>
+              <td style={{ fontWeight: 500 }}>{row.name}</td>
+              <td><span className="badge">{row.journal}</span> <span className="t-micro muted">{row.journalName}</span></td>
+              <td className="t-small muted">{row.ref}</td>
+              <td className="t-small">{row.partner}</td>
+              <td className="t-num muted" style={{ textAlign: "end" }}>{row.lineCount}</td>
+              <td className="t-num" style={{ textAlign: "end", fontWeight: 500 }}>{fmtMoney(row.amount)}</td>
+            </tr>
+          ))}
+          {!rows.length && (
+            <tr><td colSpan={7} className="muted">{ar ? "لا توجد قيود في هذه الفترة" : "No journal entries in this period"}</td></tr>
+          )}
+        </tbody>
+      </AccountingTable>
+    </div>
+  );
+}
+
+function AccountingTrialBalance({ data, lang }) {
+  const ar = lang === "ar";
+  const rows = data.rows || [];
+  const totals = data.totals || {};
+  const balanced = Math.abs((totals.debit || 0) - (totals.credit || 0)) < 1;
+  const exportCsv = () => downloadAccountingCsv(
+    "trial-balance",
+    ["Account code", "Account", "Type", "Opening", "Debit", "Credit", "Closing"],
+    rows.map((r) => [r.code, r.name, r.type, r.opening, r.debit, r.credit, r.closing]),
+  );
+  return (
+    <div className="card">
+      <div className="between" style={{ padding: "12px 18px", gap: 10, flexWrap: "wrap" }}>
+        <div className="t-small subtle">{ar ? "ميزان المراجعة — مدين = دائن" : "Trial balance — debits equal credits"}</div>
+        <div className="row" style={{ gap: 6, alignItems: "center" }}>
+          <span className={`badge ${balanced ? "badge-pos" : "badge-crit"}`}>{balanced ? (ar ? "متوازن" : "Balanced") : (ar ? "غير متوازن" : "Out of balance")}</span>
+          <button className="btn btn-ghost" onClick={exportCsv} style={{ height: 28, fontSize: 12 }}><Icon name="download" size={12}/>CSV</button>
+        </div>
+      </div>
+      <AccountingTable minWidth={760}>
+        <thead>
+          <tr>
+            <th scope="col">{ar ? "الحساب" : "Account"}</th>
+            <th scope="col">{ar ? "النوع" : "Type"}</th>
+            <th scope="col" style={{ textAlign: "end" }}>{ar ? "افتتاحي" : "Opening"}</th>
+            <th scope="col" style={{ textAlign: "end" }}>{ar ? "مدين" : "Debit"}</th>
+            <th scope="col" style={{ textAlign: "end" }}>{ar ? "دائن" : "Credit"}</th>
+            <th scope="col" style={{ textAlign: "end" }}>{ar ? "ختامي" : "Closing"}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.accountId}>
+              <td><div className="t-small" style={{ fontWeight: 500 }}>{row.code}</div><div className="t-micro muted">{row.name}</div></td>
+              <td><span className="badge">{accountTypeLabel(lang, row.type)}</span></td>
+              <td className="t-num muted" style={{ textAlign: "end" }}>{acctCell(row.opening)}</td>
+              <td className="t-num" style={{ textAlign: "end" }}>{acctCell(row.debit)}</td>
+              <td className="t-num" style={{ textAlign: "end" }}>{acctCell(row.credit)}</td>
+              <td className="t-num" style={{ textAlign: "end", fontWeight: 500 }}>{fmtMoney(row.closing)}</td>
+            </tr>
+          ))}
+          {!rows.length && (
+            <tr><td colSpan={6} className="muted">{ar ? "لا توجد حركة في هذه الفترة" : "No account movement in this period"}</td></tr>
+          )}
+        </tbody>
+        {rows.length > 0 && (
+          <tfoot>
+            <tr style={{ background: "var(--surface-2)", fontWeight: 600 }}>
+              <td colSpan={3}>{ar ? "الإجمالي" : "Total"}</td>
+              <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totals.debit || 0)}</td>
+              <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totals.credit || 0)}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        )}
+      </AccountingTable>
+    </div>
+  );
+}
+
+function AccountingCashFlow({ data, lang }) {
+  const ar = lang === "ar";
+  const totals = data.totals || {};
+  const operating = data.operating || [];
+  const investing = data.investing || [];
+  const financing = data.financing || [];
+  const reconciled = Boolean(totals.reconciled);
+  const exportCsv = () => downloadAccountingCsv(
+    "cash-flow", ["Activity", "Code", "Account", "Amount"],
+    [...operating.map((r) => ["Operating", r.code, r.name, r.amount]),
+     ...investing.map((r) => ["Investing", r.code, r.name, r.amount]),
+     ...financing.map((r) => ["Financing", r.code, r.name, r.amount])]);
+  const Section = ({ label, rows, subtotal }) => (
+    <div style={{ marginBottom: 6 }}>
+      <div className="t-small" style={{ fontWeight: 600, padding: "10px 18px 4px" }}>{label}</div>
+      <table className="tbl"><tbody>
+        {rows.map((r, i) => (
+          <tr key={i}>
+            <td style={{ paddingInlineStart: 28 }}><span className="t-small" style={{ fontWeight: 500 }}>{r.code}</span> <span className="t-micro muted">{r.name}</span></td>
+            <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(r.amount)}</td>
+          </tr>
+        ))}
+        {!rows.length && (<tr><td className="muted" style={{ paddingInlineStart: 28 }}>{ar ? "لا شيء" : "None"}</td><td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(0)}</td></tr>)}
+        <tr style={{ fontWeight: 600 }}>
+          <td style={{ paddingInlineStart: 18 }}>{ar ? "المجموع الفرعي" : "Subtotal"}</td>
+          <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(subtotal || 0)}</td>
+        </tr>
+      </tbody></table>
+    </div>
+  );
+  return (
+    <div className="card">
+      <div className="between" style={{ padding: "12px 18px", gap: 10, flexWrap: "wrap" }}>
+        <div className="t-small subtle">{ar ? "بيان التدفقات النقدية — تشغيلية واستثمارية وتمويلية" : "Cash flow statement — operating, investing & financing"}</div>
+        <div className="row" style={{ gap: 6, alignItems: "center" }}>
+          <span className={`badge ${reconciled ? "badge-pos" : "badge-warn"}`}>{reconciled ? (ar ? "التدفق النقدي يطابق رصيد النقد بدفتر الأستاذ" : "Cash flow ties to the cash GL balance") : (ar ? "التدفق النقدي لا يطابق رصيد النقد بدفتر الأستاذ" : "Cash flow does not tie to the cash GL balance")}</span>
+          <button className="btn btn-ghost" onClick={exportCsv} style={{ height: 28, fontSize: 12 }}><Icon name="download" size={12}/>CSV</button>
+        </div>
+      </div>
+      <table className="tbl"><tbody>
+        <tr style={{ background: "var(--surface-2)", fontWeight: 600 }}><td>{ar ? "النقد الافتتاحي" : "Opening cash"}</td><td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(data.opening || 0)}</td></tr>
+      </tbody></table>
+      <Section label={ar ? "الأنشطة التشغيلية" : "Operating activities"} rows={operating} subtotal={totals.operating}/>
+      <Section label={ar ? "الأنشطة الاستثمارية" : "Investing activities"} rows={investing} subtotal={totals.investing}/>
+      <Section label={ar ? "الأنشطة التمويلية" : "Financing activities"} rows={financing} subtotal={totals.financing}/>
+      <table className="tbl"><tbody>
+        <tr style={{ fontWeight: 600 }}><td>{ar ? "صافي التغير النقدي" : "Net change in cash"}</td><td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(data.net || 0)}</td></tr>
+        <tr style={{ background: "var(--surface-2)", fontWeight: 700 }}><td>{ar ? "النقد الختامي" : "Closing cash"}</td><td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(data.closing || 0)}</td></tr>
+      </tbody></table>
+    </div>
+  );
+}
+
+function AccountingAged({ data, lang, kind, canPay = false, onPay = null }) {
+  const ar = lang === "ar";
+  const rows = data.rows || [];
+  const totals = data.totals || {};
+  const [expanded, setExpanded] = useState(null);
+  const [payingMove, setPayingMove] = useState(null);
+  const cols = [["current", ar ? "حالي" : "Current"], ["d1_30", "1–30"], ["d31_60", "31–60"], ["d61_90", "61–90"], ["d90", "90+"]];
+  const title = kind === "payable"
+    ? (ar ? "أعمار الذمم الدائنة (الموردون)" : "Aged payables (suppliers)")
+    : (ar ? "أعمار الذمم المدينة (العملاء)" : "Aged receivables (customers)");
+  const exportCsv = () => downloadAccountingCsv(
+    "aged-" + kind, ["Partner", "Current", "1-30", "31-60", "61-90", "90+", "Total"],
+    rows.map((r) => [r.partner, r.current, r.d1_30, r.d31_60, r.d61_90, r.d90, r.total]));
+  const colSpan = cols.length + 2 + (canPay ? 1 : 0);
+  const handlePay = async (moveId) => {
+    if (!onPay) return;
+    setPayingMove(moveId);
+    try {
+      await onPay(moveId);
+    } finally {
+      setPayingMove(null);
+    }
+  };
+  return (
+    <div className="card">
+      <div className="between" style={{ padding: "12px 18px", gap: 10, flexWrap: "wrap" }}>
+        <div className="t-small subtle">{title}</div>
+        <button className="btn btn-ghost" onClick={exportCsv} style={{ height: 28, fontSize: 12 }}><Icon name="download" size={12}/>CSV</button>
+      </div>
+      <AccountingTable minWidth={760}>
+        <thead><tr>
+          <th scope="col">{ar ? "الطرف" : "Partner"}</th>
+          {cols.map((c) => (<th key={c[0]} scope="col" style={{ textAlign: "end" }}>{c[1]}</th>))}
+          <th scope="col" style={{ textAlign: "end" }}>{ar ? "الإجمالي" : "Total"}</th>
+          {canPay && <th scope="col" style={{ textAlign: "end" }}></th>}
+        </tr></thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const bills = Array.isArray(r.bills) ? r.bills : [];
+            const open = expanded === i;
+            return (
+              <React.Fragment key={i}>
+                <tr className={canPay && bills.length ? "row-click" : undefined}
+                  onClick={canPay && bills.length ? () => setExpanded(open ? null : i) : undefined}>
+                  <td className="t-small" style={{ fontWeight: 500 }}>
+                    {canPay && bills.length ? <Icon name={open ? "chevDown" : "chevRight"} size={11} style={{ marginInlineEnd: 4, color: "var(--ink-3)" }}/> : null}
+                    {r.partner}
+                  </td>
+                  {cols.map((c) => (<td key={c[0]} className="t-num" style={{ textAlign: "end" }}>{acctCell(r[c[0]])}</td>))}
+                  <td className="t-num" style={{ textAlign: "end", fontWeight: 600 }}>{fmtMoney(r.total)}</td>
+                  {canPay && <td style={{ textAlign: "end" }}></td>}
+                </tr>
+                {canPay && open && bills.map((bill) => (
+                  <tr key={`${i}-${bill.moveId}`} style={{ background: "var(--surface-sunk)" }}>
+                    <td className="t-small" style={{ paddingInlineStart: 24 }}>
+                      <span style={{ fontWeight: 500 }}>{bill.name}</span> <span className="t-micro muted">{bill.date}</span>
+                    </td>
+                    <td className="t-num muted" style={{ textAlign: "end" }} colSpan={cols.length}>{ar ? "متبقٍ" : "Residual"}</td>
+                    <td className="t-num" style={{ textAlign: "end", fontWeight: 600 }}>{fmtMoney(bill.residual)}</td>
+                    <td style={{ textAlign: "end" }}>
+                      <button className="btn btn-primary" style={{ height: 24, fontSize: 11 }}
+                        disabled={payingMove === bill.moveId}
+                        onClick={(e) => { e.stopPropagation(); handlePay(bill.moveId); }}>
+                        {payingMove === bill.moveId ? (ar ? "جارٍ…" : "Paying…") : (ar ? "تسجيل دفعة" : "Register payment")}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </React.Fragment>
+            );
+          })}
+          {!rows.length && (<tr><td colSpan={colSpan} className="muted">{ar ? "لا توجد أرصدة مفتوحة" : "No open balances"}</td></tr>)}
+        </tbody>
+        {rows.length > 0 && (
+          <tfoot><tr style={{ background: "var(--surface-2)", fontWeight: 600 }}>
+            <td>{ar ? "الإجمالي" : "Total"}</td>
+            {cols.map((c) => (<td key={c[0]} className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totals[c[0]] || 0)}</td>))}
+            <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totals.total || 0)}</td>
+            {canPay && <td></td>}
+          </tr></tfoot>
+        )}
+      </AccountingTable>
+    </div>
+  );
+}
+
+function AccountingTax({ data, lang }) {
+  const ar = lang === "ar";
+  const rows = data.rows || [];
+  const totals = data.totals || {};
+  return (
+    <div className="card">
+      <div className="between" style={{ padding: "12px 18px", gap: 10, flexWrap: "wrap" }}>
+        <div className="t-small subtle">{ar ? "إقرار ضريبة القيمة المضافة — الأساس الخاضع والضريبة المستحقة" : "VAT return — taxable base & tax due"}</div>
+      </div>
+      <AccountingTable minWidth={520}>
+        <thead><tr>
+          <th scope="col">{ar ? "الضريبة" : "Tax"}</th>
+          <th scope="col" style={{ textAlign: "end" }}>{ar ? "النسبة" : "Rate"}</th>
+          <th scope="col" style={{ textAlign: "end" }}>{ar ? "الأساس" : "Base"}</th>
+          <th scope="col" style={{ textAlign: "end" }}>{ar ? "الضريبة" : "Tax"}</th>
+        </tr></thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i}>
+              <td className="t-small">{r.tax}</td>
+              <td className="t-num" style={{ textAlign: "end" }}>{r.rate}%</td>
+              <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(r.base)}</td>
+              <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(r.taxAmount)}</td>
+            </tr>
+          ))}
+          {!rows.length && (<tr><td colSpan={4} className="muted">{ar ? "لا توجد ضريبة مستحقة (العراق 0%)" : "No tax due (Iraq 0%)"}</td></tr>)}
+        </tbody>
+        {rows.length > 0 && (
+          <tfoot><tr style={{ background: "var(--surface-2)", fontWeight: 600 }}>
+            <td colSpan={2}>{ar ? "الإجمالي" : "Total"}</td>
+            <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totals.base || 0)}</td>
+            <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totals.tax || 0)}</td>
+          </tr></tfoot>
+        )}
+      </AccountingTable>
+      {data.note && (<div className="t-micro muted" style={{ padding: "8px 18px" }}>{data.note}</div>)}
+    </div>
+  );
+}
+
+function StatementSection({ title, rows, lang, totalLabel, totalValue }) {
+  const ar = lang === "ar";
+  return (
+    <div style={{ marginBottom: 6 }}>
+      <div className="t-small" style={{ fontWeight: 600, padding: "10px 18px 4px" }}>{title}</div>
+      <table className="tbl">
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.accountId}>
+              <td style={{ paddingInlineStart: 28 }}>
+                <span className="t-small" style={{ fontWeight: 500 }}>{row.code}</span> <span className="t-micro muted">{row.name}</span>
+              </td>
+              <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(row.amount)}</td>
+            </tr>
+          ))}
+          {!rows.length && (
+            <tr><td className="muted" style={{ paddingInlineStart: 28 }}>{ar ? "لا شيء" : "None"}</td><td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(0)}</td></tr>
+          )}
+          <tr style={{ background: "var(--surface-2)", fontWeight: 600 }}>
+            <td>{totalLabel}</td>
+            <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totalValue)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AccountingStatements({ data, lang, tab, setTab }) {
+  const ar = lang === "ar";
+  const pnl = data.pnl || {};
+  const bs = data.bs || {};
+  const pt = pnl.totals || {};
+  const bt = bs.totals || {};
+  const exportCsv = () => {
+    if (tab === "income") {
+      const sec = (label, rows) => rows.map((r) => [label, r.code, r.name, r.amount]);
+      downloadAccountingCsv("income-statement", ["Section", "Code", "Account", "Amount"], [
+        ...sec("Revenue", pnl.revenue || []),
+        ...sec("Cost of revenue", pnl.cogs || []),
+        ...sec("Operating expenses", pnl.opex || []),
+        ["Totals", "", "Net profit", pt.netProfit || 0],
+      ]);
+    } else {
+      const sec = (label, rows) => rows.map((r) => [label, r.code, r.name, r.amount]);
+      downloadAccountingCsv("balance-sheet", ["Section", "Code", "Account", "Amount"], [
+        ...sec("Assets", bs.assets || []),
+        ...sec("Liabilities", bs.liabilities || []),
+        ...sec("Equity", bs.equity || []),
+        ["Totals", "", "Current period earnings", bs.netIncome || 0],
+      ]);
+    }
+  };
+  return (
+    <div className="card">
+      <div className="between" style={{ gap: 6, padding: "12px 18px", flexWrap: "wrap" }}>
+        <div className="row" style={{ gap: 6 }}>
+          {[["income", ar ? "قائمة الدخل" : "Income statement"], ["balance", ar ? "الميزانية العمومية" : "Balance sheet"]].map(([id, label]) => (
+            <button key={id} className={"btn " + (tab === id ? "btn-primary" : "btn-ghost")} onClick={() => setTab(id)} style={{ height: 28, fontSize: 12 }}>{label}</button>
+          ))}
+        </div>
+        <button className="btn btn-ghost" onClick={exportCsv} style={{ height: 28, fontSize: 12 }}><Icon name="download" size={12}/>CSV</button>
+      </div>
+      {tab === "income" ? (
+        <>
+          <StatementSection title={ar ? "الإيرادات" : "Revenue"} rows={pnl.revenue || []} lang={lang} totalLabel={ar ? "إجمالي الإيرادات" : "Total revenue"} totalValue={pt.revenue || 0}/>
+          <StatementSection title={ar ? "تكلفة الإيراد" : "Cost of revenue"} rows={pnl.cogs || []} lang={lang} totalLabel={ar ? "إجمالي تكلفة الإيراد" : "Total cost of revenue"} totalValue={pt.cogs || 0}/>
+          <table className="tbl"><tbody>
+            <tr style={{ fontWeight: 600 }}><td>{ar ? "مجمل الربح" : "Gross profit"}</td><td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(pt.grossProfit || 0)}</td></tr>
+          </tbody></table>
+          <StatementSection title={ar ? "مصاريف التشغيل" : "Operating expenses"} rows={pnl.opex || []} lang={lang} totalLabel={ar ? "إجمالي المصاريف" : "Total operating expenses"} totalValue={pt.opex || 0}/>
+          <table className="tbl"><tbody>
+            <tr style={{ background: "var(--surface-2)", fontWeight: 700, fontSize: 14 }}>
+              <td>{ar ? "صافي الربح" : "Net profit"}</td>
+              <td className="t-num" style={{ textAlign: "end", color: (pt.netProfit || 0) < 0 ? "var(--crit)" : "var(--pos)" }}>{fmtMoney(pt.netProfit || 0)}</td>
+            </tr>
+          </tbody></table>
+        </>
+      ) : (
+        <>
+          <StatementSection title={ar ? "الأصول" : "Assets"} rows={bs.assets || []} lang={lang} totalLabel={ar ? "إجمالي الأصول" : "Total assets"} totalValue={bt.assets || 0}/>
+          <StatementSection title={ar ? "الالتزامات" : "Liabilities"} rows={bs.liabilities || []} lang={lang} totalLabel={ar ? "إجمالي الالتزامات" : "Total liabilities"} totalValue={bt.liabilities || 0}/>
+          <StatementSection title={ar ? "حقوق الملكية" : "Equity"} rows={bs.equity || []} lang={lang} totalLabel={ar ? "حقوق الملكية (قبل أرباح الفترة)" : "Equity (before current earnings)"} totalValue={(bt.equity || 0) - (bs.netIncome || 0)}/>
+          <table className="tbl"><tbody>
+            <tr><td style={{ paddingInlineStart: 18 }}>{ar ? "أرباح الفترة الحالية" : "Current period earnings"}</td><td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(bs.netIncome || 0)}</td></tr>
+            <tr style={{ background: "var(--surface-2)", fontWeight: 700 }}>
+              <td>{ar ? "الالتزامات + حقوق الملكية" : "Liabilities + Equity"}</td>
+              <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(bt.liabilitiesAndEquity || 0)}</td>
+            </tr>
+          </tbody></table>
+          <div className="t-small" style={{ padding: "8px 18px" }}>
+            <span className={`badge ${bt.balanced ? "badge-pos" : "badge-crit"}`}>
+              {bt.balanced ? (ar ? "الميزانية متوازنة" : "Balance sheet balances") : (ar ? "فرق في الميزانية" : "Balance sheet out of balance")}
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AccountingChart({ data, lang, typeFilter, setTypeFilter, canEdit = false, showArchived = false, setShowArchived, onNewAccount, onEditAccount }) {
+  const ar = lang === "ar";
+  const rows = data.rows || [];
+  const types = useMemo(() => Array.from(new Set(rows.map((row) => row.type).filter(Boolean))).sort(), [rows]);
+  const visible = typeFilter === "all" ? rows : rows.filter((row) => row.type === typeFilter);
+  const exportCsv = () => downloadAccountingCsv(
+    "chart-of-accounts",
+    ["Code", "Account", "Type", "Balance", "Active"],
+    visible.map((r) => [r.code, r.name, r.type, r.balance, r.active === false ? "archived" : "active"]),
+  );
+  return (
+    <div className="card">
+      <div className="between" style={{ padding: "12px 18px", gap: 10, flexWrap: "wrap" }}>
+        <div className="t-small subtle">{ar ? `${rows.length} حساباً في الدفاتر` : `${rows.length} accounts in the books`}</div>
+        <div className="row" style={{ gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          {canEdit && (
+            <label className="row" style={{ gap: 5, alignItems: "center" }}>
+              <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived && setShowArchived(e.target.checked)}/>
+              <span className="t-small">{ar ? "إظهار المؤرشفة" : "Show archived"}</span>
+            </label>
+          )}
+          <select className="input" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} style={{ height: 28, minWidth: 150 }}>
+            <option value="all">{ar ? "كل الأنواع" : "All types"}</option>
+            {types.map((type) => (<option key={type} value={type}>{accountTypeLabel(lang, type)}</option>))}
+          </select>
+          <button className="btn btn-ghost" onClick={exportCsv} style={{ height: 28, fontSize: 12 }}><Icon name="download" size={12}/>CSV</button>
+          {canEdit && (
+            <button className="btn btn-primary" onClick={onNewAccount} style={{ height: 28, fontSize: 12 }}>
+              <Icon name="plus" size={12}/>{ar ? "حساب جديد" : "New account"}
+            </button>
+          )}
+        </div>
+      </div>
+      <AccountingTable minWidth={680}>
+        <thead>
+          <tr>
+            <th scope="col">{ar ? "الكود" : "Code"}</th>
+            <th scope="col">{ar ? "الحساب" : "Account"}</th>
+            <th scope="col">{ar ? "النوع" : "Type"}</th>
+            <th scope="col" style={{ textAlign: "end" }}>{ar ? "الرصيد" : "Balance"}</th>
+            {canEdit && <th scope="col" style={{ width: 60 }}></th>}
+          </tr>
+        </thead>
+        <tbody>
+          {visible.map((row) => (
+            <tr key={row.accountId} style={row.active === false ? { opacity: 0.5 } : undefined}>
+              <td className="t-num" style={{ fontWeight: 500 }}>{row.code}</td>
+              <td>{row.name}{row.active === false && <span className="badge" style={{ marginInlineStart: 6 }}>{ar ? "مؤرشف" : "archived"}</span>}</td>
+              <td><span className="badge">{accountTypeLabel(lang, row.type)}</span></td>
+              <td className="t-num" style={{ textAlign: "end" }}>{acctCell(row.balance)}</td>
+              {canEdit && (
+                <td style={{ textAlign: "end" }}>
+                  <button className="btn btn-quiet" onClick={() => onEditAccount && onEditAccount(row)} style={{ height: 26, padding: "0 8px", fontSize: 12 }}>{ar ? "تعديل" : "Edit"}</button>
+                </td>
+              )}
+            </tr>
+          ))}
+          {!visible.length && (
+            <tr><td colSpan={canEdit ? 5 : 4} className="muted">{ar ? "لا توجد حسابات" : "No accounts"}</td></tr>
+          )}
+        </tbody>
+      </AccountingTable>
+    </div>
+  );
+}
+
+// Create / rename / reclassify / archive an account — the Chart of Accounts is where
+// account management belongs (not the Trial Balance, which is a read-only report).
+function ChartAccountModal({ draft, onClose, onSave, lang }) {
+  const ar = lang === "ar";
+  const open = Boolean(draft);
+  const isEdit = Boolean(draft && draft.id);
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [type, setType] = useState("expense");
+  const [active, setActive] = useState(true);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setCode(draft.code || "");
+      setName(draft.name || "");
+      setType(draft.type || "expense");
+      setActive(draft.active !== false);
+      setBusy(false);
+    }
+  }, [draft, open]);
+  const submit = async () => {
+    if (!code.trim() || !name.trim()) return;
+    setBusy(true);
+    await onSave({ id: draft.id, code: code.trim(), name: name.trim(), type, active });
+    setBusy(false);
+  };
+  const typeOptions = Object.keys(ACCOUNT_TYPE_LABELS);
+  return (
+    <Modal open={open} onClose={onClose} width={520}
+      title={isEdit ? (ar ? "تعديل الحساب" : "Edit account") : (ar ? "حساب جديد" : "New account")}
+      sub={ar ? "يُنشأ/يُحدَّث في دليل الحسابات مباشرة" : "Created/updated directly in the chart of accounts"}>
+      <div className="col" style={{ gap: 10 }}>
+        <div className="row" style={{ gap: 10 }}>
+          <div className="col" style={{ gap: 4, width: 150 }}>
+            <label className="t-micro">{ar ? "الكود" : "Code"}</label>
+            <input className="input" value={code} onChange={(e) => setCode(e.target.value)} placeholder="e.g. 600500"/>
+          </div>
+          <div className="col" style={{ gap: 4, flex: 1 }}>
+            <label className="t-micro">{ar ? "اسم الحساب" : "Account name"}</label>
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder={ar ? "مثال: مصاريف تسويق" : "e.g. Marketing expenses"}/>
+          </div>
+        </div>
+        <div className="col" style={{ gap: 4 }}>
+          <label className="t-micro">{ar ? "النوع" : "Type"}</label>
+          <select className="input" value={type} onChange={(e) => setType(e.target.value)}>
+            {typeOptions.map((t) => <option key={t} value={t}>{accountTypeLabel(lang, t)}</option>)}
+          </select>
+        </div>
+        {isEdit && (
+          <label className="row" style={{ gap: 6, alignItems: "center" }}>
+            <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)}/>
+            <span className="t-small">{ar ? "نشط (ألغِ التحديد للأرشفة)" : "Active (uncheck to archive)"}</span>
+          </label>
+        )}
+        <div className="t-micro muted">
+          {ar ? "لا يمكن حذف حساب له قيود — يُؤرشف بدلاً من ذلك للحفاظ على سجل التدقيق." : "Accounts with entries can't be deleted — archive instead to preserve the audit trail."}
+        </div>
+        <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+          <button className="btn btn-ghost" onClick={onClose}>{ar ? "إلغاء" : "Cancel"}</button>
+          <button className="btn btn-primary" onClick={submit} disabled={busy || !code.trim() || !name.trim()}>
+            {busy ? (ar ? "جارٍ الحفظ…" : "Saving…") : (ar ? "حفظ" : "Save")}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// The accountant posts an adjusting/correcting entry straight into the real ledger.
+// Backend enforces balance, lock dates and branch analytic on P&L lines.
+function JournalEntryModal({ open, onClose, lang, sourceOfTruth, chartAccounts = [], kioskOptions = [], defaultDate, showToast, onPosted }) {
+  const ar = lang === "ar";
+  const blankLine = () => ({ account: "", label: "", debit: "", credit: "", kiosk: "" });
+  const [date, setDate] = useState(defaultDate || "");
+  const [ref, setRef] = useState("");
+  const [lines, setLines] = useState([blankLine(), blankLine()]);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (open) { setDate(defaultDate || localIsoDate(new Date())); setRef(""); setLines([blankLine(), blankLine()]); setBusy(false); }
+  }, [open, defaultDate]);
+  const setLine = (i, patch) => setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  const addLine = () => setLines((ls) => [...ls, blankLine()]);
+  const removeLine = (i) => setLines((ls) => (ls.length > 2 ? ls.filter((_, idx) => idx !== i) : ls));
+  const totalDebit = lines.reduce((s, l) => s + (Number(l.debit) || 0), 0);
+  const totalCredit = lines.reduce((s, l) => s + (Number(l.credit) || 0), 0);
+  const balanced = Math.abs(totalDebit - totalCredit) < 0.01 && totalDebit > 0;
+  const filled = lines.filter((l) => l.account && ((Number(l.debit) || 0) > 0 || (Number(l.credit) || 0) > 0));
+  const canSubmit = balanced && filled.length >= 2 && !busy;
+  const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    try {
+      const payloadLines = filled.map((l) => ({
+        account: l.account.trim(),
+        debit: Number(l.debit) || 0,
+        credit: Number(l.credit) || 0,
+        label: l.label.trim() || undefined,
+        kiosk: l.kiosk || undefined,
+      }));
+      const res = await sourceOfTruth.postJournalEntry({ date, ref: ref.trim() || undefined, lines: payloadLines });
+      showToast(ar ? `تم ترحيل القيد ${res?.name || ""}` : `Entry posted: ${res?.name || ""}`, "success");
+      onPosted && onPosted();
+    } catch (e) {
+      showToast(compactError(e) || (ar ? "تعذّر ترحيل القيد" : "Could not post the entry"), "warn");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal open={open} onClose={onClose} width={780}
+      title={ar ? "قيد يومية جديد" : "New journal entry"}
+      sub={ar ? "قيد مزدوج متوازن يُرحَّل مباشرة إلى دفتر الأستاذ. بنود الدخل/المصروف تحتاج تحديد فرع." : "A balanced double-entry posted straight to the ledger. Income/expense lines need a branch."}>
+      <div className="col" style={{ gap: 10 }}>
+        <div className="row" style={{ gap: 10 }}>
+          <div className="col" style={{ gap: 4, width: 160 }}>
+            <label className="t-micro">{ar ? "التاريخ" : "Date"}</label>
+            <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)}/>
+          </div>
+          <div className="col" style={{ gap: 4, flex: 1 }}>
+            <label className="t-micro">{ar ? "المرجع / الوصف" : "Reference / description"}</label>
+            <input className="input" value={ref} onChange={(e) => setRef(e.target.value)} placeholder={ar ? "مثال: تسوية إهلاك يونيو" : "e.g. June depreciation adjustment"}/>
+          </div>
+        </div>
+        <datalist id="bayaan-coa-list">
+          {chartAccounts.map((a) => <option key={a.code} value={a.code}>{a.code} — {a.name}</option>)}
+        </datalist>
+        <div style={{ overflowX: "auto" }}>
+          <table className="tbl" style={{ minWidth: 700 }}>
+            <thead>
+              <tr>
+                <th scope="col" style={{ width: 140 }}>{ar ? "الحساب" : "Account"}</th>
+                <th scope="col">{ar ? "البيان" : "Label"}</th>
+                <th scope="col" style={{ width: 100 }}>{ar ? "الفرع" : "Branch"}</th>
+                <th scope="col" style={{ width: 120, textAlign: "end" }}>{ar ? "مدين" : "Debit"}</th>
+                <th scope="col" style={{ width: 120, textAlign: "end" }}>{ar ? "دائن" : "Credit"}</th>
+                <th scope="col" style={{ width: 32 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {lines.map((l, i) => (
+                <tr key={i}>
+                  <td><input className="input" list="bayaan-coa-list" value={l.account} onChange={(e) => setLine(i, { account: e.target.value })} placeholder={ar ? "كود" : "code"} style={{ height: 30 }}/></td>
+                  <td><input className="input" value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} style={{ height: 30 }}/></td>
+                  <td>
+                    <select className="input" value={l.kiosk} onChange={(e) => setLine(i, { kiosk: e.target.value })} style={{ height: 30 }}>
+                      <option value="">—</option>
+                      {kioskOptions.map((k) => <option key={k.code} value={k.code}>{k.code}</option>)}
+                    </select>
+                  </td>
+                  <td><input className="input t-num" type="number" value={l.debit} onChange={(e) => setLine(i, { debit: e.target.value, credit: e.target.value ? "" : l.credit })} style={{ height: 30, textAlign: "end" }}/></td>
+                  <td><input className="input t-num" type="number" value={l.credit} onChange={(e) => setLine(i, { credit: e.target.value, debit: e.target.value ? "" : l.debit })} style={{ height: 30, textAlign: "end" }}/></td>
+                  <td>{lines.length > 2 && <button className="btn btn-quiet" onClick={() => removeLine(i)} style={{ height: 30, padding: "0 6px" }} aria-label="remove line"><Icon name="x" size={12}/></button>}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr style={{ background: "var(--surface-2)", fontWeight: 600 }}>
+                <td colSpan={3}>{ar ? "الإجمالي" : "Total"}</td>
+                <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totalDebit)}</td>
+                <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totalCredit)}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div className="between" style={{ gap: 8 }}>
+          <button className="btn btn-ghost" onClick={addLine} style={{ height: 30, fontSize: 12 }}><Icon name="plus" size={12}/>{ar ? "إضافة بند" : "Add line"}</button>
+          <span className={`badge ${balanced ? "badge-pos" : "badge-warn"}`}>
+            {balanced ? (ar ? "متوازن" : "Balanced") : (ar ? `الفرق ${fmtMoney(Math.abs(totalDebit - totalCredit))}` : `Off by ${fmtMoney(Math.abs(totalDebit - totalCredit))}`)}
+          </span>
+        </div>
+        <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+          <button className="btn btn-ghost" onClick={onClose}>{ar ? "إلغاء" : "Cancel"}</button>
+          <button className="btn btn-primary" onClick={submit} disabled={!canSubmit}>
+            {busy ? (ar ? "جارٍ الترحيل…" : "Posting…") : (ar ? "ترحيل القيد" : "Post entry")}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function JournalEntryDetailModal({ move, onClose, lang, canReverse = false, onReverse }) {
+  const ar = lang === "ar";
+  const lines = move?.lines || [];
+  const totals = move?.totals || {};
+  const [confirming, setConfirming] = useState(false);
+  const [reason, setReason] = useState("");
+  useEffect(() => { setConfirming(false); setReason(""); }, [move?.id]);
+  // The backend serializes canReverse using the SAME rule the reverse route enforces
+  // (manual general-journal entries only; never POS/bank/purchase/Bayaan-system moves),
+  // so the UI can never offer a reverse the server would reject.
+  const eligible = canReverse && Boolean(move?.canReverse);
+  return (
+    <Modal open={Boolean(move)} onClose={onClose} width={640}
+      title={move?.name ? (ar ? `قيد ${move.name}` : `Entry ${move.name}`) : (ar ? "تفاصيل القيد" : "Entry detail")}
+      sub={move && !move.loading ? `${move.date || ""} · ${move.journal || ""}${move.ref ? " · " + move.ref : ""}` : ""}>
+      {move?.loading ? (
+        <div className="t-small subtle">{ar ? "جارٍ التحميل…" : "Loading…"}</div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table className="tbl" style={{ minWidth: 520 }}>
+            <thead>
+              <tr>
+                <th scope="col">{ar ? "الحساب" : "Account"}</th>
+                <th scope="col">{ar ? "البيان" : "Label"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "مدين" : "Debit"}</th>
+                <th scope="col" style={{ textAlign: "end" }}>{ar ? "دائن" : "Credit"}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lines.map((l) => (
+                <tr key={l.id}>
+                  <td><div className="t-small" style={{ fontWeight: 500 }}>{l.code}</div><div className="t-micro muted">{l.account}</div></td>
+                  <td className="t-small muted">{l.label}</td>
+                  <td className="t-num" style={{ textAlign: "end" }}>{acctCell(l.debit)}</td>
+                  <td className="t-num" style={{ textAlign: "end" }}>{acctCell(l.credit)}</td>
+                </tr>
+              ))}
+              {!lines.length && <tr><td colSpan={4} className="muted">{ar ? "لا توجد بنود" : "No lines"}</td></tr>}
+            </tbody>
+            <tfoot>
+              <tr style={{ background: "var(--surface-2)", fontWeight: 600 }}>
+                <td colSpan={2}>{ar ? "الإجمالي" : "Total"}</td>
+                <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totals.debit || 0)}</td>
+                <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(totals.credit || 0)}</td>
+              </tr>
+            </tfoot>
+          </table>
+          {canReverse && move?.id && !move.loading && eligible && (
+            <div style={{ marginTop: 12 }}>
+              <div className="t-micro muted" style={{ marginBottom: 6 }}>
+                {ar ? "لا يمكن حذف القيود المرحّلة. العكس ينشئ قيداً عكسياً مقابلاً ويُبقي مسار التدقيق." : "Posted entries can't be deleted. Reversing posts an equal-and-opposite entry and keeps the audit trail."}
+              </div>
+              {confirming ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <label className="t-micro muted" htmlFor="reverse-reason">{ar ? "سبب العكس (مطلوب)" : "Reversal reason (required)"}</label>
+                  <textarea id="reverse-reason" className="input" rows={2} value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    placeholder={ar ? "اكتب سبب عكس هذا القيد…" : "Why are you reversing this entry?"}
+                    style={{ resize: "vertical", fontSize: 12 }}/>
+                  <div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
+                    <button className="btn btn-ghost" onClick={() => { setConfirming(false); setReason(""); }} style={{ height: 30, fontSize: 12 }}>{ar ? "إلغاء" : "Cancel"}</button>
+                    <button className="btn btn-primary" disabled={!reason.trim()}
+                      onClick={() => reason.trim() && onReverse && onReverse(move.id, reason.trim())}
+                      style={{ height: 30, fontSize: 12, background: "var(--crit)", borderColor: "var(--crit)", opacity: reason.trim() ? 1 : 0.5 }}>{ar ? "تأكيد العكس" : "Confirm reverse"}</button>
+                  </div>
+                </div>
+              ) : (
+                <button className="btn btn-ghost" onClick={() => setConfirming(true)} style={{ height: 30, fontSize: 12 }}>
+                  <Icon name="refresh" size={12}/>{ar ? "عكس القيد" : "Reverse entry"}
+                </button>
+              )}
+            </div>
+          )}
+          {canReverse && move?.id && !move.loading && !eligible && move?.reverseBlockedReason && move?.state === "posted" && (
+            <div className="t-micro muted" style={{ marginTop: 12, maxWidth: 440 }}>
+              {ar ? "لا يمكن عكس هذا القيد من هنا (قيد نظامي/تشغيلي)." : move.reverseBlockedReason}
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+
+/* ===== screens/settings.jsx ===== */
+
+/* ============================================================
+   Settings — tenant configuration. Tax/VAT is the first card:
+   Iraq has no VAT (0%) but the rate is configurable. Saving
+   normalizes every POS product + the Odoo company default tax
+   and drives the POS receipt rate (no more hardcoded 5%).
+   ============================================================ */
+
+function SettingsScreen({ lang, sourceOfTruth, refreshOdoo, caps = null }) {
+  const ar = lang === "ar";
+  const can = (k) => !caps || caps[k] !== false;
+  const { showToast } = useToast();
+  const engineReady = Boolean(sourceOfTruth?.enabled);
+  const [settings, setSettings] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [rate, setRate] = useState("0");
+  const [priceInclude, setPriceInclude] = useState(true);
+  const [setCountryIraq, setSetCountryIraq] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    if (!engineReady || typeof sourceOfTruth.getTaxSettings !== "function") { setSettings(null); return; }
+    let cancelled = false;
+    setLoading(true);
+    sourceOfTruth.getTaxSettings()
+      .then((res) => {
+        if (cancelled) return;
+        setSettings(res || null);
+        setRate(String(res?.rate ?? 0));
+        setPriceInclude(res?.priceInclude !== false);
+        setSetCountryIraq((res?.countryCode || "") !== "IQ");
+      })
+      .catch(() => { if (!cancelled) setSettings(null); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [engineReady, sourceOfTruth, nonce]);
+
+  const apply = async () => {
+    const numericRate = Number(rate);
+    if (!Number.isFinite(numericRate) || numericRate < 0 || numericRate > 100) {
+      showToast(ar ? "أدخل نسبة بين 0 و100" : "Enter a rate between 0 and 100", "warn");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await sourceOfTruth.saveTaxSettings({ rate: numericRate, priceInclude, setCountryIraq });
+      showToast(
+        ar ? `تم ضبط الضريبة على ${numericRate}% (${res?.updated ?? 0} منتج)` : `VAT set to ${numericRate}% (${res?.updated ?? 0} products updated)`,
+        "success",
+      );
+      setNonce((n) => n + 1);
+      await refreshOdoo?.();
+    } catch (error) {
+      showToast(compactError(error) || (ar ? "تعذّر الحفظ" : "Could not save"), "warn");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const productsOther = Number(settings?.productsOther || 0);
+  const isIraq = (settings?.countryCode || "") === "IQ";
+
+  // ---- Company / fiscal setup + period lock ----
+  const [companyCfg, setCompanyCfg] = useState(null);
+  const [lockDate, setLockDate] = useState("");
+  const [cfgBusy, setCfgBusy] = useState(false);
+  useEffect(() => {
+    if (!engineReady || typeof sourceOfTruth.getCompanyConfig !== "function") { setCompanyCfg(null); return; }
+    let cancelled = false;
+    sourceOfTruth.getCompanyConfig()
+      .then((res) => { if (!cancelled) { setCompanyCfg(res || null); setLockDate(res?.lockDate || ""); } })
+      .catch(() => { if (!cancelled) setCompanyCfg(null); });
+    return () => { cancelled = true; };
+  }, [engineReady, sourceOfTruth, nonce]);
+
+  const saveLock = async (clear = false) => {
+    setCfgBusy(true);
+    try {
+      const res = await sourceOfTruth.setPeriodLock({ lockDate: clear ? "" : lockDate });
+      setCompanyCfg(res || companyCfg);
+      setLockDate((clear ? "" : (res?.lockDate ?? lockDate)));
+      showToast(clear ? (ar ? "تم فتح الفترة" : "Period unlocked")
+        : (ar ? `أُغلقت الفترة حتى ${lockDate}` : `Books locked through ${lockDate}`), "success");
+      setNonce((n) => n + 1);
+    } catch (e) {
+      showToast(compactError(e) || (ar ? "تعذّر تحديث القفل" : "Could not update the lock"), "warn");
+    } finally { setCfgBusy(false); }
+  };
+  const applyIraqiDefaults = async () => {
+    setCfgBusy(true);
+    try {
+      const res = await sourceOfTruth.saveCompanyConfig({ iraqiDefaults: true });
+      setCompanyCfg(res || companyCfg);
+      showToast(ar ? "تم تطبيق الإعداد العراقي" : "Iraqi defaults applied", "success");
+      setNonce((n) => n + 1);
+      await refreshOdoo?.();
+    } catch (e) {
+      showToast(compactError(e) || (ar ? "تعذّر التطبيق" : "Could not apply"), "warn");
+    } finally { setCfgBusy(false); }
+  };
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+  return (
+    <div className="col" style={{ gap: 14 }}>
+      <div className="card card-pad" style={{ maxWidth: 760 }}>
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <div className="t-h2">{ar ? "الضريبة / ضريبة القيمة المضافة" : "Tax & VAT"}</div>
+          <span className="badge"><span className="dot pos"></span>{ar ? "المحرك المحاسبي" : "accounting engine"}</span>
+        </div>
+        <div className="t-small subtle" style={{ marginTop: 2, maxWidth: 600 }}>
+          {ar
+            ? "العراق بلا ضريبة قيمة مضافة — اتركها 0%. السعر المعروض على القائمة هو ما يدفعه الزبون. تغيير النسبة يوحّد كل منتجات نقطة البيع والإيصال والافتراضي في المحرك."
+            : "Iraq has no VAT — leave it at 0%. The menu price is what the customer pays. Changing the rate normalizes every POS product, the receipt, and the company default."}
+        </div>
+
+        {!engineReady ? (
+          <div className="ai-block" style={{ marginTop: 12, fontSize: 14 }}>{ar ? "اربط المحرك المحاسبي لتغيير إعدادات الضريبة." : "Connect the accounting engine to change tax settings."}</div>
+        ) : (loading && !settings) ? (
+          <div className="t-small subtle" style={{ marginTop: 12 }}>{ar ? "جارٍ التحميل…" : "Loading…"}</div>
+        ) : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginTop: 14 }}>
+              <KPI label={ar ? "الضريبة الحالية" : "Current VAT"} value={`${Number(settings?.rate || 0)}%`} footer={settings?.country || "—"} size="lg"/>
+              <KPI label={ar ? "العملة" : "Currency"} value={settings?.currency || "IQD"} footer={settings?.company || ""} size="lg"/>
+              <KPI label={ar ? "منتجات نقطة البيع" : "POS products"} value={`${settings?.productsOnRate || 0}/${settings?.posProductCount || 0}`}
+                footer={ar ? "على النسبة الحالية" : "on current rate"}
+                delta={productsOther ? (ar ? `${productsOther} مختلفة` : `${productsOther} off-rate`) : undefined}
+                deltaDir={productsOther ? "down" : "flat"} size="lg"/>
+            </div>
+            {productsOther > 0 && (
+              <div className="t-small" style={{ color: "var(--warn)", marginTop: 10 }}>
+                {ar ? `${productsOther} منتج بنسبة ضريبة مختلفة — اضغط "تطبيق" لتوحيدها كلها.` : `${productsOther} product(s) carry a different tax rate — click Apply to normalize them all.`}
+              </div>
+            )}
+            <div className="row" style={{ gap: 16, marginTop: 18, flexWrap: "wrap", alignItems: "flex-end" }}>
+              <div className="col" style={{ gap: 4, width: 150 }}>
+                <label className="t-micro">{ar ? "نسبة الضريبة %" : "VAT rate %"}</label>
+                <input className="input" type="number" step={0.5} min={0} max={100} value={rate} onChange={(e) => setRate(e.target.value)}/>
+              </div>
+              <label className="row" style={{ gap: 6, alignItems: "center", height: 38 }}>
+                <input type="checkbox" checked={priceInclude} onChange={(e) => setPriceInclude(e.target.checked)}/>
+                <span className="t-small">{ar ? "السعر شامل الضريبة" : "Price includes tax"}</span>
+              </label>
+              {!isIraq && (
+                <label className="row" style={{ gap: 6, alignItems: "center", height: 38 }}>
+                  <input type="checkbox" checked={setCountryIraq} onChange={(e) => setSetCountryIraq(e.target.checked)}/>
+                  <span className="t-small">{ar ? "ضبط الدولة على العراق" : "Set company country to Iraq"}</span>
+                </label>
+              )}
+              {can("changeVat") && (
+                <button className="btn btn-primary" onClick={apply} disabled={busy} style={{ height: 38 }}>
+                  {busy ? (ar ? "جارٍ التطبيق…" : "Applying…") : (ar ? "تطبيق" : "Apply")}
+                </button>
+              )}
+            </div>
+            <div className="t-micro muted" style={{ marginTop: 12 }}>
+              {ar
+                ? "يضبط ضريبة البيع على كل منتجات نقطة البيع والافتراضي في المحرك، ويظهر على إيصال نقطة البيع. القيود التاريخية المرحّلة لا تتغير."
+                : "Sets the sale tax on every POS product and the company default, and drives what the POS receipt shows. Historical posted entries are never changed."}
+            </div>
+          </>
+        )}
+      </div>
+
+      {companyCfg && (
+        <div className="card card-pad" style={{ maxWidth: 760 }}>
+          <div className="row" style={{ gap: 8, alignItems: "center" }}>
+            <div className="t-h2">{ar ? "الشركة والسنة المالية" : "Company & fiscal year"}</div>
+            {companyCfg.isIraqiDefault && <span className="badge badge-pos">{ar ? "إعداد عراقي" : "Iraqi setup"}</span>}
+          </div>
+          <div className="t-small subtle" style={{ marginTop: 2, maxWidth: 600 }}>
+            {ar ? "مهيأ مسبقاً للنطاق العراقي — العملة دينار عراقي وسنة مالية تقويمية (تنتهي 31 ديسمبر)." : "Pre-configured for the Iraqi domain — IQD currency and a calendar fiscal year (ends 31 Dec)."}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginTop: 14 }}>
+            <KPI label={ar ? "الشركة" : "Company"} value={companyCfg.company || "—"} size="lg"/>
+            <KPI label={ar ? "الدولة" : "Country"} value={companyCfg.country || "—"} size="lg"/>
+            <KPI label={ar ? "العملة" : "Currency"} value={companyCfg.currency || "IQD"} footer={ar ? "ثابتة بعد المعاملات" : "fixed after transactions"} size="lg"/>
+            <KPI label={ar ? "نهاية السنة المالية" : "Fiscal year end"} value={`${companyCfg.fiscalYearDay || 31} ${MONTHS[((companyCfg.fiscalYearMonth || 12) - 1)] || "Dec"}`} size="lg"/>
+          </div>
+          {!companyCfg.isIraqiDefault && can("changeCompanyConfig") && (
+            <div className="row" style={{ gap: 8, marginTop: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <button className="btn btn-primary" onClick={applyIraqiDefaults} disabled={cfgBusy} style={{ height: 32, fontSize: 12 }}>{ar ? "تطبيق الإعداد العراقي" : "Apply Iraqi defaults"}</button>
+              <span className="t-small subtle">{ar ? "يضبط الدولة على العراق ونهاية السنة على 31 ديسمبر" : "Sets country to Iraq and fiscal year end to 31 Dec"}</span>
+            </div>
+          )}
+          <div className="t-micro muted" style={{ marginTop: 12 }}>
+            {ar ? "المطابقة البنكية تُدار في محرك المحاسبة وهي ضمن خارطة طريق بيان، ولم تُتح بعد في واجهة بيان. الإعدادات النادرة الأخرى (تعدد العملات، استيراد دليل الحسابات) تُضبط مرة واحدة عند الإطلاق وليست جزءاً من العمل اليومي." : "Bank reconciliation runs in the accounting engine and is on the Bayaan roadmap — it is not yet exposed in the Bayaan UI. Other rare setup (multi-currency, chart import) is a one-time go-live step, not part of daily accounting."}
+          </div>
+        </div>
+      )}
+
+      {companyCfg && (
+        <div className="card card-pad" style={{ maxWidth: 760 }}>
+          <div className="row" style={{ gap: 8, alignItems: "center" }}>
+            <div className="t-h2">{ar ? "إغلاق وقفل الفترات" : "Close / lock periods"}</div>
+            {companyCfg.lockDate
+              ? <span className="badge badge-warn">{ar ? `مقفل حتى ${companyCfg.lockDate}` : `Locked through ${companyCfg.lockDate}`}</span>
+              : <span className="badge">{ar ? "مفتوح" : "Open"}</span>}
+          </div>
+          <div className="t-small subtle" style={{ marginTop: 2, maxWidth: 600 }}>
+            {ar ? "بعد إغلاق فترة، لا يستطيع أحد ترحيل أو تعديل أي قيد بتاريخ ضمنها أو قبلها — استخدمه لإغلاق شهر بعد مراجعته." : "Once you close a period, no one can post or edit any entry dated on or before that date — use it to close a month after it's reviewed."}
+          </div>
+          <div className="row" style={{ gap: 12, marginTop: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div className="col" style={{ gap: 4, width: 180 }}>
+              <label className="t-micro">{ar ? "إغلاق كل القيود حتى" : "Lock all entries up to"}</label>
+              <input type="date" className="input" value={lockDate} onChange={(e) => setLockDate(e.target.value)} disabled={!can("changeCompanyConfig")}/>
+            </div>
+            {can("changeCompanyConfig") && (
+              <button className="btn btn-primary" onClick={() => saveLock(false)} disabled={cfgBusy || !lockDate} style={{ height: 36 }}>{ar ? "إغلاق الفترة" : "Lock period"}</button>
+            )}
+            {companyCfg.lockDate && can("changeCompanyConfig") && <button className="btn btn-ghost" onClick={() => saveLock(true)} disabled={cfgBusy} style={{ height: 36 }}>{ar ? "فتح" : "Unlock"}</button>}
+          </div>
+          <div className="t-micro muted" style={{ marginTop: 12 }}>
+            {ar ? "يضبط تاريخ قفل المحرك لكل المستخدمين، ويُطبّقه محرك القيود تلقائياً. قابل للتغيير لاحقاً (قفل ناعم وليس نهائياً)." : "Sets the engine's lock date for all users; the posting engine enforces it automatically. Reversible — you can change it later (soft fiscal lock, not the irreversible hard lock)."}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 /* ===== admin-shell.jsx ===== */
 
 /* ============================================================
@@ -18586,9 +20234,21 @@ const ADMIN_NAV = [
   { id: "items", label: "Stock inventory", icon: "packageSearch" },
   { section: "PEOPLE & MONEY" },
   { id: "staff", label: "Staff", icon: "users" },
-  { id: "finance", label: "Finance", icon: "cash" },
+  { id: "finance", label: "Finance overview", icon: "cash" },
+  { section: "ACCOUNTING" },
+  { id: "gl", label: "General ledger", icon: "list" },
+  { id: "journals", label: "Journal entries", icon: "fileText" },
+  { id: "trialBalance", label: "Trial balance", icon: "grid" },
+  { id: "statements", label: "Income & Balance", icon: "chart" },
+  { id: "cashFlow", label: "Cash flow", icon: "cash" },
+  { id: "agedPayable", label: "Aged payables", icon: "fileText" },
+  { id: "agedReceivable", label: "Aged receivables", icon: "fileText" },
+  { id: "taxReport", label: "VAT / tax return", icon: "grid" },
+  { id: "coa", label: "Chart of accounts", icon: "wallet" },
   { section: "ANALYTICS" },
   { id: "reports", label: "Reports", icon: "fileText" },
+  { section: "SETTINGS" },
+  { id: "settings", label: "Settings", icon: "settings" },
 ];
 
 const ROLE_LABELS = {
@@ -18617,8 +20277,8 @@ const TEST_ACCOUNTS = [
   { role: "Cashier", login: "zainab@miza.iq" },
 ];
 
-function authAllowsPanel(auth, hasBackend, panel, mode = "live") {
-  if (!hasBackend || mode === "demo") return true;
+function authAllowsPanel(auth, hasBackend, panel) {
+  if (!hasBackend) return true;
   if (!auth?.checked || !auth.authenticated) return panel === "admin";
   return Boolean(auth.user?.allowedPanels?.[panel]);
 }
@@ -18628,6 +20288,11 @@ function allowedAdminIds(auth, hasBackend) {
     return ADMIN_NAV.filter((item) => item.id).map((item) => item.id);
   }
   return auth.user?.allowedNav?.length ? auth.user.allowedNav : [];
+}
+
+function authCaps(auth, hasBackend) {
+  if (!hasBackend || !auth?.checked || !auth.authenticated) return null;
+  return auth.user?.capabilities || {};
 }
 
 function filteredAdminNav(auth, hasBackend) {
@@ -18665,13 +20330,25 @@ const ADMIN_NAV_AR = {
   waste: "الهدر والخسارة",
   suppliers: "المشتريات والموردون",
   staff: "الموظفون",
-  finance: "المالية",
+  finance: "نظرة عامة مالية",
+  gl: "دفتر الأستاذ العام",
+  journals: "قيود اليومية",
+  trialBalance: "ميزان المراجعة",
+  statements: "الدخل والميزانية",
+  cashFlow: "التدفقات النقدية",
+  agedPayable: "أعمار الذمم الدائنة",
+  agedReceivable: "أعمار الذمم المدينة",
+  taxReport: "إقرار الضريبة",
+  coa: "دليل الحسابات",
   reports: "التقارير",
+  settings: "الإعدادات",
   TODAY: "اليوم",
   OPERATIONS: "العمليات",
   STOCK: "المخزون",
   "PEOPLE & MONEY": "الأفراد والمال",
+  ACCOUNTING: "المحاسبة",
   ANALYTICS: "التحليلات",
+  SETTINGS: "الإعدادات",
 };
 
 function AdminSidebar({ active, setActive, lang, navBadges = null }) {
@@ -18680,6 +20357,8 @@ function AdminSidebar({ active, setActive, lang, navBadges = null }) {
   const navRows = filteredAdminNav(bayaan.auth, bayaan.hasBackend);
   const user = bayaan.auth.user || {};
   const roleLabel = isAr ? (ROLE_LABELS_DISPLAY_AR[user.primaryRole] || "المالك") : (ROLE_LABELS[user.primaryRole] || "Owner");
+  const caps = authCaps(bayaan.auth, bayaan.hasBackend);
+  const can = (k) => !caps || caps[k] !== false;
   return (
     <aside className="admin-sidebar">
       <div className="admin-sidebar-header">
@@ -18687,15 +20366,17 @@ function AdminSidebar({ active, setActive, lang, navBadges = null }) {
         <Icon name="chevDown" size={12} style={{ color: "var(--ink-3)", marginInlineStart: "auto" }}/>
       </div>
 
-      <div className="admin-sidebar-actions">
-        <button className="admin-sidebar-action-main" type="button" onClick={() => setActive("inventory")}>
-          <Icon name="plusCircle" size={16}/>
-          <span>{isAr ? "تحويل جديد" : "New Transfer"}</span>
-        </button>
-        <button className="admin-sidebar-action-icon" type="button" aria-label={isAr ? "الموافقات" : "Approvals"} title={isAr ? "الموافقات" : "Approvals"} onClick={() => setActive("closing")}>
-          <Icon name="mail" size={16}/>
-        </button>
-      </div>
+      {can("receiveStock") && (
+        <div className="admin-sidebar-actions">
+          <button className="admin-sidebar-action-main" type="button" onClick={() => setActive("inventory")}>
+            <Icon name="plusCircle" size={16}/>
+            <span>{isAr ? "تحويل جديد" : "New Transfer"}</span>
+          </button>
+          <button className="admin-sidebar-action-icon" type="button" aria-label={isAr ? "الموافقات" : "Approvals"} title={isAr ? "الموافقات" : "Approvals"} onClick={() => setActive("closing")}>
+            <Icon name="mail" size={16}/>
+          </button>
+        </div>
+      )}
 
       <div className="admin-sidebar-nav">
         {navRows.map((it, i) => {
@@ -18729,7 +20410,18 @@ function AdminSidebar({ active, setActive, lang, navBadges = null }) {
   );
 }
 
-function AdminTopBar({ title, sub, right, lang }) {
+// Hover/focus help tooltip shown next to a page title. `text` is already localized.
+function InfoTip({ text }) {
+  if (!text) return null;
+  return (
+    <span className="info-tip" tabIndex={0} role="note" aria-label={text}>
+      <Icon name="info" size={15}/>
+      <span className="info-tip-bubble" role="tooltip">{text}</span>
+    </span>
+  );
+}
+
+function AdminTopBar({ title, sub, right, lang, tip }) {
   return (
     <div className="admin-topbar" style={{
       height: 56, padding: "0 24px",
@@ -18739,7 +20431,10 @@ function AdminTopBar({ title, sub, right, lang }) {
       flexShrink: 0
     }}>
       <div>
-        <div className="t-h2" style={{ letterSpacing: "-0.01em" }}>{title}</div>
+        <div className="t-h2" style={{ letterSpacing: "-0.01em", display: "flex", alignItems: "center" }}>
+          <span>{title}</span>
+          <InfoTip text={tip}/>
+        </div>
         {sub && <div className="t-small subtle">{sub}</div>}
       </div>
       <div className="row" style={{ gap: 8 }}>
@@ -18759,126 +20454,15 @@ function AdminTopBar({ title, sub, right, lang }) {
   );
 }
 
-// The product is sold and demoed as a LIVE operating system. "Demo data" and "Simulation"
-// are internal/dev modes that must never be shown to a buyer (they undercut the "this is
-// your real system" story and risk an accidental switch into mock data mid-demo). Keep only
-// the "Live only" control visible. Flip to false to restore the dev mode switcher.
-const LIVE_ONLY_DEMO = true;
-
-function DataModeToggle({ bayaan, lang, bootstrap = null }) {
+function AuditLogRail({ lang, sourceOfTruth }) {
   const ar = lang === "ar";
-  const liveOnly = bayaan.mode === "live";
-  const simulation = isSimulationRuntime();
-  const simulationSpeed = simulationRuntimeSpeed();
-  const simulationMeta = unwrapOdoo(bootstrap)?.meta?.simulation;
-  const switchDataMode = (target) => {
-    if (typeof window === "undefined") {
-      bayaan.setMode(target === "demo" ? "demo" : "live");
-      return;
-    }
-    const url = new URL(window.location.href);
-    url.searchParams.delete("bayaanSimulation");
-    url.searchParams.delete("bayaanSimFull");
-    url.searchParams.delete("bayaanSimMinutes");
-    url.searchParams.delete("bayaanSimSpeed");
-    url.searchParams.delete("bayaanMode");
-    if (target === "simulation") {
-      window.localStorage.setItem("BAYAAN_SIMULATION", "peak");
-      window.localStorage.removeItem("bayaan.mode.v1");
-      url.searchParams.set("bayaanSimulation", "peak");
-      url.searchParams.set("bayaanSimMinutes", String(simulationRuntimeMinutes()));
-      url.searchParams.set("bayaanSimSpeed", String(simulationSpeed));
-      window.location.assign(url.toString());
-      return;
-    }
-    window.localStorage.removeItem("BAYAAN_SIMULATION");
-    window.localStorage.setItem("bayaan.mode.v1", target);
-    if (simulation) {
-      window.location.assign(url.toString());
-      return;
-    }
-    bayaan.setMode(target === "demo" ? "demo" : "live");
-  };
-  const setSimulationSpeed = (speed) => {
-    if (typeof window === "undefined") return;
-    const url = new URL(window.location.href);
-    window.localStorage.setItem("BAYAAN_SIMULATION", "peak");
-    window.localStorage.setItem("BAYAAN_SIMULATION_SPEED", String(speed));
-    window.localStorage.removeItem("bayaan.mode.v1");
-    url.searchParams.set("bayaanSimulation", "peak");
-    url.searchParams.set("bayaanSimMinutes", String(simulationRuntimeMinutes()));
-    url.searchParams.set("bayaanSimSpeed", String(speed));
-    url.searchParams.delete("bayaanSimFull");
-    window.location.assign(url.toString());
-  };
-  return (
-    <div className="row" style={{ gap: 6 }}>
-    <div className="segmented" aria-label={ui(ar, "dataSource")} style={{ height: 30 }}>
-      {!LIVE_ONLY_DEMO && (
-      <button
-        type="button"
-        className={`seg-btn ${simulation ? "active" : ""}`}
-        onClick={() => switchDataMode("simulation")}
-        title="Run the adjustable 10-kiosk peak-opening simulation"
-      >
-        <Icon name="chart" size={12}/>
-        {ui(ar, "simulation")}
-      </button>
-      )}
-      <button
-        type="button"
-        className={`seg-btn ${liveOnly && !simulation ? "active" : ""}`}
-        onClick={() => switchDataMode("live")}
-        title={bayaan.hasBackend ? "Use only verified engine data" : "Live-only mode; backend URL is not configured"}
-      >
-        <Icon name="zap" size={12}/>
-        {ui(ar, "liveOnly")}
-      </button>
-      {!LIVE_ONLY_DEMO && (
-      <button
-        type="button"
-        className={`seg-btn ${!liveOnly && !simulation ? "active" : ""}`}
-        onClick={() => switchDataMode("demo")}
-        title="Allow demo fallback data"
-      >
-        <Icon name="grid" size={12}/>
-        {ui(ar, "demoData")}
-      </button>
-      )}
-    </div>
-    {simulation && (
-      <div className="segmented" aria-label="Simulation speed" style={{ height: 30 }}>
-        {[1, 2, 5, 10].map((speed) => (
-          <button
-            key={speed}
-            type="button"
-            className={`seg-btn ${simulationSpeed === speed ? "active" : ""}`}
-            onClick={() => setSimulationSpeed(speed)}
-            title={`Run simulation at x${speed}`}
-          >
-            x{speed}
-          </button>
-        ))}
-      </div>
-    )}
-    {simulation && simulationMeta && (
-      <span className="badge badge-pos" title="Simulation progress">
-        {Number(simulationMeta.cursorMinute || 0)}/{Number(simulationMeta.minutes || simulationRuntimeMinutes())} min / {Number(simulationMeta.kioskCount || 10)} kiosks / x{simulationSpeed}
-      </span>
-    )}
-    </div>
-  );
-}
-
-function AuditLogRail({ lang, sourceOfTruth, allowDemoFallback = true }) {
-  const ar = lang === "ar";
-  const [events, setEvents] = React.useState(() => allowDemoFallback ? demoAuditEvents() : []);
+  const [events, setEvents] = React.useState(() => []);
   const [status, setStatus] = React.useState("idle");
   const [error, setError] = React.useState("");
   const loadEvents = React.useCallback(async () => {
     if (!sourceOfTruth?.enabled) {
-      setEvents(allowDemoFallback ? demoAuditEvents() : []);
-      setStatus(allowDemoFallback ? "demo" : "source-missing");
+      setEvents([]);
+      setStatus("source-missing");
       setError("");
       return;
     }
@@ -18893,7 +20477,7 @@ function AuditLogRail({ lang, sourceOfTruth, allowDemoFallback = true }) {
       setStatus("error");
       setError(compactError(err));
     }
-  }, [allowDemoFallback, sourceOfTruth]);
+  }, [sourceOfTruth]);
 
   React.useEffect(() => {
     void loadEvents();
@@ -18934,7 +20518,7 @@ function AuditLogRail({ lang, sourceOfTruth, allowDemoFallback = true }) {
         <div>
           <div className="t-h2">{ui(ar, "liveActionLog")}</div>
           <div className="t-small subtle">
-            {status === "live" ? (ar ? "متصل" : ui(ar, "realtimeStream")) : status === "demo" ? ui(ar, "demoEvents") : sourceAuditMissing ? (ar ? "سجل تدقيق المصدر غير متاح" : "Source audit log unavailable") : status === "error" ? ui(ar, "logUnavailable") : ui(ar, "loading")}
+            {status === "live" ? (ar ? "متصل" : ui(ar, "realtimeStream")) : sourceAuditMissing ? (ar ? "سجل تدقيق المصدر غير متاح" : "Source audit log unavailable") : status === "error" ? ui(ar, "logUnavailable") : ui(ar, "loading")}
           </div>
         </div>
         <button className="btn btn-ghost" onClick={loadEvents} style={{ height: 28, fontSize: 12 }}>
@@ -19006,33 +20590,31 @@ function AdminPanel({ lang, scope = "Daily" }) {
     const allowed = ["logistics", "manager", "superadmin", "owner"];
     return roles.some((r) => allowed.includes(r)) || allowed.includes(user.primaryRole);
   }, [bayaan.auth, bayaan.hasBackend]);
+  // Server capability map (auth_status -> bayaan.auth.user.capabilities). Null
+  // in demo/no-backend so the demo is unaffected (null => treat as all-allowed).
+  // Threaded into each write-bearing screen (closing/suppliers/staff/settings/
+  // accounting) as a `caps` prop; the top-bar New Transfer/Approvals controls are
+  // gated inside AdminSidebar from the same capability map.
+  const caps = useMemo(() => authCaps(bayaan.auth, bayaan.hasBackend), [bayaan.auth, bayaan.hasBackend]);
   const [auditLogOpen, setAuditLogOpen] = useState(false);
   // The AdminPanel uses the SAME gateway as the BayaanProvider. When the
   // user toggles to Demo mode, we present a transparent noop wrapper so
   // every screen's `sourceOfTruth?.enabled` check falls through to the
   // existing MOCK fallback paths without any per-screen plumbing.
+  // Live-only product: the AdminPanel always uses the real Bayaan gateway. When no
+  // backend URL is configured the gateway is simply disabled (enabled:false) and the
+  // dashboard shows honest empty/"connect backend" states — never demo data.
   const baseGateway = bayaan.gateway;
-  const liveOnlySelected = bayaan.mode === "live";
-  const liveBackendActive = liveOnlySelected && baseGateway.enabled;
-  const sourceOfTruth = useMemo(() => {
-    if (liveBackendActive) return baseGateway;
-    return new Proxy(baseGateway, {
-      get(target, prop) {
-        if (prop === "enabled") return false;
-        const value = target[prop];
-        if (typeof value !== "function") return value;
-        return async () => ({ skipped: true, demo: true });
-      },
-    });
-  }, [baseGateway, liveBackendActive]);
+  const liveBackendActive = baseGateway.enabled;
+  const sourceOfTruth = baseGateway;
   const [sync, setSync] = useState({
-    status: liveBackendActive ? "syncing" : liveOnlySelected ? "missing" : "demo",
-    bootstrap: liveOnlySelected ? EMPTY_ENGINE_SNAPSHOT : null,
-    warehouseSetup: liveOnlySelected ? EMPTY_WAREHOUSE_SETUP : DEMO_WAREHOUSE_SETUP,
+    status: liveBackendActive ? "syncing" : "missing",
+    bootstrap: EMPTY_ENGINE_SNAPSHOT,
+    warehouseSetup: EMPTY_WAREHOUSE_SETUP,
     error: "",
   });
   const [realtime, setRealtime] = useState({
-    status: liveBackendActive ? "connecting" : liveOnlySelected ? "missing" : "demo",
+    status: liveBackendActive ? "connecting" : "missing",
     lastEvent: null,
     eventCount: 0,
     error: "",
@@ -19048,16 +20630,12 @@ function AdminPanel({ lang, scope = "Daily" }) {
   }, []);
 
   const refreshOdoo = React.useCallback(async () => {
-    if (!liveOnlySelected) {
-      setSync({ status: "demo", bootstrap: null, warehouseSetup: DEMO_WAREHOUSE_SETUP, error: "" });
-      return;
-    }
     if (!baseGateway.enabled) {
       setSync({
         status: "missing",
         bootstrap: EMPTY_ENGINE_SNAPSHOT,
         warehouseSetup: EMPTY_WAREHOUSE_SETUP,
-        error: "Live-only mode is on, but no backend URL is configured.",
+        error: "No backend connected. Configure the Bayaan engine URL to load live data.",
       });
       return;
     }
@@ -19082,12 +20660,11 @@ function AdminPanel({ lang, scope = "Daily" }) {
         error: compactError(error),
       }));
     }
-  }, [baseGateway.enabled, liveOnlySelected, sourceOfTruth]);
+  }, [baseGateway.enabled, sourceOfTruth]);
 
   useEffect(() => {
     void refreshOdoo();
-    // Re-run whenever mode flips so the dashboard immediately respects Demo/Live.
-  }, [refreshOdoo, bayaan.mode, baseGateway.enabled]);
+  }, [refreshOdoo, baseGateway.enabled]);
 
   useEffect(() => {
     if (!liveBackendActive) return undefined;
@@ -19101,7 +20678,7 @@ function AdminPanel({ lang, scope = "Daily" }) {
   useEffect(() => {
     if (!liveBackendActive) {
       setRealtime({
-        status: liveOnlySelected ? "missing" : "demo",
+        status: "missing",
         lastEvent: null,
         eventCount: 0,
         error: "",
@@ -19141,7 +20718,7 @@ function AdminPanel({ lang, scope = "Daily" }) {
       },
     });
     return () => subscription.close();
-  }, [liveBackendActive, liveOnlySelected, bayaan.auth.authenticated, refreshOdoo, sourceOfTruth]);
+  }, [liveBackendActive, bayaan.auth.authenticated, refreshOdoo, sourceOfTruth]);
 
   useEffect(() => {
     if (!allowedIds.length || active === "kioskDetail") return;
@@ -19153,19 +20730,16 @@ function AdminPanel({ lang, scope = "Daily" }) {
   }, [auditLogOpen, canViewAuditLog]);
 
   const openKiosk = (kiosk) => {
-    setSelectedKiosk(kiosk || (liveOnlySelected ? null : MOCK.kiosks[0]));
+    setSelectedKiosk(kiosk || null);
     setActive("kioskDetail");
   };
 
-  const dashboardSync = useMemo(() => {
-    if (!liveOnlySelected) return sync;
-    return {
-      ...sync,
-      status: sync.status === "demo" ? "missing" : sync.status,
-      bootstrap: sync.bootstrap || EMPTY_ENGINE_SNAPSHOT,
-      warehouseSetup: sync.warehouseSetup || EMPTY_WAREHOUSE_SETUP,
-    };
-  }, [liveOnlySelected, sync]);
+  const dashboardSync = useMemo(() => ({
+    ...sync,
+    status: sync.status === "demo" ? "missing" : sync.status,
+    bootstrap: sync.bootstrap || EMPTY_ENGINE_SNAPSHOT,
+    warehouseSetup: sync.warehouseSetup || EMPTY_WAREHOUSE_SETUP,
+  }), [sync]);
   const dashboardBootstrap = dashboardSync.bootstrap;
   const dashboardWarehouses = (unwrapOdoo(dashboardSync?.warehouseSetup)?.warehouses) || [];
 
@@ -19201,31 +20775,37 @@ function AdminPanel({ lang, scope = "Daily" }) {
     items: <ItemsCatalogScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
     inventory: <InventoryScreen lang={lang} bootstrap={scopedBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
     products: <ProductsScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    closing: <ClosingScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth}/>,
+    closing: <ClosingScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} caps={caps}/>,
     waste: <WasteScreen lang={lang} bootstrap={scopedBootstrap}/>,
-    suppliers: <SuppliersScreen lang={lang} bootstrap={scopedBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
-    staff: <HRPayrollScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo}/>,
+    suppliers: <SuppliersScreen lang={lang} bootstrap={scopedBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} caps={caps}/>,
+    staff: <HRPayrollScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} caps={caps}/>,
     finance: <ReportsScreen lang={lang} bootstrap={scopedBootstrap} mode="finance" sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} scope={scope}/>,
+    gl: <AccountingScreen lang={lang} view="gl" bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} scope={scope} caps={caps}/>,
+    journals: <AccountingScreen lang={lang} view="journals" bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} scope={scope} caps={caps}/>,
+    trialBalance: <AccountingScreen lang={lang} view="trialBalance" bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} scope={scope} caps={caps}/>,
+    statements: <AccountingScreen lang={lang} view="statements" bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} scope={scope} caps={caps}/>,
+    cashFlow: <AccountingScreen lang={lang} view="cashFlow" bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} scope={scope} caps={caps}/>,
+    agedPayable: <AccountingScreen lang={lang} view="agedPayable" bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} scope={scope} caps={caps}/>,
+    agedReceivable: <AccountingScreen lang={lang} view="agedReceivable" bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} scope={scope} caps={caps}/>,
+    taxReport: <AccountingScreen lang={lang} view="taxReport" bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} scope={scope} caps={caps}/>,
+    coa: <AccountingScreen lang={lang} view="coa" bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} scope={scope} caps={caps}/>,
     reports: <ReportsScreen lang={lang} bootstrap={scopedBootstrap} scope={scope}/>,
+    settings: <SettingsScreen lang={lang} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} caps={caps}/>,
   };
   const adminSourceDriven = isSourceDrivenPayload(dashboardBootstrap);
   const adminSummary = useMemo(() => odooSummary(dashboardBootstrap), [dashboardBootstrap]);
   const adminKiosks = useMemo(() => odooKioskRows(dashboardBootstrap), [dashboardBootstrap]);
   const adminWasteRows = useMemo(() => odooWasteRows(dashboardBootstrap), [dashboardBootstrap]);
   useEffect(() => {
-    if (liveOnlySelected) {
-      if (!adminKiosks.length) {
-        setSelectedKiosk(null);
-        return;
-      }
-      setSelectedKiosk((current) => {
-        if (current && adminKiosks.some((row) => matchesKiosk(row.id, current))) return current;
-        return adminKiosks[0];
-      });
+    if (!adminKiosks.length) {
+      setSelectedKiosk(null);
       return;
     }
-    setSelectedKiosk((current) => current || MOCK.kiosks[0]);
-  }, [adminKiosks, liveOnlySelected]);
+    setSelectedKiosk((current) => {
+      if (current && adminKiosks.some((row) => matchesKiosk(row.id, current))) return current;
+      return adminKiosks[0];
+    });
+  }, [adminKiosks]);
   const adminSourceCounts = adminSummary?.sourceCounts || {};
   const sourceKioskCount = Number(adminSourceCounts.kiosks ?? adminKiosks.length ?? 0);
   const sourceCityCount = new Set(adminKiosks.map((kiosk) => kiosk.city).filter(Boolean)).size;
@@ -19238,7 +20818,7 @@ function AdminPanel({ lang, scope = "Daily" }) {
   const sourceRecipeIssues = Number(adminSummary?.alerts?.recipePostingIssues ?? 0);
   const sourceLowStockAlerts = Number(adminSummary?.alerts?.lowStockItems ?? 0);
   const sourceInsightAlerts = sourceUnresolvedAlerts + sourceWasteAlerts + sourceRecipeIssues + sourceLowStockAlerts;
-  const selectedForTitle = selectedKiosk || adminKiosks[0] || (liveOnlySelected ? null : MOCK.kiosks[0]);
+  const selectedForTitle = selectedKiosk || adminKiosks[0] || null;
   const adminNavBadges = adminSourceDriven ? {
     insights: sourceInsightAlerts,
     closing: sourceUnresolvedAlerts + sourceRecipeIssues,
@@ -19285,18 +20865,29 @@ function AdminPanel({ lang, scope = "Daily" }) {
     waste: { en: "Waste & Loss", ar: "الهدر والخسارة", sub: adminSourceDriven ? sourceWasteSub : { en: "Demo last 7 days - 3 anomalies flagged", ar: "آخر ٧ أيام تجريبية · ٣ حالات شاذة" } },
     suppliers: { en: "Purchases & Suppliers", ar: "المشتريات والموردون", sub: { en: "Supplier health, purchase orders, ingredient costs, and margin impact", ar: "الموردون وطلبات الشراء وتكاليف المكونات وأثر الهامش" } },
     staff: { en: uiText("en", "hrPayroll"), ar: uiText("ar", "hrPayroll"), sub: { en: uiText("en", "hrPayrollSub"), ar: uiText("ar", "hrPayrollSub") } },
-    finance: { en: "Finance", ar: "المالية", sub: { en: "Profit, cash flow, payment split, and payroll impact", ar: "الأرباح والتدفق النقدي وطرق الدفع وأثر الرواتب" } },
+    finance: { en: "Finance overview", ar: "نظرة عامة مالية", sub: { en: "Profit, cash flow, payment split, and payroll impact", ar: "الأرباح والتدفق النقدي وطرق الدفع وأثر الرواتب" }, tip: { en: "A plain-language summary of the chain's money: revenue, estimated profit, cash-vs-online split, and how payroll affects the bottom line. Start here, then drill into the formal books below.", ar: "ملخّص مبسّط لأموال السلسلة: الإيرادات والربح التقديري وتقسيم النقد مقابل الدفع الإلكتروني وأثر الرواتب على صافي الربح. ابدأ من هنا ثم انتقل إلى الدفاتر الرسمية أدناه." } },
+    gl: { en: "General Ledger", ar: "دفتر الأستاذ العام", sub: { en: "Every posted journal item from the ledger", ar: "كل قيد مرحّل من دفتر الأستاذ" }, tip: { en: "Every individual posted accounting line (debits and credits), account by account — the most detailed view of the books. Use it to trace any number back to the exact transaction behind it.", ar: "كل سطر محاسبي مرحّل على حدة (مدين ودائن) حساباً بحساب — أكثر العروض تفصيلاً للدفاتر. استخدمه لتتبّع أي رقم وصولاً إلى المعاملة الدقيقة وراءه." } },
+    journals: { en: "Journal Entries", ar: "قيود اليومية", sub: { en: "Posted entries — POS sessions, bills, bank, manual", ar: "القيود المرحّلة — جلسات البيع والفواتير والبنك واليدوية" }, tip: { en: "Each accounting transaction grouped as one balanced entry — from POS sessions, supplier bills, bank, and manual postings. Open an entry to see its debit and credit lines.", ar: "كل معاملة محاسبية مجمّعة كقيد واحد متوازن — من جلسات نقاط البيع وفواتير الموردين والبنك والقيود اليدوية. افتح أي قيد لرؤية سطور المدين والدائن فيه." } },
+    trialBalance: { en: "Trial Balance", ar: "ميزان المراجعة", sub: { en: "Opening, movement and closing balance per account", ar: "الرصيد الافتتاحي والحركة والختامي لكل حساب" }, tip: { en: "Each account's opening balance, movement, and closing balance, with total debits equal to total credits — the quick proof that the books are in balance for the period.", ar: "الرصيد الافتتاحي والحركة والرصيد الختامي لكل حساب، مع تساوي إجمالي المدين مع إجمالي الدائن — الدليل السريع على توازن الدفاتر خلال الفترة." } },
+    statements: { en: "Income Statement & Balance Sheet", ar: "قائمة الدخل والميزانية", sub: { en: "Profit & loss and financial position from the real books", ar: "الأرباح والخسائر والمركز المالي من الدفاتر الحقيقية" }, tip: { en: "The two core financial statements: the income statement (profit & loss) shows performance over the period, and the balance sheet shows what the business owns and owes at a point in time.", ar: "القائمتان الماليتان الأساسيتان: قائمة الدخل (الأرباح والخسائر) تُظهر الأداء خلال الفترة، والميزانية العمومية تُظهر ما تملكه المنشأة وما عليها في لحظة معينة." } },
+    coa: { en: "Chart of Accounts", ar: "دليل الحسابات", sub: { en: "Every account in the books with its balance", ar: "كل حساب في الدفاتر مع رصيده" }, tip: { en: "The master list of every account used in the books — assets, liabilities, income and expenses — with each balance. This is where you create, rename, reclassify, or archive accounts.", ar: "القائمة الرئيسية لكل حساب مستخدم في الدفاتر — الأصول والخصوم والإيرادات والمصروفات — مع رصيد كل حساب. من هنا تُنشئ الحسابات أو تعيد تسميتها أو تصنيفها أو تؤرشفها." } },
+    cashFlow: { en: "Cash flow statement", ar: "قائمة التدفقات النقدية", sub: { en: "Cash in and out by counterpart account, with opening and closing cash", ar: "النقد الوارد والصادر حسب الحساب المقابل مع الرصيد الافتتاحي والختامي" }, tip: { en: "Where cash actually moved in and out over the period, by counterpart account, with opening and closing cash balances — separate from accrual profit, so you can see real liquidity.", ar: "من أين دخل النقد فعلياً وإلى أين خرج خلال الفترة حسب الحساب المقابل، مع الرصيد النقدي الافتتاحي والختامي — منفصلاً عن ربح الاستحقاق لرؤية السيولة الحقيقية." } },
+    agedPayable: { en: "Aged payables", ar: "أعمار الذمم الدائنة", sub: { en: "What the chain owes suppliers, bucketed by age (open bills only)", ar: "ما تدين به السلسلة للموردين موزّعاً حسب العمر (الفواتير المفتوحة فقط)" }, tip: { en: "What the chain still owes its suppliers, grouped by how overdue each open bill is (current, 30, 60, 90+ days) — so you know who to pay and when.", ar: "ما لا تزال السلسلة تدين به لمورديها، مصنّفاً حسب مدى تأخّر كل فاتورة مفتوحة (حالية، ٣٠، ٦٠، ٩٠+ يوماً) — لتعرف من تدفع له ومتى." } },
+    agedReceivable: { en: "Aged receivables", ar: "أعمار الذمم المدينة", sub: { en: "What is owed to the chain, bucketed by age (open invoices only)", ar: "ما هو مستحق للسلسلة موزّعاً حسب العمر (الفواتير المفتوحة فقط)" }, tip: { en: "What customers and partners still owe the chain, grouped by how overdue each open invoice is (current, 30, 60, 90+ days) — so you can chase collections before they age.", ar: "ما لا يزال العملاء والشركاء يدينون به للسلسلة، مصنّفاً حسب مدى تأخّر كل فاتورة مفتوحة (حالية، ٣٠، ٦٠، ٩٠+ يوماً) — لمتابعة التحصيل قبل تقادمه." } },
+    taxReport: { en: "VAT / tax return", ar: "إقرار ضريبة القيمة المضافة", sub: { en: "Taxable base and tax due per tax code for the period", ar: "الأساس الخاضع والضريبة المستحقة لكل رمز ضريبي للفترة" }, tip: { en: "The taxable sales base and VAT due per tax code for the period — the figures you need to file the tax return. Iraq's default VAT rate here is 0%, set on the Settings → Tax page.", ar: "الأساس الخاضع للضريبة وضريبة القيمة المضافة المستحقة لكل رمز ضريبي للفترة — الأرقام اللازمة لتقديم الإقرار الضريبي. نسبة العراق الافتراضية هنا 0%، وتُضبط في الإعدادات ← الضريبة." } },
     reports: { en: "Reports", ar: "التقارير", sub: { en: "Sales, P&L, cash flow", ar: "المبيعات والأرباح والتدفق النقدي" } },
+    settings: { en: "Settings", ar: "الإعدادات", sub: { en: "Tax & VAT, company, and tenant configuration", ar: "الضريبة والشركة وإعدادات النظام" } },
   };
-  const t = titles[active];
+  const t = titles[active] || titles.overview;
   const assistantCanvasActive = active === "insights";
 
   return (
     <div className={`admin-shell-layout ${assistantCanvasActive ? "admin-shell-layout-assistant" : "admin-shell-layout-dashboard"}`}>
       <AdminSidebar active={active === "kioskDetail" ? "kiosks" : active} setActive={setActive} lang={lang} navBadges={adminNavBadges}/>
-      {canViewAuditLog && auditLogOpen && <AuditLogRail lang={lang} sourceOfTruth={sourceOfTruth} allowDemoFallback={!liveOnlySelected}/>}
+      {canViewAuditLog && auditLogOpen && <AuditLogRail lang={lang} sourceOfTruth={sourceOfTruth}/>}
       <main className={`admin-content-inset ${assistantCanvasActive ? "admin-content-inset-assistant" : "admin-content-inset-dashboard"}`}>
         <AdminTopBar title={lang === "ar" ? t.ar : t.en} sub={lang === "ar" ? t.sub.ar : t.sub.en} lang={lang}
+          tip={t.tip ? (lang === "ar" ? t.tip.ar : t.tip.en) : null}
           right={(
             <div className="row" style={{ gap: 6 }}>
               {canViewAuditLog && (
@@ -19316,29 +20907,23 @@ function AdminPanel({ lang, scope = "Daily" }) {
                     ? (lang === "ar" ? "خطأ في المحرك" : "Engine error")
                     : sync.status === "missing"
                       ? (lang === "ar" ? "الخلفية غير مضبوطة" : "Backend missing")
-                      : liveOnlySelected
-                        ? uiText(lang, "liveOnly")
-                        : sourceOfTruth.enabled
-                          ? (lang === "ar" ? "جار مزامنة المحرك" : "Engine syncing")
-                          : (lang === "ar" ? "وضع تجريبي" : "Demo mode")}
+                      : (lang === "ar" ? "جار مزامنة المحرك" : "Engine syncing")}
               </span>
-              {liveOnlySelected && (
-                <span
-                  className={`badge ${["live", "polling"].includes(realtime.status) ? "badge-pos" : realtime.status === "error" ? "badge-crit" : "badge-warn"}`}
-                  title={realtime.lastEvent?.title || realtime.error || "Bayaan realtime stream"}
-                >
-                  <span className={`dot ${["live", "polling"].includes(realtime.status) ? "pos" : realtime.status === "error" ? "crit" : "warn"}`}></span>
-                  {realtime.status === "live"
-                    ? (lang === "ar" ? "التدفق مباشر" : "Stream live")
-                    : realtime.status === "polling"
-                      ? (lang === "ar" ? "استرجاع عبر الناقل" : "Bus fallback")
-                      : realtime.status === "error"
-                        ? (lang === "ar" ? "خطأ في التدفق" : "Stream error")
-                      : realtime.status === "missing"
-                          ? bayaan.auth.authenticated ? (lang === "ar" ? "التدفق مفقود" : "Stream missing") : (lang === "ar" ? "التدفق ينتظر" : "Stream waiting")
-                          : (lang === "ar" ? "جار الاتصال بالتدفق" : "Stream connecting")}
-                </span>
-              )}
+              <span
+                className={`badge ${["live", "polling"].includes(realtime.status) ? "badge-pos" : realtime.status === "error" ? "badge-crit" : "badge-warn"}`}
+                title={realtime.lastEvent?.title || realtime.error || "Bayaan realtime stream"}
+              >
+                <span className={`dot ${["live", "polling"].includes(realtime.status) ? "pos" : realtime.status === "error" ? "crit" : "warn"}`}></span>
+                {realtime.status === "live"
+                  ? (lang === "ar" ? "التدفق مباشر" : "Stream live")
+                  : realtime.status === "polling"
+                    ? (lang === "ar" ? "استرجاع عبر الناقل" : "Bus fallback")
+                    : realtime.status === "error"
+                      ? (lang === "ar" ? "خطأ في التدفق" : "Stream error")
+                    : realtime.status === "missing"
+                        ? bayaan.auth.authenticated ? (lang === "ar" ? "التدفق مفقود" : "Stream missing") : (lang === "ar" ? "التدفق ينتظر" : "Stream waiting")
+                        : (lang === "ar" ? "جار الاتصال بالتدفق" : "Stream connecting")}
+              </span>
               {active === "overview" && (
                 <button className="btn btn-ghost"><Icon name="download" size={13}/>{lang === "ar" ? "تصدير" : "Export"}</button>
               )}
@@ -19410,13 +20995,14 @@ function POSPanel({ lang }) {
       }];
     });
   };
-  // Menu prices are VAT-inclusive (5%): the cart total IS what the cashier charges and what
-  // the backend records (kiosk_sale treats the kiosk sticker price as tax-included). Showing
-  // VAT as the portion already inside the price keeps Subtotal + VAT == Total AND keeps the
-  // charged amount equal to the Odoo order total, so kiosk_sale never rejects on a payment
-  // mismatch. (Previously VAT was added on top, charging 5% more than the backend computed.)
+  // Menu prices are VAT-inclusive: the cart total IS what the cashier charges and what
+  // the backend records (kiosk_sale treats the kiosk sticker price as tax-included). The VAT
+  // rate is tenant-configured (Settings -> Tax/VAT) and arrives on auth_status; Iraq = 0%.
+  // Showing VAT as the portion already inside the price keeps Subtotal + VAT == Total AND keeps
+  // the charged amount equal to the Odoo order total, so kiosk_sale never rejects on a mismatch.
+  const vatRate = Number(bayaan.auth?.vatRate ?? 0) / 100;
   const total = cart.reduce((s, x) => s + x.price * x.qty, 0);
-  const vat = total - Math.round(total / 1.05);
+  const vat = vatRate > 0 ? total - Math.round(total / (1 + vatRate)) : 0;
   const subTotal = total - vat;
 
   // Track last added item for the "just added" flash on customer display
@@ -19521,7 +21107,7 @@ function POSPanel({ lang }) {
           {screen === "sale" && <POSSale lang={lang}
             cart={cart} setCart={setCart} addItem={wrappedAdd}
             lastAdded={lastAdded}
-            subTotal={subTotal} vat={vat} total={total}
+            subTotal={subTotal} vat={vat} total={total} vatRatePct={Number(bayaan.auth?.vatRate ?? 0)}
             bootstrap={posScreenBootstrap}
             onCharge={() => setScreen("payment")}
             onWaste={() => setScreen("waste")}
@@ -19530,7 +21116,7 @@ function POSPanel({ lang }) {
             onLogout={() => setScreen("close")}
           />}
           {screen === "payment" && <POSPayment lang={lang}
-            total={total} cart={cart}
+            total={total} cart={cart} vatRatePct={Number(bayaan.auth?.vatRate ?? 0)}
             bootstrap={posScreenBootstrap}
             onTender={(t) => setTender(t)}
             tender={tender}
@@ -19559,7 +21145,7 @@ function POSPanel({ lang }) {
         <div className="tablet-cam tablet-cam-portrait"></div>
         <div className="tablet-screen" dir={lang === "ar" ? "rtl" : "ltr"}>
           <CustomerDisplay lang={lang} screen={screen} cart={cart}
-            subTotal={subTotal} vat={vat} total={total} tender={tender} lastAdded={lastAdded}/>
+            subTotal={subTotal} vat={vat} total={total} vatRatePct={Number(bayaan.auth?.vatRate ?? 0)} tender={tender} lastAdded={lastAdded}/>
         </div>
         <div style={{ position: "absolute", bottom: -22, insetInlineStart: 0, insetInlineEnd: 0,
           textAlign: "center", fontSize: 10.5, color: "#6E6E68", letterSpacing: "0.04em", textTransform: "uppercase" }}>
@@ -19571,9 +21157,11 @@ function POSPanel({ lang }) {
 }
 
 // =============== LOGIN ===============
-// Demo PINs: matched against picked staff member. In live mode the PIN
-// will be validated server-side via /bayaan/api/staff_pin (added later).
-const DEMO_STAFF = [
+// Simulation-only placeholder cashiers (used solely by the peak-opening simulation
+// runtime, which has no real Odoo auth). The live product always authenticates the
+// cashier through /bayaan/api/auth_status + /bayaan/api/open_session; PINs here never
+// reach a real shift.
+const SIMULATION_STAFF = [
   { name: "Maya Ahmed", arName: "مايا أحمد", role: "Cashier", arRole: "كاشير", pin: "1234", openingCash: 175000 },
   { name: "Yusuf Saleh", arName: "يوسف صالح", role: "Barista", arRole: "باريستا", pin: "2345", openingCash: 175000 },
   { name: "Omar Khaled", arName: "عمر خالد", role: "Supervisor", arRole: "مشرف", pin: "3456", openingCash: 250000 },
@@ -19588,6 +21176,24 @@ function POSLogin({ lang, onIn }) {
   const sourceEngineMissing = bayaan.mode === "live" && !bayaan.hasBackend;
   const sourceBackedShift = bayaan.mode === "live" && bayaan.hasBackend && !simulationRuntime;
   const sourceUser = bayaan.auth?.user || {};
+  // Live mode lists the signed-in user first, then the staff assigned to this
+  // kiosk (auth_status user.kioskStaff). The official pos.session always
+  // belongs to the authenticated user; the picked name is the operating
+  // cashier, recorded on the session-opened audit event.
+  const kioskStaff = Array.isArray(sourceUser.kioskStaff) ? sourceUser.kioskStaff : [];
+  const staffForKiosk = kioskStaff.filter((member) => !bayaan.kioskId || member.kioskCode === bayaan.kioskId);
+  const colleagueCards = (staffForKiosk.length ? staffForKiosk : kioskStaff)
+    .filter((member) => member.login !== sourceUser.login)
+    .map((member) => ({
+      name: member.name,
+      arName: member.name,
+      role: member.kioskCode && member.kioskCode !== bayaan.kioskId
+        ? `${member.role} · ${member.kioskCode}`
+        : member.role,
+      arRole: arTerm(lang, member.role),
+      pin: "",
+      openingCash: 0,
+    }));
   const staff = sourceEngineMissing
     ? []
     : sourceBackedShift
@@ -19598,8 +21204,8 @@ function POSLogin({ lang, onIn }) {
           arRole: arTerm(lang, sourceUser.primaryRole || "Cashier"),
           pin: "",
           openingCash: 0,
-        }]
-      : DEMO_STAFF;
+        }, ...colleagueCards]
+      : SIMULATION_STAFF;
   const [picked, setPicked] = useStatePOS(null);
   const [pin, setPin] = useStatePOS("");
   const [error, setError] = useStatePOS("");
@@ -19653,9 +21259,7 @@ function POSLogin({ lang, onIn }) {
           <BrandLogo className="cashier-pos-logo" alt={ar ? BRAND.arabic : BRAND.name}/>
           <div className="col">
             <div style={{ fontSize: 13.5, fontWeight: 500 }}>
-              {bayaan.mode === "demo"
-                ? (ar ? "الكرادة · K-01" : "Karrada Center - K-01")
-                : (ar ? `الكشك · ${bayaan.kioskId}` : `Kiosk - ${bayaan.kioskId}`)}
+              {ar ? `الكشك · ${bayaan.kioskId}` : `Kiosk - ${bayaan.kioskId}`}
             </div>
             <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
               {new Date().toLocaleString(ar ? "ar-IQ" : "en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
@@ -19742,8 +21346,6 @@ function POSLogin({ lang, onIn }) {
             <div style={{ marginTop: 14, fontSize: 11.5, color: "var(--ink-3)", textAlign: "center" }}>
               {sourceBackedShift
                 ? (ar ? "سيتم فتح الوردية عبر محرك المصدر." : "Shift will open through the source engine.")
-                : bayaan.mode === "demo"
-                ? (ar ? `رمز تجريبي: ${picked.pin}` : `Demo PIN: ${picked.pin}`)
                 : (ar ? `العد النقدي: د.ع ${picked.openingCash.toLocaleString("en")}` : `Cash float: IQD ${picked.openingCash.toLocaleString("en")}`)}
             </div>
           </div>
@@ -19761,7 +21363,7 @@ function POSLogin({ lang, onIn }) {
    POS Sale screen — order taking
    ============================================================ */
 
-function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total, bootstrap, onCharge, onWaste, onStock, expectedTransfers = [], onLogout }) {
+function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total, vatRatePct = 0, bootstrap, onCharge, onWaste, onStock, expectedTransfers = [], onLogout }) {
   const ar = lang === "ar";
   const bayaan = useBayaan();
   const { showToast } = useToast();
@@ -20073,8 +21675,10 @@ function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total
 
           <div className="pos-cart-footer">
             <div className="col" style={{ gap: 6, marginBottom: 14 }}>
+              {vatRatePct > 0 && (<>
               <div className="between"><span className="muted t-small">{ar ? "المجموع الفرعي" : "Subtotal"}</span><span className="t-num">{fmtMoney(subTotal)}</span></div>
-              <div className="between"><span className="muted t-small">{ar ? "ضريبة ٥٪" : "VAT 5%"}</span><span className="t-num muted">{fmtMoney(vat)}</span></div>
+              <div className="between"><span className="muted t-small">{ar ? `ضريبة ${vatRatePct}٪` : `VAT ${vatRatePct}%`}</span><span className="t-num muted">{fmtMoney(vat)}</span></div>
+              </>)}
               <div className="between" style={{ marginTop: 4 }}>
                 <span style={{ fontSize: 14, fontWeight: 500 }}>{ar ? "الإجمالي" : "Total"}</span>
                 <span className="t-num" style={{ fontSize: 22 }}>{fmtMoney(total)}</span>
@@ -20376,7 +21980,7 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
 }
 
 // =============== PAYMENT ===============
-function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, onBack }) {
+function POSPayment({ lang, total, cart, vatRatePct = 0, bootstrap, onTender, tender, onDone, onBack }) {
   const ar = lang === "ar";
   const bayaan = useBayaan();
   const { showToast } = useToast();
@@ -20604,8 +22208,10 @@ function POSPayment({ lang, total, cart, bootstrap, onTender, tender, onDone, on
             ))}
           </div>
           <div className="hairline" style={{ margin: "16px 0" }}></div>
-          <div className="between t-small muted"><span>{ar ? "المجموع الفرعي" : "Subtotal"}</span><span className="t-num">{fmtMoney(total - Math.round(total*0.05/1.05))}</span></div>
-          <div className="between t-small muted" style={{ marginTop: 4 }}><span>{ar ? "ضريبة" : "VAT"}</span><span className="t-num">{fmtMoney(Math.round(total*0.05/1.05))}</span></div>
+          {vatRatePct > 0 && (() => { const f = Number(vatRatePct) / 100; const v = Math.round(total * f / (1 + f)); return (<>
+          <div className="between t-small muted"><span>{ar ? "المجموع الفرعي" : "Subtotal"}</span><span className="t-num">{fmtMoney(total - v)}</span></div>
+          <div className="between t-small muted" style={{ marginTop: 4 }}><span>{ar ? `ضريبة ${vatRatePct}٪` : `VAT ${vatRatePct}%`}</span><span className="t-num">{fmtMoney(v)}</span></div>
+          </>); })()}
           <div className="between" style={{ marginTop: 10, fontSize: 14, fontWeight: 500 }}><span>{ar ? "الإجمالي" : "Total"}</span><span className="t-num">{fmtMoney(total)}</span></div>
         </div>
       </div>
@@ -20789,7 +22395,7 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
    Shows order live, total, and friendly status messages.
    ============================================================ */
 
-function CustomerDisplay({ lang, screen, cart, subTotal, vat, total, tender, lastAdded }) {
+function CustomerDisplay({ lang, screen, cart, subTotal, vat, total, vatRatePct = 0, tender, lastAdded }) {
   const ar = lang === "ar";
   const [showFlash, setShowFlash] = React.useState(false);
 
@@ -20945,8 +22551,10 @@ function CustomerDisplay({ lang, screen, cart, subTotal, vat, total, tender, las
 
       {/* Totals */}
       <div style={{ padding: "16px 20px", borderTop: "1px solid var(--line)", background: "var(--surface)" }}>
+        {vatRatePct > 0 && (<>
         <div className="between t-small muted"><span>{ar ? "المجموع" : "Subtotal"}</span><span className="t-num">{fmtMoney(subTotal)}</span></div>
-        <div className="between t-small muted" style={{ marginTop: 4 }}><span>{ar ? "ضريبة ٥٪" : "VAT 5%"}</span><span className="t-num">{fmtMoney(vat)}</span></div>
+        <div className="between t-small muted" style={{ marginTop: 4 }}><span>{ar ? `ضريبة ${vatRatePct}٪` : `VAT ${vatRatePct}%`}</span><span className="t-num">{fmtMoney(vat)}</span></div>
+        </>)}
         <div className="between" style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line-soft)" }}>
           <span style={{ fontSize: 14, fontWeight: 500 }}>{ar ? "الإجمالي" : "Total"}</span>
           <span className="t-num" style={{ fontSize: 26, letterSpacing: "-0.02em" }}>{fmtMoney(total)}</span>
@@ -21067,8 +22675,8 @@ function AuthChip({ lang }) {
 function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme, scope, setScope }) {
   const bayaan = useBayaan();
   const ar = lang === "ar";
-  const canAdmin = authAllowsPanel(bayaan.auth, bayaan.hasBackend, "admin", bayaan.mode);
-  const canPos = authAllowsPanel(bayaan.auth, bayaan.hasBackend, "pos", bayaan.mode);
+  const canAdmin = authAllowsPanel(bayaan.auth, bayaan.hasBackend, "admin");
+  const canPos = authAllowsPanel(bayaan.auth, bayaan.hasBackend, "pos");
   return (
     <div className="master-top">
       <div className="brand">
@@ -21080,7 +22688,6 @@ function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme, scope, set
         <button className={panel === "pos" ? "on" : ""} disabled={!canPos} onClick={() => setPanel("pos")}>POS</button>
       </div>
       <div className="row" style={{ gap: 12 }}>
-        <DataModeToggle bayaan={bayaan} lang={lang}/>
         <AuthChip lang={lang}/>
         {typeof setScope === "function" && (
           <label className="scope-select" aria-label={ar ? "النطاق الزمني" : "Time scope"}
@@ -21134,73 +22741,6 @@ function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme, scope, set
   );
 }
 
-function ModeBadge({ bayaan, ar }) {
-  const { mode, setMode, hasBackend, pendingCount, blockedCount, online, kioskId } = bayaan;
-  const liveAvailable = hasBackend;
-  const live = mode === "live";
-  const retryingCount = Math.max(0, pendingCount - blockedCount);
-  const simulation = isSimulationRuntime();
-  const onToggle = () => {
-    if (simulation && typeof window !== "undefined") {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("bayaanSimulation");
-      url.searchParams.delete("bayaanSimFull");
-      window.localStorage.removeItem("BAYAAN_SIMULATION");
-      window.localStorage.setItem("bayaan.mode.v1", "demo");
-      window.location.assign(url.toString());
-      return;
-    }
-    setMode(mode === "live" ? "demo" : "live");
-  };
-  const dotClass = simulation ? "pos" : live ? (liveAvailable ? "pos" : "crit") : "warn";
-  const label = simulation
-    ? (ar ? "وضع المحاكاة" : "Simulation mode")
-    : live
-    ? (ar ? "تشغيل فقط" : "Live only")
-    : (ar ? "وضع تجريبي" : "Demo mode");
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      title={liveAvailable
-        ? (ar ? "تبديل بين بيانات الإنتاج والتجريبي" : "Toggle between production and demo data")
-        : (ar ? "تشغيل فقط بدون بيانات تجريبية حتى تضبط الرابط" : "Live-only removes demo data even before the backend URL is configured")}
-      style={{
-        display: "inline-flex", alignItems: "center", gap: 6,
-        padding: "3px 9px 3px 7px", height: 22, borderRadius: 4,
-        background: "transparent",
-        border: `1px solid ${live || simulation ? "var(--pos)" : "var(--line)"}`,
-        color: live || simulation ? "var(--pos)" : "#8B8A82",
-        fontSize: 11, fontWeight: 500, letterSpacing: "0.01em",
-        cursor: "pointer",
-        opacity: 1,
-      }}
-    >
-      <span className={`dot ${dotClass}`} style={{ width: 6, height: 6 }}></span>
-      <span>{label}</span>
-      <span style={{ color: "#6E6E68", fontWeight: 400 }}>· {kioskId}</span>
-      {live && !online && (
-        <span style={{
-          marginInlineStart: 4, padding: "0 5px", borderRadius: 8,
-          background: "var(--warn-soft, #FCE8C2)", color: "var(--warn, #B8860B)", fontSize: 10,
-        }}>{ar ? "أوفلاين" : "offline"}</span>
-      )}
-      {blockedCount > 0 && (
-        <span style={{
-          marginInlineStart: 4, padding: "0 5px", borderRadius: 8,
-          background: "var(--crit-soft, #F7D5CC)", color: "var(--crit, #C04A38)", fontSize: 10,
-        }}>{blockedCount} {ar ? "مراجعة" : "review"}</span>
-      )}
-      {retryingCount > 0 && (
-        <span style={{
-          marginInlineStart: 4, padding: "0 5px", borderRadius: 8,
-          background: "var(--warn-soft, #FCE8C2)", color: "var(--warn, #B8860B)", fontSize: 10,
-        }}>{pendingCount} {ar ? "بانتظار" : "queued"}</span>
-      )}
-    </button>
-  );
-}
-
 function AuthRequired({ lang }) {
   const bayaan = useBayaan();
   const ar = lang === "ar";
@@ -21227,12 +22767,6 @@ function AuthRequired({ lang }) {
         {bayaan.auth.error && (
           <div className="t-small" style={{ marginTop: 12, color: "var(--crit)" }}>{bayaan.auth.error}</div>
         )}
-        {!LIVE_ONLY_DEMO && (
-        <button type="button" className="btn btn-primary" style={{ marginTop: 14, width: "100%", justifyContent: "center" }}
-          onClick={() => bayaan.setMode("demo")}>
-          {ar ? "فتح العرض التجريبي" : "Open demo mode"}
-        </button>
-        )}
       </div>
     </div>
   );
@@ -21257,10 +22791,10 @@ function AppContent() {
   }, [theme]);
 
   useEffect(() => {
-    if (authAllowsPanel(bayaan.auth, bayaan.hasBackend, panel, bayaan.mode)) return;
-    if (authAllowsPanel(bayaan.auth, bayaan.hasBackend, "admin", bayaan.mode)) setPanel("admin");
-    else if (authAllowsPanel(bayaan.auth, bayaan.hasBackend, "pos", bayaan.mode)) setPanel("pos");
-  }, [bayaan.auth, bayaan.hasBackend, bayaan.mode, panel]);
+    if (authAllowsPanel(bayaan.auth, bayaan.hasBackend, panel)) return;
+    if (authAllowsPanel(bayaan.auth, bayaan.hasBackend, "admin")) setPanel("admin");
+    else if (authAllowsPanel(bayaan.auth, bayaan.hasBackend, "pos")) setPanel("pos");
+  }, [bayaan.auth, bayaan.hasBackend, panel]);
 
   return (
     <div className={`app-frame panel-${panel}`} data-theme={theme} dir={dir} lang={lang}>

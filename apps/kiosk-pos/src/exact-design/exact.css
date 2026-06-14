@@ -4080,3 +4080,47 @@ table { border-collapse: collapse; width: 100%; }
 *::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* ---- Page-title help tooltip (info icon beside accounting page titles) ---- */
+.info-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: 7px;
+  color: var(--ink-3);
+  cursor: help;
+  vertical-align: middle;
+  outline: none;
+}
+.info-tip:hover,
+.info-tip:focus-visible { color: var(--accent); }
+.info-tip-bubble {
+  position: absolute;
+  top: calc(100% + 8px);
+  inset-inline-start: 0;
+  z-index: 200;
+  width: max-content;
+  max-width: 340px;
+  padding: 9px 11px;
+  background: var(--ink-1);
+  color: var(--paper);
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.5;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-3px);
+  transition: opacity 0.13s ease, transform 0.13s ease, visibility 0.13s;
+  pointer-events: none;
+}
+.info-tip:hover .info-tip-bubble,
+.info-tip:focus-visible .info-tip-bubble {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}

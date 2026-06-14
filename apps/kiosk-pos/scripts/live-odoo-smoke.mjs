@@ -46,8 +46,8 @@ async function main() {
     const aiResult = await verifyLiveAiDashboard(page, sessionId, screenshots);
 
     await nav(page, "Kiosks");
-    await expectText(page, "Zayouna Plaza");
-    await expectText(page, "K-04");
+    await expectText(page, "Karrada Center");
+    await expectText(page, "K-01");
 
     await nav(page, "Sales & POS");
     await expectText(page, "Source POS orders");
@@ -85,12 +85,12 @@ async function main() {
     await waitForBodyIncludes(page, "Waste entries", 10_000);
     const waste = await postWaste(sessionId, saleItem);
     await waitForBodyIncludes(page, waste.reason, 30_000);
-    await waitForBodyIncludes(page, "K-04", 30_000);
+    await waitForBodyIncludes(page, "K-01", 30_000);
     await capture(page, "live-odoo-waste-posted", screenshots);
 
     await nav(page, "Daily Close");
     const close = await postShiftClose(sessionId, sale, saleItem);
-    await waitForBodyIncludes(page, "Zayouna Plaza", 30_000);
+    await waitForBodyIncludes(page, "Karrada Center", 30_000);
     await openCloseById(page, close.id);
     await expectText(page, "Stock lines - expected vs counted");
     await expectText(page, "Notes and investigation status");
@@ -99,12 +99,18 @@ async function main() {
     await capture(page, "live-odoo-shift-close-approved", screenshots);
 
     await nav(page, "Reports");
-    await expectText(page, "Iraqi gateway settlement");
-    await expectText(page, "FIB");
+    await expectText(page, "Payment methods");
+    await expectText(page, "Cash flow");
     await capture(page, "live-odoo-reports", screenshots);
 
     const fallbackSale = await verifyBusFallbackRealtime(context, sessionId, consoleErrors, screenshots, saleItem);
     const websocketCloseSale = await verifyWebSocketCloseFallbackRealtime(context, sessionId, consoleErrors, screenshots, saleItem);
+
+    // Tie-preserving cleanup: the two realtime-fallback sales above were created AFTER the
+    // shift close, so they sit in a fresh open session with no Z-report move. Close that
+    // session through the official path so the live ledger ties after the smoke run
+    // (a verification run must not leave the books untied).
+    await closeFallbackSession(sessionId, [fallbackSale, websocketCloseSale], saleItem);
 
     if (consoleErrors.length) {
       throw new Error(`Console/request errors: ${consoleErrors.join(" | ")}`);
@@ -122,7 +128,7 @@ async function main() {
         "chain_bootstrap live sync",
         `AI dashboard provider call: ${aiResult.llm.model} / ${aiResult.llm.responseId}`,
         "AI Insights live chat shows runtime, claim proof, source evidence, and model-authored visualizations",
-        "K-04 live kiosk",
+        "K-01 live kiosk",
         `realtime ${streamMode}: backend sale appeared without manual refresh`,
         "realtime stock transfer appeared without manual refresh",
         "realtime stock transfer receive appeared without manual refresh",
@@ -223,7 +229,7 @@ function formatIqd(amount) {
 async function postKioskSale(sessionId, saleItem, prefix = "SMOKE-REALTIME") {
   const externalId = `${prefix}-${Date.now()}`;
   const result = await odooJsonRpc("/bayaan/api/kiosk_sale", sessionId, {
-    kiosk: "K-04",
+    kiosk: "K-01",
     external_id: externalId,
     cashier: odooLogin,
     items: [{
@@ -310,7 +316,7 @@ function pickLiveTransferItem(bootstrap) {
 async function postStockTransfer(sessionId, item) {
   const origin = `BAYAAN-LIVE-SMOKE-${Date.now()}`;
   const result = await odooJsonRpc("/bayaan/api/stock_transfer", sessionId, {
-    kiosk: "K-04",
+    kiosk: "K-01",
     item,
     qty: 1,
     origin,
@@ -375,7 +381,7 @@ async function receivePurchaseOrder(sessionId, poName) {
 async function postWaste(sessionId, saleItem) {
   const reason = `live smoke waste ${Date.now()}`;
   const result = await odooJsonRpc("/bayaan/api/waste", sessionId, {
-    kiosk: "K-04",
+    kiosk: "K-01",
     item: saleItem.product,
     name: saleItem.name,
     qty: 1,
@@ -387,14 +393,31 @@ async function postWaste(sessionId, saleItem) {
   return { ...result, reason };
 }
 
+// A clean ingredient count for a kiosk: counted == current on-hand qty, which equals
+// `expected` in the close math (expected = current_qty), so the close posts ~0 ingredient
+// variance instead of an alarming full-stock loss (counted defaults to 0 when omitted).
+async function cleanIngredientCounts(sessionId, kiosk = "K-01") {
+  try {
+    const bootstrap = await readLiveBootstrap(sessionId);
+    return (bootstrap?.kiosk_stock_rows || [])
+      .filter((row) => row.kiosk === kiosk && row.item)
+      .map((row) => ({ ingredient: row.item, actual_qty: Number(row.actual_qty || 0) }));
+  } catch {
+    return [];
+  }
+}
+
 async function postShiftClose(sessionId, sale, saleItem) {
   const cashAmount = Number(sale?.amount_total || saleItem.amount || 0);
   const result = await odooJsonRpc("/bayaan/api/shift_close", sessionId, {
-    kiosk: "K-04",
+    kiosk: "K-01",
     opened_at: odooDateTime(new Date(Date.now() - 10 * 60 * 1000)),
     expected_cash: cashAmount,
     actual_cash: cashAmount,
     pos_invoices: [sale.name],
+    // Clean ingredient count → ~0 variance (the close no longer books a full-stock loss).
+    ingredient_counts: await cleanIngredientCounts(sessionId),
+    // A single stock-count line so the "Stock lines - expected vs counted" review section renders.
     stock_counts: [{
       item: saleItem.product,
       expected_qty: 0.0,
@@ -403,6 +426,25 @@ async function postShiftClose(sessionId, sale, saleItem) {
   });
   if (!result?.id) {
     throw new Error(`shift_close did not return a close id: ${JSON.stringify(result)}`);
+  }
+  return result;
+}
+
+async function closeFallbackSession(sessionId, sales, saleItem) {
+  const names = sales.map((sale) => sale && sale.name).filter(Boolean);
+  if (!names.length) return null;
+  const cash = names.length * Number(saleItem.amount || 0);
+  const result = await odooJsonRpc("/bayaan/api/shift_close", sessionId, {
+    kiosk: "K-01",
+    opened_at: odooDateTime(new Date(Date.now() - 10 * 60 * 1000)),
+    expected_cash: cash,
+    actual_cash: cash,
+    pos_invoices: names,
+    // Clean ingredient count → the cleanup close posts ~0 variance, not a full-stock loss.
+    ingredient_counts: await cleanIngredientCounts(sessionId),
+  });
+  if (!result?.id) {
+    throw new Error(`fallback-session cleanup close did not return an id: ${JSON.stringify(result)}`);
   }
   return result;
 }
@@ -605,8 +647,12 @@ async function capture(page, name, screenshots) {
 }
 
 function collectPageDiagnostics(page, consoleErrors) {
+  // Transient environmental network/DNS failures (e.g. a font/icon CDN that didn't resolve
+  // this run) are echoed to the console WITHOUT a URL, so ignore them by error code. Real
+  // broken app assets still surface via the requestfailed (URL) handler below.
+  const transientNet = /ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED|ERR_CONNECTION|ERR_NETWORK_CHANGED|ERR_TIMED_OUT/;
   page.on("console", (message) => {
-    if (message.type() === "error") consoleErrors.push(message.text());
+    if (message.type() === "error" && !transientNet.test(message.text())) consoleErrors.push(message.text());
   });
   page.on("requestfailed", (request) => {
     const url = request.url();
@@ -673,7 +719,7 @@ async function openCloseById(page, closeId) {
   const started = Date.now();
   let bodyText = "";
   while (Date.now() - started < 30_000) {
-    const rows = page.locator("tr.row-click", { hasText: "Zayouna Plaza" });
+    const rows = page.locator("tr.row-click", { hasText: "Karrada Center" });
     const count = await rows.count();
     for (let index = 0; index < count; index += 1) {
       await rows.nth(index).click();
@@ -719,14 +765,17 @@ async function launchBrowser() {
       lastError = error;
       const message = String(error?.message || error || "");
       lastLaunchExe = extractLaunchingExe(message) ?? lastLaunchExe;
-      const isSpawn = /spawn\s+(EPERM|EACCES)/i.test(message) || String(error?.code || "").toLowerCase().includes("eperm");
-      if (!isSpawn) break;
+      // Always fall through to the next candidate. A missing bundled Chromium
+      // ("Executable doesn't exist … run npx playwright install") is NOT a spawn error,
+      // so an early break here would skip the system Chrome/Edge channels entirely — the
+      // exact reason a machine without bundled Chromium failed the smoke. Try them all;
+      // the win32 CDP fallback below handles spawn EPERM after every candidate.
     }
   }
   if (lastLaunchExe && process.platform === "win32") {
     return launchBrowserOverCdp(lastLaunchExe);
   }
-  throw lastError || new Error("Unable to launch browser");
+  throw lastError || new Error("Unable to launch browser (no bundled Chromium and no system Chrome/Edge found).");
 }
 
 function extractLaunchingExe(message) {

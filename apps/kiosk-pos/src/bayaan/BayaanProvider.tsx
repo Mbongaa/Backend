@@ -17,7 +17,10 @@ import {
   type TenderId,
 } from "./buildPosSale";
 
-export type BayaanMode = "demo" | "live";
+// The product is live-only: it always submits into the real Odoo/Bayaan engine.
+// There is no demo mode. `mode` is retained as a constant "live" purely so existing
+// `bayaan.mode === "live"` reads keep working; it never changes.
+export type BayaanMode = "live";
 
 export type ShiftSession = {
   kioskId: string;
@@ -45,8 +48,8 @@ export type AuthState = BayaanAuthStatus & {
 };
 
 export type BayaanContextValue = {
+  /** Always "live" — the product has no demo mode. */
   mode: BayaanMode;
-  setMode: (mode: BayaanMode) => void;
   gateway: SourceOfTruthGateway;
   hasBackend: boolean;
   auth: AuthState;
@@ -74,7 +77,6 @@ export type BayaanContextValue = {
 
 const BayaanContext = React.createContext<BayaanContextValue | null>(null);
 
-const MODE_KEY = "bayaan.mode.v1";
 const KIOSK_KEY = "bayaan.kiosk.v1";
 
 const EMPTY_AUTH_USER: BayaanAuthStatus["user"] = {
@@ -86,41 +88,8 @@ const EMPTY_AUTH_USER: BayaanAuthStatus["user"] = {
   allowedNav: [],
   allowedPanels: { admin: false, pos: false },
   assignedKiosks: [],
+  kioskStaff: [],
 };
-
-const DEMO_AUTH: AuthState = {
-  checked: true,
-  busy: false,
-  authenticated: true,
-  user: {
-    ...EMPTY_AUTH_USER,
-    name: "Demo Owner",
-    login: "demo",
-    roles: ["superadmin"],
-    primaryRole: "superadmin",
-    allowedNav: [
-      "overview", "insights", "kiosks", "warehouses", "items", "sales", "closing",
-      "waste", "products", "suppliers", "inventory", "staff", "finance", "reports",
-    ],
-    allowedPanels: { admin: true, pos: true },
-  },
-};
-
-function readInitialMode(hasEnv: boolean): BayaanMode {
-  if (typeof window === "undefined") return "demo";
-  const params = new URLSearchParams(window.location.search);
-  if (
-    params.get("bayaanSimulation") === "peak"
-    || params.get("bayaanSimulation") === "peak-full"
-    || params.get("bayaanMode") === "simulation"
-    || window.localStorage.getItem("BAYAAN_SIMULATION") === "peak"
-  ) {
-    return "live";
-  }
-  const stored = window.localStorage.getItem(MODE_KEY);
-  if (stored === "live" || stored === "demo") return stored;
-  return hasEnv ? "live" : "demo";
-}
 
 function readInitialKiosk(envKiosk: string | undefined): string {
   if (typeof window === "undefined") return envKiosk || "K-01";
@@ -140,9 +109,9 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
   const gateway = React.useMemo(() => createSourceOfTruthGateway(), []);
   const hasBackend = gateway.enabled;
 
-  const [mode, setModeState] = React.useState<BayaanMode>(() =>
-    readInitialMode(gateway.enabled),
-  );
+  // Live-only product: there is no demo mode. `mode` is a constant; auth comes only
+  // from the gateway (unauthenticated when no backend is connected).
+  const mode: BayaanMode = "live";
 
   const [kioskId, setKioskIdState] = React.useState<string>(() =>
     readInitialKiosk(import.meta.env.VITE_BAYAAN_KIOSK as string | undefined),
@@ -151,12 +120,10 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
   const [shift, setShift] = React.useState<ShiftSession | null>(null);
   const [pending, setPending] = React.useState<QueueEntry[]>([]);
   const [online, setOnline] = React.useState<boolean>(() => browserOnline());
-  const isLive = mode === "live" && hasBackend;
-  const sourceOnlyWithoutBackend = mode === "live" && !hasBackend;
-  const [auth, setAuth] = React.useState<AuthState>(() =>
-    isLive
-      ? { checked: false, busy: false, authenticated: false, user: EMPTY_AUTH_USER }
-      : DEMO_AUTH,
+  const isLive = hasBackend;
+  const sourceOnlyWithoutBackend = !hasBackend;
+  const [auth, setAuth] = React.useState<AuthState>(
+    () => ({ checked: false, busy: false, authenticated: false, user: EMPTY_AUTH_USER }),
   );
 
   const queueRef = React.useRef<SaleQueue | null>(null);
@@ -180,7 +147,8 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     let alive = true;
     if (!isLive) {
-      setAuth(DEMO_AUTH);
+      // No backend connected: honest unauthenticated state, never a demo user.
+      setAuth({ checked: true, busy: false, authenticated: false, user: EMPTY_AUTH_USER });
       return () => {
         alive = false;
       };
@@ -214,13 +182,6 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
     };
   }, [gateway, isLive]);
 
-  const setMode = React.useCallback((next: BayaanMode) => {
-    setModeState(next);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(MODE_KEY, next);
-    }
-  }, []);
-
   const setKioskId = React.useCallback((id: string) => {
     setKioskIdState(id);
     if (typeof window !== "undefined") {
@@ -230,8 +191,9 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
 
   const login = React.useCallback<BayaanContextValue["login"]>(async (payload) => {
     if (!isLive) {
-      setAuth(DEMO_AUTH);
-      return { ok: true, result: DEMO_AUTH };
+      const message = "No backend connected; sign-in requires the Bayaan engine";
+      setAuth({ checked: true, busy: false, authenticated: false, user: EMPTY_AUTH_USER, error: message });
+      return { ok: false, error: message, queued: false };
     }
     setAuth((current) => ({ ...current, busy: true, error: undefined }));
     try {
@@ -255,7 +217,7 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
 
   const logout = React.useCallback<BayaanContextValue["logout"]>(async () => {
     if (!isLive) {
-      setAuth(DEMO_AUTH);
+      setAuth({ checked: true, busy: false, authenticated: false, user: EMPTY_AUTH_USER });
       return;
     }
     await gateway.logout().catch(() => undefined);
@@ -271,10 +233,6 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       ...s,
       openedAt: s.openedAt ?? new Date().toISOString(),
     };
-    if (!isLive) {
-      setShift(next);
-      return { ok: true, result: { demo: true } };
-    }
     if (!browserOnline()) {
       return { ok: false, error: "Network offline; opening shift requires source engine connection", queued: false };
     }
@@ -282,6 +240,7 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       const session = await gateway.openSession({
         kiosk: next.kioskId,
         opening_cash: next.openingCash,
+        cashier: next.cashier,
       });
       if (!session.id) {
         return { ok: false, error: "Source engine did not return an open POS session", queued: false };
@@ -366,10 +325,6 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, error: errorMessage(error), queued: false };
       }
 
-      if (!isLive) {
-        return { ok: true, result: { demo: true, external_id: payload.external_id }, externalId: payload.external_id };
-      }
-
       let entry: QueueEntry;
       try {
         entry = await queue.enqueue({
@@ -433,10 +388,6 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, error: errorMessage(error), queued: false };
       }
 
-      if (!isLive) {
-        return { ok: true, result: { demo: true, external_id: payload.external_id } };
-      }
-
       let entry: QueueEntry;
       try {
         entry = await queue.enqueue({
@@ -476,9 +427,6 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
     async (input) => {
       if (sourceOnlyWithoutBackend) {
         return { ok: false, error: "Connect the source engine before creating source stock transfers", queued: false };
-      }
-      if (!isLive) {
-        return { ok: true, result: { demo: true, kiosk: input.kioskId, item: input.itemId, qty: input.qty } };
       }
       let entry: QueueEntry;
       try {
@@ -521,9 +469,6 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       if (pending.length > 0) {
         return { ok: false, error: "Sync offline queue before closing shift", queued: false };
       }
-      if (!isLive) {
-        return { ok: true, result: { demo: true, kiosk: payload.kioskId } };
-      }
       try {
         const result = await gateway.submitShiftClose(payload);
         return { ok: true, result };
@@ -537,7 +482,6 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
   const value = React.useMemo<BayaanContextValue>(
     () => ({
       mode,
-      setMode,
       gateway,
       hasBackend,
       auth,
@@ -559,8 +503,6 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       flushQueue,
     }),
     [
-      mode,
-      setMode,
       gateway,
       hasBackend,
       auth,

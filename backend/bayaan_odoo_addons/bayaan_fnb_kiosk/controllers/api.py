@@ -132,7 +132,7 @@ class BayaanKioskApi(http.Controller):
                 if product:
                     return product
         raise UserError(
-            "Sale product not found in Odoo POS catalog: %s"
+            "Sale product not found in the POS catalog: %s"
             % (fallback_name or code_or_name or "empty value")
         )
 
@@ -199,6 +199,34 @@ class BayaanKioskApi(http.Controller):
             roles.append("spectator")
         return roles
 
+    def _role_capabilities(self, roles):
+        """Server-truth capability map mirroring the route guards, so the UI can hide or
+        disable write controls a role would be denied — in ADDITION to the server checks,
+        never instead of them. The accountant is read-only on operational pages: it can
+        post/reverse manual journals, manage the chart, register AP/AR payments and read
+        every report, but cannot approve closes, receive stock, run payroll, edit staff or
+        change VAT. These booleans match _require_manager_scope / _require_procurement_scope
+        / _require_kiosk_scope and the tax/company-config guards."""
+        roles = set(roles or [])
+        is_mgr = bool({"superadmin", "manager"} & roles)
+        is_acct = "accountant" in roles
+        is_log = "logistics" in roles
+        return {
+            "readAccounting": is_mgr or is_acct or "spectator" in roles,
+            "postJournal": is_mgr or is_acct,
+            "reverseJournal": is_mgr or is_acct,
+            "manageChart": is_mgr or is_acct,
+            "registerPayment": is_mgr or is_acct,
+            "approveClose": is_mgr,
+            "receiveStock": is_mgr or is_log,
+            "manageSuppliers": is_mgr or is_log,
+            "createPurchase": is_mgr or is_log,
+            "editStaff": is_mgr,
+            "runPayroll": is_mgr,
+            "changeVat": is_mgr,
+            "changeCompanyConfig": is_mgr or is_acct,
+        }
+
     def _role_payload(self):
         user = request.env.user
         roles = self._bayaan_roles()
@@ -210,18 +238,24 @@ class BayaanKioskApi(http.Controller):
             "cashier": [],
             "spectator": [
                 "overview", "insights", "kiosks", "sales", "closing", "waste",
-                "products", "suppliers", "inventory", "staff", "finance", "reports",
+                "products", "suppliers", "inventory", "staff",
+                "finance", "gl", "journals", "trialBalance", "statements", "cashFlow", "agedPayable", "agedReceivable", "taxReport", "coa", "reports",
             ],
             "supervisor": ["overview", "kiosks", "sales", "closing", "waste", "inventory", "reports"],
             "logistics": ["overview", "warehouses", "items", "suppliers", "inventory", "reports"],
-            "accountant": ["overview", "insights", "sales", "closing", "suppliers", "staff", "finance", "reports"],
+            "accountant": [
+                "overview", "insights", "sales", "closing", "suppliers", "staff",
+                "finance", "gl", "journals", "trialBalance", "statements", "cashFlow", "agedPayable", "agedReceivable", "taxReport", "coa", "reports", "settings",
+            ],
             "manager": [
                 "overview", "insights", "kiosks", "warehouses", "items", "sales", "closing",
-                "waste", "products", "suppliers", "inventory", "staff", "finance", "reports",
+                "waste", "products", "suppliers", "inventory", "staff",
+                "finance", "gl", "journals", "trialBalance", "statements", "cashFlow", "agedPayable", "agedReceivable", "taxReport", "coa", "reports", "settings",
             ],
             "superadmin": [
                 "overview", "insights", "kiosks", "warehouses", "items", "sales", "closing",
-                "waste", "products", "suppliers", "inventory", "staff", "finance", "reports",
+                "waste", "products", "suppliers", "inventory", "staff",
+                "finance", "gl", "journals", "trialBalance", "statements", "cashFlow", "agedPayable", "agedReceivable", "taxReport", "coa", "reports", "settings",
             ],
         }
         allowed_nav = []
@@ -230,6 +264,7 @@ class BayaanKioskApi(http.Controller):
                 if item not in allowed_nav:
                     allowed_nav.append(item)
         assigned_kiosks = []
+        kiosk_staff = []
         if roles:
             Kiosk = request.env["bayaan.kiosk"].sudo()
             sees_full_chain = "superadmin" in roles or "spectator" in roles
@@ -253,6 +288,30 @@ class BayaanKioskApi(http.Controller):
                 "city": kiosk.city,
                 "area": kiosk.area,
             } for kiosk in kiosks]
+            # Staff assigned to the kiosks this user can see, so the POS
+            # "pick your name" screen can list real colleagues in live mode
+            # (chain roles like superadmin/manager see every kiosk's staff).
+            seen_staff = set()
+            for kiosk in kiosks:
+                members = [
+                    (kiosk.manager_user_id, "Manager"),
+                    (kiosk.supervisor_user_id, "Supervisor"),
+                ] + [(cashier_user, "Cashier") for cashier_user in kiosk.cashier_user_ids]
+                for member, role_label in members:
+                    if not member or not member.active:
+                        continue
+                    key = (kiosk.kiosk_code, member.id)
+                    if key in seen_staff:
+                        continue
+                    seen_staff.add(key)
+                    kiosk_staff.append({
+                        "id": member.id,
+                        "name": member.name,
+                        "login": member.login,
+                        "role": role_label,
+                        "kioskCode": kiosk.kiosk_code,
+                        "kioskName": kiosk.name,
+                    })
             if sees_full_chain:
                 pos_kiosk_count = Kiosk.search_count([
                     ("company_id", "=", request.env.company.id),
@@ -267,14 +326,18 @@ class BayaanKioskApi(http.Controller):
                 ])
         else:
             pos_kiosk_count = 0
+        vat = self._bayaan_vat_config()
         return {
             "authenticated": bool(roles),
+            "vatRate": vat["rate"],
+            "vatPriceInclude": vat["priceInclude"],
             "user": {
                 "id": user.id if roles else False,
                 "name": user.name if roles else "",
                 "login": user.login if roles else "",
                 "roles": roles,
                 "primaryRole": primary,
+                "capabilities": self._role_capabilities(roles),
                 "allowedNav": allowed_nav,
                 "allowedPanels": {
                     "admin": bool(allowed_nav),
@@ -283,8 +346,29 @@ class BayaanKioskApi(http.Controller):
                     ),
                 },
                 "assignedKiosks": assigned_kiosks,
+                "kioskStaff": kiosk_staff,
             },
         }
+
+    def _bayaan_vat_config(self):
+        """The tenant's standard VAT/sales-tax rate. Default 0% (Iraq has no VAT).
+        Stored in ir.config_parameter so every surface — admin, POS receipt, books —
+        reads one source. priceInclude means the kiosk sticker price already contains
+        the tax (the kiosk_sale path records the sticker price as the order total)."""
+        params = request.env["ir.config_parameter"].sudo()
+        company = request.env.company
+        rate = params.get_param("bayaan.vat_rate.%s" % company.id)
+        if rate in (None, ""):
+            rate = params.get_param("bayaan.vat_rate")
+        try:
+            rate = float(rate) if rate not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            rate = 0.0
+        incl = params.get_param("bayaan.vat_price_include.%s" % company.id)
+        if incl in (None, ""):
+            incl = params.get_param("bayaan.vat_price_include")
+        price_include = True if incl in (None, "") else (str(incl).lower() in ("1", "true", "yes"))
+        return {"rate": rate, "priceInclude": price_include}
 
     def _user_is_assigned_to_kiosk(self, kiosk):
         user = request.env.user
@@ -1934,6 +2018,11 @@ class BayaanKioskApi(http.Controller):
             or os.environ.get("BAYAAN_AI_OPENAI_REASONING_EFFORT")
             or "high"
         ).strip().lower()
+        image_model = (
+            ICP.get_param("bayaan.ai.openai.image_model")
+            or os.environ.get("BAYAAN_AI_OPENAI_IMAGE_MODEL")
+            or "gpt-image-1"
+        ).strip()
         api_key = (
             ICP.get_param("bayaan.ai.openai.api_key")
             or os.environ.get("BAYAAN_OPENAI_API_KEY")
@@ -1945,6 +2034,7 @@ class BayaanKioskApi(http.Controller):
             "model": model,
             "reasoning_model": reasoning_model,
             "reasoning_effort": reasoning_effort,
+            "image_model": image_model,
             "api_key": api_key,
             "configured": bool(api_key) and provider == "openai",
         }
@@ -2430,7 +2520,7 @@ class BayaanKioskApi(http.Controller):
             })
 
         append(
-            "Sales today comes from the compact Bayaan/Odoo report pack.",
+            "Sales today comes from the compact Bayaan report pack.",
             "salesToday",
             totals.get("salesToday"),
             "currency",
@@ -3107,6 +3197,86 @@ class BayaanKioskApi(http.Controller):
             payload={"mimetype": mimetype},
         )
         return {"engine": "odoo_pos", "configured": True, "invoiceProposal": proposal, "budget": budget}
+
+    def _ai_image_prompt(self, payload):
+        """Server-built prompt: the route only generates F&B product photos for the
+        draft card, never arbitrary caller-authored images."""
+        name = (payload.get("name") or "").strip()
+        if not name:
+            raise UserError("A product name is required to generate an image.")
+        category = (payload.get("category") or "").strip()
+        notes = (payload.get("notes") or payload.get("description") or "").strip()
+        subject = "%s (%s)" % (name, category) if category else name
+        prompt = (
+            "Professional menu photograph of %s for a food and beverage point-of-sale "
+            "catalog. Single product, centered, on a clean neutral light background with "
+            "soft studio lighting. Appetizing and realistic. No people, no hands, no "
+            "text, no logos, no watermarks." % subject
+        )
+        if notes:
+            prompt += " Details: %s" % notes[:300]
+        return prompt
+
+    def _ai_call_image_generate(self, prompt):
+        config = self._ai_provider_config()
+        response = requests.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={
+                "Authorization": "Bearer %s" % config["api_key"],
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": config["image_model"],
+                "prompt": prompt,
+                "size": "1024x1024",
+                "quality": "medium",
+                "n": 1,
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+        data = response.json()
+        items = data.get("data") or []
+        image_b64 = (items[0] or {}).get("b64_json") or "" if items else ""
+        return image_b64, data.get("usage", {})
+
+    @http.route("/bayaan/api/ai_image_generate", type="jsonrpc", auth="user")
+    def ai_image_generate(self, **kwargs):
+        """AI product-photo draft for the human-confirmed product card. Read-only:
+        creates no records and never touches deterministic data — the returned
+        base64 only lands on a product when the human confirms the draft, which
+        posts it through /product_create_bundle (image_1920 is cosmetic)."""
+        self._require_procurement_scope()
+        payload = self._payload(kwargs)
+        prompt = self._ai_image_prompt(payload)
+        config = self._ai_provider_config()
+        if not config["configured"]:
+            return {"engine": "odoo_pos", "configured": False, "imageBase64": None,
+                    "error": "AI provider credentials are not configured."}
+        budget = self._ai_budget_snapshot()
+        if budget.get("status") == "exhausted" and not self._ai_unlimited():
+            return {"engine": "odoo_pos", "configured": True, "imageBase64": None,
+                    "budget": budget, "error": "Monthly AI token budget is exhausted."}
+        try:
+            image_b64, usage = self._ai_call_image_generate(prompt)
+        except Exception:
+            _logger.exception("Bayaan AI image generation failed.")
+            return {"engine": "odoo_pos", "configured": True, "imageBase64": None,
+                    "error": "Could not generate the image. Try again."}
+        if not image_b64:
+            return {"engine": "odoo_pos", "configured": True, "imageBase64": None,
+                    "error": "The image model returned no image. Try again."}
+        budget = self._ai_record_usage(usage, 0)
+        self._audit_event(
+            "ai",
+            "image.generated",
+            "Product image drafted by AI",
+            (payload.get("name") or "")[:120],
+            severity="info",
+            payload={"model": config["image_model"]},
+        )
+        return {"engine": "odoo_pos", "configured": True, "imageBase64": image_b64,
+                "mimeType": "image/png", "budget": budget}
 
     def _ai_dashboard_response(self, query, locale, plan, report_pack, provider_result, audit=True, event_name="ai_dashboard_plan"):
         if audit:
@@ -3953,6 +4123,8 @@ class BayaanKioskApi(http.Controller):
                 "note": note,
                 "company_id": request.env.company.id,
             })
+        # Post the expense to the real ledger (Dr <category expense> / Cr Bank).
+        request.env["bayaan.gl"].sudo()._bayaan_post_expense(expense)
         self._audit_event(
             "hr",
             "operating_expense.created" if created else "operating_expense.reused",
@@ -4023,6 +4195,1157 @@ class BayaanKioskApi(http.Controller):
         self._audit_event("finance", "adjustment.created", "Finance adjustment: %s" % adjustment.name,
                           "%s %.0f" % (category, amount), record=adjustment, severity="warning", payload=payload)
         return self._serialize_finance_adjustment(adjustment)
+
+    # ==================================================================
+    # Formal accounting books — real account.move / account.move.line.
+    # Read-only window onto the deterministic Odoo ledger so the client's
+    # accountant sees the General Ledger, Trial Balance, P&L, Balance Sheet
+    # and Chart of Accounts that POS sessions, bills and journal entries post.
+    # ==================================================================
+    ACCOUNTING_ASSET_TYPES = (
+        "asset_receivable", "asset_cash", "asset_current",
+        "asset_non_current", "asset_prepayments", "asset_fixed",
+    )
+    ACCOUNTING_LIABILITY_TYPES = (
+        "liability_payable", "liability_current",
+        "liability_non_current", "liability_credit_card",
+    )
+    ACCOUNTING_EQUITY_TYPES = ("equity", "equity_unaffected")
+    ACCOUNTING_INCOME_TYPES = ("income", "income_other")
+    ACCOUNTING_EXPENSE_TYPES = (
+        "expense", "expense_direct_cost", "expense_depreciation", "expense_other",
+    )
+
+    def _parse_report_date(self, value, default):
+        if not value:
+            return default
+        try:
+            return fields.Date.to_date(value) or default
+        except Exception:
+            return default
+
+    def _accounting_company_account_domain(self):
+        Account = request.env["account.account"].sudo()
+        domain = []
+        if "active" in Account._fields:
+            domain.append(("active", "=", True))
+        if "company_ids" in Account._fields:
+            domain.append(("company_ids", "in", request.env.company.id))
+        elif "company_id" in Account._fields:
+            domain.append(("company_id", "=", request.env.company.id))
+        return domain
+
+    def _accounting_base_lines_domain(self):
+        """Posted, real journal items for this company. In Odoo 19 the posting
+        lines carry display_type 'product'/'tax'/'payment_term' (not False);
+        only 'line_section'/'line_note' are non-amount rows to exclude."""
+        return [
+            ("parent_state", "=", "posted"),
+            ("company_id", "=", request.env.company.id),
+            ("display_type", "not in", ("line_section", "line_note")),
+        ]
+
+    def _accounting_kiosk_extra_domain(self, kiosk_code, upto_date):
+        """Restrict to journal items carrying a kiosk's branch cost center.
+        analytic_distribution is a JSON map keyed by analytic account id, so we
+        resolve matching line ids in Python (the posted set is period-bounded)."""
+        if not kiosk_code:
+            return []
+        kiosk = request.env["bayaan.kiosk"].sudo().search([
+            ("company_id", "=", request.env.company.id),
+            ("kiosk_code", "=", kiosk_code),
+        ], limit=1)
+        if not kiosk or not kiosk.analytic_account_id:
+            return [("id", "in", [])]
+        analytic_key = str(kiosk.analytic_account_id.id)
+        candidate = request.env["account.move.line"].sudo().search(
+            self._accounting_base_lines_domain() + [("date", "<=", upto_date)]
+        )
+        matched = [line.id for line in candidate if analytic_key in (line.analytic_distribution or {})]
+        return [("id", "in", matched)]
+
+    def _accounting_account_balances(self, domain):
+        """Sum debit/credit grouped by account for a domain. Returns ordered
+        list of dicts with account metadata so the same shape feeds trial
+        balance, P&L, balance sheet and chart of accounts."""
+        AML = request.env["account.move.line"].sudo()
+        grouped = AML._read_group(domain, groupby=["account_id"], aggregates=["debit:sum", "credit:sum"])
+        rows = []
+        for account, debit, credit in grouped:
+            if not account:
+                continue
+            rows.append({
+                "accountId": account.id,
+                "code": account.code or "",
+                "name": account.name or "",
+                "type": account.account_type or "",
+                "debit": round(debit or 0.0, 2),
+                "credit": round(credit or 0.0, 2),
+                "balance": round((debit or 0.0) - (credit or 0.0), 2),
+            })
+        rows.sort(key=lambda r: (r["code"] or "zzz", r["name"]))
+        return rows
+
+    def _accounting_general_ledger(self, base, date_from, date_to, payload):
+        AML = request.env["account.move.line"].sudo()
+        domain = list(base) + [("date", ">=", date_from), ("date", "<=", date_to)]
+        account_ref = payload.get("account")
+        opening = 0.0
+        account_label = None
+        if account_ref:
+            account = request.env["account.account"].sudo().search(
+                self._accounting_company_account_domain() + ["|", ("code", "=", account_ref), ("id", "=", account_ref if str(account_ref).isdigit() else 0)],
+                limit=1,
+            )
+            if account:
+                domain.append(("account_id", "=", account.id))
+                account_label = "%s %s" % (account.code or "", account.name or "")
+                open_rows = AML._read_group(
+                    list(base) + [("date", "<", date_from), ("account_id", "=", account.id)],
+                    aggregates=["balance:sum"],
+                )
+                opening = round((open_rows[0][0] or 0.0) if open_rows else 0.0, 2)
+        journal_ref = payload.get("journal")
+        if journal_ref:
+            domain.append(("journal_id.code", "=", journal_ref))
+        limit = max(1, min(int(payload.get("limit") or 500), 2000))
+        lines = AML.search(domain, order="date asc, move_id asc, id asc", limit=limit)
+        running = opening
+        out = []
+        total_debit = total_credit = 0.0
+        for line in lines:
+            running += (line.debit or 0.0) - (line.credit or 0.0)
+            total_debit += line.debit or 0.0
+            total_credit += line.credit or 0.0
+            out.append({
+                "id": line.id,
+                "date": fields.Date.to_string(line.date),
+                "move": line.move_id.name or "",
+                "moveId": line.move_id.id,
+                "journal": line.journal_id.code or "",
+                "code": line.account_id.code or "",
+                "account": line.account_id.name or "",
+                "type": line.account_id.account_type or "",
+                "partner": line.partner_id.name or "",
+                "label": line.name or "",
+                "debit": round(line.debit or 0.0, 2),
+                "credit": round(line.credit or 0.0, 2),
+                "balance": round(running, 2),
+            })
+        return {
+            "report": "ledger",
+            "rows": out,
+            "opening": round(opening, 2),
+            "accountLabel": account_label,
+            "totals": {"debit": round(total_debit, 2), "credit": round(total_credit, 2), "count": len(out)},
+            "truncated": len(out) >= limit,
+        }
+
+    def _accounting_journal_entries(self, date_from, date_to, payload, kiosk_extra):
+        AM = request.env["account.move"].sudo()
+        domain = [
+            ("state", "=", "posted"),
+            ("company_id", "=", request.env.company.id),
+            ("date", ">=", date_from),
+            ("date", "<=", date_to),
+        ]
+        journal_ref = payload.get("journal")
+        if journal_ref:
+            domain.append(("journal_id.code", "=", journal_ref))
+        if kiosk_extra:
+            # kiosk_extra restricts move LINES; map up to their moves.
+            line_ids = kiosk_extra[0][2]
+            move_ids = request.env["account.move.line"].sudo().browse(line_ids).mapped("move_id").ids
+            domain.append(("id", "in", move_ids))
+        limit = max(1, min(int(payload.get("limit") or 300), 1000))
+        moves = AM.search(domain, order="date desc, id desc", limit=limit)
+        rows = []
+        for move in moves:
+            rows.append({
+                "id": move.id,
+                "name": move.name or "",
+                "date": fields.Date.to_string(move.date),
+                "journal": move.journal_id.code or "",
+                "journalName": move.journal_id.name or "",
+                "ref": move.ref or "",
+                "partner": move.partner_id.name or "",
+                "amount": round(sum(move.line_ids.mapped("debit")), 2),
+                "state": move.state,
+                "lineCount": len(move.line_ids.filtered(lambda l: l.display_type not in ("line_section", "line_note"))),
+            })
+        return {"report": "journals", "rows": rows, "truncated": len(rows) >= limit}
+
+    def _accounting_trial_balance(self, base, date_from, date_to):
+        AML = request.env["account.move.line"].sudo()
+        opening = {r["accountId"]: r for r in self._accounting_account_balances(list(base) + [("date", "<", date_from)])}
+        period = self._accounting_account_balances(list(base) + [("date", ">=", date_from), ("date", "<=", date_to)])
+        seen = set()
+        rows = []
+        total_open = total_debit = total_credit = total_close = 0.0
+        for row in period:
+            open_bal = opening.get(row["accountId"], {}).get("balance", 0.0)
+            close = round(open_bal + row["balance"], 2)
+            seen.add(row["accountId"])
+            total_open += open_bal
+            total_debit += row["debit"]
+            total_credit += row["credit"]
+            total_close += close
+            rows.append({**row, "opening": round(open_bal, 2), "closing": close})
+        # Accounts with only an opening balance and no period movement.
+        for account_id, row in opening.items():
+            if account_id in seen or not row["balance"]:
+                continue
+            total_open += row["balance"]
+            total_close += row["balance"]
+            rows.append({**row, "debit": 0.0, "credit": 0.0, "opening": row["balance"], "closing": row["balance"]})
+        rows.sort(key=lambda r: (r["code"] or "zzz", r["name"]))
+        return {
+            "report": "trial_balance",
+            "rows": rows,
+            "totals": {
+                "opening": round(total_open, 2),
+                "debit": round(total_debit, 2),
+                "credit": round(total_credit, 2),
+                "closing": round(total_close, 2),
+            },
+        }
+
+    def _accounting_income_statement(self, base, date_from, date_to):
+        period = list(base) + [("date", ">=", date_from), ("date", "<=", date_to)]
+        income = self._accounting_account_balances(period + [("account_id.account_type", "in", list(self.ACCOUNTING_INCOME_TYPES))])
+        expense = self._accounting_account_balances(period + [("account_id.account_type", "in", list(self.ACCOUNTING_EXPENSE_TYPES))])
+        # Income is credit-normal: present as positive revenue. Expense is debit-normal.
+        revenue_rows = [{**r, "amount": round(-r["balance"], 2)} for r in income]
+        cogs_rows = [{**r, "amount": r["balance"]} for r in expense if r["type"] == "expense_direct_cost"]
+        opex_rows = [{**r, "amount": r["balance"]} for r in expense if r["type"] != "expense_direct_cost"]
+        total_revenue = round(sum(r["amount"] for r in revenue_rows), 2)
+        total_cogs = round(sum(r["amount"] for r in cogs_rows), 2)
+        total_opex = round(sum(r["amount"] for r in opex_rows), 2)
+        net = round(total_revenue - total_cogs - total_opex, 2)
+        return {
+            "report": "pnl",
+            "revenue": revenue_rows,
+            "cogs": cogs_rows,
+            "opex": opex_rows,
+            "totals": {
+                "revenue": total_revenue,
+                "cogs": total_cogs,
+                "grossProfit": round(total_revenue - total_cogs, 2),
+                "opex": total_opex,
+                "netProfit": net,
+            },
+        }
+
+    def _accounting_balance_sheet(self, base, date_to):
+        upto = list(base) + [("date", "<=", date_to)]
+        assets = self._accounting_account_balances(upto + [("account_id.account_type", "in", list(self.ACCOUNTING_ASSET_TYPES))])
+        liabilities = self._accounting_account_balances(upto + [("account_id.account_type", "in", list(self.ACCOUNTING_LIABILITY_TYPES))])
+        equity = self._accounting_account_balances(upto + [("account_id.account_type", "in", list(self.ACCOUNTING_EQUITY_TYPES))])
+        # Current-period earnings roll into equity (unallocated).
+        income = self._accounting_account_balances(upto + [("account_id.account_type", "in", list(self.ACCOUNTING_INCOME_TYPES))])
+        expense = self._accounting_account_balances(upto + [("account_id.account_type", "in", list(self.ACCOUNTING_EXPENSE_TYPES))])
+        net_income = round(sum(-r["balance"] for r in income) - sum(r["balance"] for r in expense), 2)
+        asset_rows = [{**r, "amount": r["balance"]} for r in assets]
+        liability_rows = [{**r, "amount": round(-r["balance"], 2)} for r in liabilities]
+        equity_rows = [{**r, "amount": round(-r["balance"], 2)} for r in equity]
+        total_assets = round(sum(r["amount"] for r in asset_rows), 2)
+        total_liabilities = round(sum(r["amount"] for r in liability_rows), 2)
+        total_equity = round(sum(r["amount"] for r in equity_rows) + net_income, 2)
+        return {
+            "report": "balance_sheet",
+            "assets": asset_rows,
+            "liabilities": liability_rows,
+            "equity": equity_rows,
+            "netIncome": net_income,
+            "totals": {
+                "assets": total_assets,
+                "liabilities": total_liabilities,
+                "equity": total_equity,
+                "liabilitiesAndEquity": round(total_liabilities + total_equity, 2),
+                "balanced": abs(total_assets - (total_liabilities + total_equity)) < 1.0,
+            },
+        }
+
+    def _accounting_chart(self, base, date_to, include_archived=False):
+        balances = {r["accountId"]: r for r in self._accounting_account_balances(list(base) + [("date", "<=", date_to)])}
+        Account = request.env["account.account"].sudo()
+        # The shared domain filters active=True; when managing the chart we also want
+        # archived accounts so the accountant can see and restore them.
+        domain = [term for term in self._accounting_company_account_domain() if not (isinstance(term, tuple) and term[0] == "active")]
+        accounts = Account.with_context(active_test=not include_archived).search(domain, order="code")
+        rows = []
+        for account in accounts:
+            bal = balances.get(account.id, {})
+            rows.append({
+                "accountId": account.id,
+                "code": account.code or "",
+                "name": account.name or "",
+                "type": account.account_type or "",
+                "active": account.active,
+                "balance": bal.get("balance", 0.0),
+            })
+        return {"report": "chart", "rows": rows, "count": len(rows)}
+
+    def _accounting_cash_flow(self, base, date_from, date_to):
+        """Direct cash-flow statement classified into operating / investing / financing.
+
+        Each cash movement is attributed to its non-cash counterpart account(s); for a
+        multi-line move the cash delta is split across ALL non-cash legs in proportion to
+        their amounts (never just the first counterpart, which the previous ``others[:1]``
+        misattributed). Opening + net reconciles to the cash/bank closing balance."""
+        AML = request.env["account.move.line"].sudo()
+        cash = [("account_id.account_type", "=", "asset_cash")]
+        open_rows = AML._read_group(list(base) + [("date", "<", date_from)] + cash, aggregates=["balance:sum"])
+        opening = round((open_rows[0][0] or 0.0) if open_rows else 0.0, 2)
+
+        def classify(account_type):
+            if account_type in ("asset_fixed", "asset_non_current"):
+                return "investing"
+            if account_type in ("equity", "equity_unaffected", "liability_non_current", "liability_credit_card"):
+                return "financing"
+            return "operating"
+
+        sections = {"operating": {}, "investing": {}, "financing": {}}
+        net = 0.0
+        for line in AML.search(list(base) + [("date", ">=", date_from), ("date", "<=", date_to)] + cash):
+            delta = (line.debit or 0.0) - (line.credit or 0.0)
+            net += delta
+            counters = line.move_id.line_ids.filtered(
+                lambda l: (l.account_id.account_type or "") != "asset_cash"
+                and l.display_type not in ("line_section", "line_note"))
+            if not counters:
+                # Cash-to-cash transfer (e.g. drawer → bank): the two cash legs net to zero.
+                continue
+            weight_total = sum(abs((c.debit or 0.0) - (c.credit or 0.0)) for c in counters)
+            for counter in counters:
+                cweight = abs((counter.debit or 0.0) - (counter.credit or 0.0))
+                share = (cweight / weight_total) if weight_total else (1.0 / len(counters))
+                bucket = sections[classify(counter.account_id.account_type or "")]
+                key = (counter.account_id.code or "", counter.account_id.name or "")
+                bucket[key] = bucket.get(key, 0.0) + delta * share
+
+        def rows_for(bucket):
+            rows = [{"code": k[0], "name": k[1], "amount": round(v, 2)}
+                    for k, v in bucket.items() if abs(round(v, 2)) >= 0.01]
+            return sorted(rows, key=lambda r: -abs(r["amount"]))
+
+        result_sections = {name: rows_for(bucket) for name, bucket in sections.items()}
+        section_totals = {name: round(sum(r["amount"] for r in rows), 2)
+                          for name, rows in result_sections.items()}
+        closing = round(opening + net, 2)
+        close_rows = AML._read_group(list(base) + [("date", "<=", date_to)] + cash, aggregates=["balance:sum"])
+        cash_balance = round((close_rows[0][0] or 0.0) if close_rows else 0.0, 2)
+        ordered = [r for name in ("operating", "investing", "financing") for r in result_sections[name]]
+        return {
+            "report": "cash_flow",
+            "opening": opening,
+            "net": round(net, 2),
+            "closing": closing,
+            "operating": result_sections["operating"],
+            "investing": result_sections["investing"],
+            "financing": result_sections["financing"],
+            # Backward-compatible flat lists for the existing UI (now classification-aware).
+            "inflows": sorted([r for r in ordered if r["amount"] > 0], key=lambda r: -r["amount"]),
+            "outflows": sorted([r for r in ordered if r["amount"] < 0], key=lambda r: r["amount"]),
+            "totals": {
+                "operating": section_totals["operating"],
+                "investing": section_totals["investing"],
+                "financing": section_totals["financing"],
+                "inflow": round(sum(r["amount"] for r in ordered if r["amount"] > 0), 2),
+                "outflow": round(sum(r["amount"] for r in ordered if r["amount"] < 0), 2),
+                "net": round(net, 2),
+                "cashBalance": cash_balance,
+                "reconciled": abs(closing - cash_balance) < 0.05,
+            },
+        }
+
+    def _accounting_aged_partner(self, base, date_to, kind):
+        """Aged payable/receivable buckets (current / 1-30 / 31-60 / 61-90 / 90+) by
+        partner, using each open line's amount_residual so settled items drop out."""
+        AML = request.env["account.move.line"].sudo()
+        acct_type = "liability_payable" if kind == "payable" else "asset_receivable"
+        lines = AML.search([
+            ("parent_state", "=", "posted"), ("company_id", "=", request.env.company.id),
+            ("account_id.account_type", "=", acct_type), ("date", "<=", date_to), ("partner_id", "!=", False),
+        ])
+        keys = ("current", "d1_30", "d31_60", "d61_90", "d90")
+        by_partner = {}
+        bills_by_partner = {}
+        for line in lines:
+            amt = abs(line.amount_residual or 0.0)
+            if amt < 0.01:
+                continue
+            ref_date = line.date_maturity or line.date
+            age = (date_to - ref_date).days if ref_date else 0
+            bucket = ("current" if age <= 0 else "d1_30" if age <= 30 else "d31_60" if age <= 60
+                      else "d61_90" if age <= 90 else "d90")
+            row = by_partner.setdefault(line.partner_id.id, {"partnerId": line.partner_id.id,
+                                                             "partner": line.partner_id.name,
+                                                             **{k: 0.0 for k in keys}, "total": 0.0})
+            row[bucket] += amt
+            row["total"] += amt
+            move = line.move_id
+            bill = bills_by_partner.setdefault(line.partner_id.id, {}).setdefault(move.id, {
+                "moveId": move.id,
+                "name": move.name or move.ref or ("#%s" % move.id),
+                "date": fields.Date.to_string(ref_date) if ref_date else "",
+                "residual": 0.0,
+            })
+            bill["residual"] += amt
+        rows = sorted(by_partner.values(), key=lambda r: -r["total"])
+        for r in rows:
+            for k in keys + ("total",):
+                r[k] = round(r[k], 2)
+            # Attach per-bill (open move) rows so the UI can register payment per bill.
+            bills = sorted((bills_by_partner.get(r["partnerId"]) or {}).values(), key=lambda b: -b["residual"])
+            r["bills"] = [{**b, "residual": round(b["residual"], 2)} for b in bills]
+        totals = {k: round(sum(r[k] for r in rows), 2) for k in keys + ("total",)}
+        return {"report": "aged_%s" % kind, "rows": rows, "totals": totals, "buckets": list(keys)}
+
+    def _accounting_tax_report(self, base, date_from, date_to):
+        """VAT return: taxable base + tax amount per tax code for the period. Iraq is
+        0% so this is typically empty, but a runnable filing summary is still expected."""
+        AML = request.env["account.move.line"].sudo()
+        period = [("parent_state", "=", "posted"), ("company_id", "=", request.env.company.id),
+                  ("date", ">=", date_from), ("date", "<=", date_to)]
+        by_tax = {}
+        for line in AML.search(period + [("tax_line_id", "!=", False)]):
+            tax = line.tax_line_id
+            row = by_tax.setdefault(tax.id, {"tax": tax.name, "rate": tax.amount, "base": 0.0, "taxAmount": 0.0})
+            row["taxAmount"] += (line.credit - line.debit) if tax.type_tax_use == "sale" else (line.debit - line.credit)
+        for line in AML.search(period + [("tax_ids", "!=", False)]):
+            for tax in line.tax_ids:
+                row = by_tax.setdefault(tax.id, {"tax": tax.name, "rate": tax.amount, "base": 0.0, "taxAmount": 0.0})
+                row["base"] += (line.credit - line.debit) if tax.type_tax_use == "sale" else (line.debit - line.credit)
+        # VAT is now posted by Odoo's official POS session close through the native tax
+        # engine (real tax_line_id / tax_ids lines, read above), so each rate reports
+        # correctly. Iraq's 0% simply leaves this empty — no averaged/synthetic rate.
+        rows = [{**v, "base": round(v["base"], 2), "taxAmount": round(v["taxAmount"], 2)} for v in by_tax.values()]
+        return {
+            "report": "tax_report", "rows": rows,
+            "totals": {"base": round(sum(r["base"] for r in rows), 2),
+                       "tax": round(sum(r["taxAmount"] for r in rows), 2)},
+            "note": "VAT in Iraq is 0%; this return aggregates any configured sale/purchase tax.",
+        }
+
+    @http.route("/bayaan/api/accounting_report", type="jsonrpc", auth="user")
+    def accounting_report(self, **kwargs):
+        self._require_chain_read_scope("read accounting books")
+        payload = self._payload(kwargs)
+        report = (payload.get("report") or payload.get("action") or "ledger").lower()
+        today = fields.Date.context_today(request.env.user)
+        date_to = self._parse_report_date(payload.get("date_to") or payload.get("dateTo"), today)
+        date_from = self._parse_report_date(payload.get("date_from") or payload.get("dateFrom"), date_to.replace(day=1))
+        base_company = self._accounting_base_lines_domain()
+        kiosk_code = payload.get("kiosk")
+        kiosk_extra = self._accounting_kiosk_extra_domain(kiosk_code, date_to) if kiosk_code else []
+        # Branch (kiosk) scoping only attributes P&L lines (income/COGS/waste carry the
+        # branch analytic); the balance-sheet counterpart legs (cash, AP, equity) do not,
+        # so a single-kiosk Trial Balance / Balance Sheet would NOT balance. We therefore
+        # apply the kiosk filter ONLY to the General Ledger and the Income Statement
+        # (a true per-branch P&L cost-center view) and keep the Trial Balance, Balance
+        # Sheet and Chart of Accounts company-wide.
+        base_branch = base_company + kiosk_extra
+        meta = {
+            "company": request.env.company.name,
+            "currency": request.env.company.currency_id.name,
+            "dateFrom": fields.Date.to_string(date_from),
+            "dateTo": fields.Date.to_string(date_to),
+            "kiosk": kiosk_code or None,
+            "engine": "odoo_account",
+            "companyWide": False,
+        }
+        if report in ("ledger", "general_ledger", "gl"):
+            result = self._accounting_general_ledger(base_branch, date_from, date_to, payload)
+        elif report in ("journals", "entries", "journal_entries"):
+            result = self._accounting_journal_entries(date_from, date_to, payload, kiosk_extra)
+        elif report in ("trial_balance", "trial", "trialbalance"):
+            result = self._accounting_trial_balance(base_company, date_from, date_to)
+            meta["companyWide"] = bool(kiosk_code)
+        elif report in ("pnl", "income_statement", "income", "profit_loss"):
+            result = self._accounting_income_statement(base_branch, date_from, date_to)
+        elif report in ("balance_sheet", "balance", "bs"):
+            result = self._accounting_balance_sheet(base_company, date_to)
+            meta["companyWide"] = bool(kiosk_code)
+        elif report in ("chart", "chart_of_accounts", "coa", "accounts"):
+            result = self._accounting_chart(base_company, date_to, include_archived=bool(payload.get("includeArchived")))
+            meta["companyWide"] = bool(kiosk_code)
+        elif report in ("cash_flow", "cashflow", "cash"):
+            result = self._accounting_cash_flow(base_company, date_from, date_to)
+        elif report in ("aged_payable", "aged_payables", "ap_aging"):
+            result = self._accounting_aged_partner(base_company, date_to, "payable")
+        elif report in ("aged_receivable", "aged_receivables", "ar_aging"):
+            result = self._accounting_aged_partner(base_company, date_to, "receivable")
+        elif report in ("tax_report", "tax", "vat_return", "vat"):
+            result = self._accounting_tax_report(base_company, date_from, date_to)
+        else:
+            raise UserError("Unsupported accounting report: %s" % report)
+        result["meta"] = meta
+        return result
+
+    # ==================================================================
+    # Manual journal entries — the accountant posts adjusting/correcting
+    # entries straight into the real ledger. Governed by account_move.py
+    # (lock dates, branch analytic on P&L lines, no delete / reversal-only).
+    # ==================================================================
+    def _serialize_move_line_full(self, line):
+        return {
+            "id": line.id,
+            "code": line.account_id.code or "",
+            "account": line.account_id.name or "",
+            "type": line.account_id.account_type or "",
+            "label": line.name or "",
+            "partner": line.partner_id.name or "",
+            "debit": round(line.debit or 0.0, 2),
+            "credit": round(line.credit or 0.0, 2),
+        }
+
+    def _resolve_accounting_account(self, ref):
+        if ref in (None, ""):
+            return request.env["account.account"].sudo()
+        domain = self._accounting_company_account_domain() + [
+            "|", ("code", "=", ref), ("id", "=", int(ref) if str(ref).isdigit() else 0),
+        ]
+        return request.env["account.account"].sudo().search(domain, limit=1)
+
+    def _journal_reverse_eligibility(self, move):
+        """Single source of truth for whether a posted move may be reversed from the
+        manual-journal screen. Returns ``(can_reverse, blocked_reason)``.
+
+        Only MANUAL general-journal entries qualify. POS, bank, purchase, payroll,
+        CapEx and every Bayaan system post (``ref`` prefixed ``Bayaan ``/``Kiosk CapEx``)
+        are corrected through their own reversal/refund workflow, so an accountant can
+        never silently undo an operational or system entry. The detail endpoint and the
+        reverse action both call this so the UI's ``canReverse`` can never drift from
+        what the server actually enforces."""
+        if not move.exists() or move.state != "posted":
+            return False, "Only posted journal entries can be reversed."
+        ref = move.ref or ""
+        if move.move_type != "entry" or (move.journal_id.type or "") != "general":
+            return False, ("Only manual general-journal entries can be reversed here. "
+                           "POS, bank and purchase entries use their own workflow.")
+        if ref.startswith("Bayaan ") or ref.startswith("Kiosk CapEx"):
+            return False, ("Bayaan system entries (sales, COGS, payroll, capex) cannot be "
+                           "reversed here; correct them through their own workflow.")
+        return True, ""
+
+    @http.route("/bayaan/api/journal_entry", type="jsonrpc", auth="user")
+    def journal_entry(self, **kwargs):
+        payload = self._payload(kwargs)
+        action = (payload.get("action") or "").lower()
+        company = request.env.company
+        AM = request.env["account.move"].sudo()
+
+        if action in ("detail", "lines", "read"):
+            self._require_chain_read_scope("read journal entries")
+            move = AM.browse(int(payload.get("id") or 0))
+            if not move.exists() or move.company_id != company:
+                raise UserError("Journal entry not found.")
+            lines = move.line_ids.filtered(lambda l: l.display_type not in ("line_section", "line_note"))
+            can_reverse, reverse_blocked = self._journal_reverse_eligibility(move)
+            if can_reverse and not (self._is_bayaan_accountant() or self._is_bayaan_manager()):
+                can_reverse, reverse_blocked = False, "You do not have permission to reverse journal entries."
+            return {
+                "id": move.id,
+                "name": move.name or "",
+                "date": fields.Date.to_string(move.date),
+                "journal": move.journal_id.code or "",
+                "journalName": move.journal_id.name or "",
+                "ref": move.ref or "",
+                "state": move.state,
+                "canReverse": can_reverse,
+                "reverseBlockedReason": reverse_blocked,
+                "lines": [self._serialize_move_line_full(line) for line in lines],
+                "totals": {
+                    "debit": round(sum(lines.mapped("debit")), 2),
+                    "credit": round(sum(lines.mapped("credit")), 2),
+                },
+            }
+
+        if action in ("reverse",):
+            if not (self._is_bayaan_accountant() or self._is_bayaan_manager()):
+                raise UserError("Only Bayaan accountants or managers can reverse journal entries.")
+            move = AM.browse(int(payload.get("id") or 0))
+            if not move.exists() or move.company_id != company:
+                raise UserError("Posted journal entry not found.")
+            # Governance (separation of duties): only MANUAL general-journal entries may be
+            # reversed here — never the system-generated Bayaan posts (sales / COGS / payroll
+            # / capex) or POS / bank / purchase moves. This is the SAME rule the detail
+            # endpoint serializes as canReverse, so the UI control can never drift from what
+            # the server enforces.
+            eligible, blocked = self._journal_reverse_eligibility(move)
+            if not eligible:
+                raise UserError(blocked)
+            move_ref = move.ref or ""
+            reason = (payload.get("reason") or payload.get("note") or "").strip()
+            if not reason:
+                raise UserError("A reversal reason is required.")
+            reversal = move._reverse_moves([{
+                "date": payload.get("date") or fields.Date.context_today(request.env.user),
+                "ref": "Reversal of %s — %s" % (move.name or move_ref or "", reason),
+            }])
+            if reversal and reversal.state != "posted":
+                reversal.action_post()
+            self._audit_event(
+                "finance", "journal_entry.reversed",
+                "Reversed %s -> %s" % (move.name, reversal.name),
+                reason, record=reversal, severity="warning", payload=payload,
+            )
+            return {"id": reversal.id, "name": reversal.name, "state": reversal.state, "reversedFrom": move.name}
+
+        # create + post — accountants and managers only.
+        if not (self._is_bayaan_accountant() or self._is_bayaan_manager()):
+            raise UserError("Only Bayaan accountants or managers can post journal entries.")
+        lines_in = payload.get("lines") or []
+        if len(lines_in) < 2:
+            raise UserError("A journal entry needs at least two lines (a debit and a credit).")
+
+        Journal = request.env["account.journal"].sudo()
+        journal = False
+        journal_code = payload.get("journal")
+        if journal_code:
+            journal = Journal.search([("code", "=", journal_code), ("company_id", "=", company.id)], limit=1)
+        if not journal:
+            journal = Journal.search([("type", "=", "general"), ("company_id", "=", company.id)], limit=1)
+        if not journal:
+            raise UserError("No general (miscellaneous) journal found to post the entry.")
+
+        command_lines = []
+        total_debit = total_credit = 0.0
+        for raw in lines_in:
+            account = self._resolve_accounting_account(raw.get("account"))
+            if not account:
+                raise UserError("Unknown account: %s" % (raw.get("account") or "(blank)"))
+            debit = self._float_value(raw.get("debit"), 0.0)
+            credit = self._float_value(raw.get("credit"), 0.0)
+            if debit < 0 or credit < 0:
+                raise UserError("Debit and credit amounts must be positive.")
+            if debit and credit:
+                raise UserError("Each line is either a debit or a credit, not both.")
+            if not debit and not credit:
+                continue
+            total_debit += debit
+            total_credit += credit
+            values = {
+                "name": (raw.get("label") or "").strip() or "/",
+                "account_id": account.id,
+                "debit": debit,
+                "credit": credit,
+            }
+            kiosk_code = raw.get("kiosk")
+            if kiosk_code:
+                kiosk = request.env["bayaan.kiosk"].sudo().search([
+                    ("company_id", "=", company.id), ("kiosk_code", "=", kiosk_code),
+                ], limit=1)
+                if kiosk:
+                    values["analytic_distribution"] = kiosk._bayaan_analytic_distribution() or False
+            command_lines.append((0, 0, values))
+
+        if len(command_lines) < 2:
+            raise UserError("A journal entry needs at least two non-zero lines.")
+        if abs(total_debit - total_credit) > 0.01:
+            raise UserError(
+                "Entry does not balance: debits %.2f vs credits %.2f." % (total_debit, total_credit)
+            )
+
+        move = AM.create({
+            "move_type": "entry",
+            "journal_id": journal.id,
+            "date": payload.get("date") or fields.Date.context_today(request.env.user),
+            "ref": (payload.get("ref") or "").strip() or "Manual entry",
+            "company_id": company.id,
+            "line_ids": command_lines,
+        })
+        # action_post enforces lock dates + branch-analytic-on-P&L; on failure the whole
+        # jsonrpc transaction rolls back, so no orphan draft is left behind.
+        move.action_post()
+        self._audit_event(
+            "finance", "journal_entry.posted",
+            "Manual journal entry %s" % move.name,
+            "%s · %.2f" % (move.journal_id.code, total_debit),
+            record=move, severity="warning", payload=payload,
+        )
+        return {
+            "id": move.id,
+            "name": move.name,
+            "state": move.state,
+            "date": fields.Date.to_string(move.date),
+            "journal": move.journal_id.code,
+            "ref": move.ref or "",
+            "amount": round(total_debit, 2),
+            "balanced": True,
+        }
+
+    # ==================================================================
+    # Payment registration — settle a vendor bill or customer invoice with a
+    # real reconciled account.payment so the bill/invoice residual + aging update
+    # and the GL stays in step with the subledger. Accountant / manager only.
+    # ==================================================================
+    @http.route("/bayaan/api/register_payment", type="jsonrpc", auth="user")
+    def register_payment(self, **kwargs):
+        payload = self._payload(kwargs)
+        if not (self._is_bayaan_accountant() or self._is_bayaan_manager()):
+            raise UserError("Only Bayaan accountants or managers can register payments.")
+        company = request.env.company
+        move = request.env["account.move"].sudo().browse(int(payload.get("move") or payload.get("id") or 0))
+        if not move.exists() or move.company_id != company or move.state != "posted":
+            raise UserError("Posted invoice or bill not found.")
+        if move.move_type not in ("in_invoice", "out_invoice", "in_refund", "out_refund"):
+            raise UserError("Only customer invoices or vendor bills can be paid here.")
+        if move.payment_state not in ("paid", "in_payment", "reversed"):
+            request.env["bayaan.gl"].sudo()._bayaan_pay_bill(
+                move, date=payload.get("date"),
+                journal_id=payload.get("journal") or payload.get("journal_id"))
+            move.invalidate_recordset(["payment_state", "amount_residual"])
+            self._audit_event("finance", "payment.registered", "Payment registered: %s" % move.name,
+                              "%.2f" % move.amount_total, record=move, severity="warning", payload=payload)
+        return {"id": move.id, "name": move.name, "paymentState": move.payment_state,
+                "residual": round(move.amount_residual, 2), "amount": round(move.amount_total, 2)}
+
+    # ==================================================================
+    # Accounting maintenance — governed, idempotent postings that have no natural
+    # document trigger: the one-time opening-balance, a historical operating-expense
+    # backfill, and a manual depreciation run (monthly depreciation also runs on a
+    # cron). Each underlying bayaan.gl method is source-based/idempotent, so a repeat
+    # call posts nothing extra. Accountant / manager only; every run is audited.
+    # ==================================================================
+    @http.route("/bayaan/api/accounting_control", type="jsonrpc", auth="user")
+    def accounting_control(self, **kwargs):
+        payload = self._payload(kwargs)
+        if not (self._is_bayaan_accountant() or self._is_bayaan_manager()):
+            raise UserError("Only Bayaan accountants or managers can run accounting maintenance.")
+        action = (payload.get("action") or "").lower()
+        company = request.env.company
+        gl = request.env["bayaan.gl"].sudo()
+        upto = fields.Date.to_date(payload.get("date")) if payload.get("date") else None
+        if action == "post_opening_balance":
+            move = gl._bayaan_post_opening_inventory(company=company, date=upto)
+            posted = bool(move)
+            self._audit_event(
+                "finance", "accounting.opening_balance",
+                "Opening balance posted" if posted else "Opening balance already posted",
+                company.name, severity="warning", payload=payload)
+            return {"action": action, "posted": posted, "move": move.id if posted else False,
+                    "message": ("Opening inventory balance posted." if posted else
+                                "Opening balance was already posted (idempotent — nothing changed).")}
+        if action == "post_expenses_backfill":
+            count = gl._bayaan_post_expenses(company=company)
+            self._audit_event(
+                "finance", "accounting.expense_backfill", "Operating-expense backfill",
+                "%d posted" % count, severity="warning", payload=payload)
+            return {"action": action, "posted": count}
+        if action == "post_depreciation":
+            count = gl._bayaan_post_depreciation(company=company, upto_date=upto)
+            self._audit_event(
+                "finance", "accounting.depreciation", "Manual depreciation run",
+                "%d posted" % count, severity="warning", payload=payload)
+            return {"action": action, "posted": count}
+        raise UserError("Unknown accounting control action: %s" % (action or "empty"))
+
+    # ==================================================================
+    # Chart of Accounts management — create / rename / reclassify / archive
+    # accounts so the accountant never has to open Odoo to manage the chart.
+    # Posted accounts are archived (not deleted) to preserve the audit trail.
+    # ==================================================================
+    @http.route("/bayaan/api/chart_account", type="jsonrpc", auth="user")
+    def chart_account(self, **kwargs):
+        payload = self._payload(kwargs)
+        if not (self._is_bayaan_accountant() or self._is_bayaan_manager()):
+            raise UserError("Only Bayaan accountants or managers can manage accounts.")
+        action = (payload.get("action") or "create").lower()
+        Account = request.env["account.account"].sudo()
+        company = request.env.company
+        valid_types = {value[0] for value in Account._fields["account_type"].selection}
+
+        def _serialize(account):
+            return {
+                "id": account.id,
+                "code": account.code or "",
+                "name": account.name or "",
+                "type": account.account_type or "",
+                "active": account.active,
+            }
+
+        if action in ("update", "write", "archive", "unarchive"):
+            account = Account.with_context(active_test=False).browse(int(payload.get("id") or 0))
+            if not account.exists():
+                raise UserError("Account not found.")
+            if "company_ids" in Account._fields and company.id not in account.company_ids.ids:
+                raise UserError("Account does not belong to this company.")
+            values = {}
+            name = (payload.get("name") or "").strip()
+            if name:
+                values["name"] = name
+            new_type = payload.get("type") or payload.get("account_type")
+            if new_type:
+                if new_type not in valid_types:
+                    raise UserError("Invalid account type: %s" % new_type)
+                if new_type != account.account_type:
+                    # Reclassifying an account that already has postings silently moves
+                    # historical balances between P&L and balance-sheet buckets, rewriting
+                    # past statements. Block it once the account is in use (system override only).
+                    in_use = request.env["account.move.line"].sudo().search_count([
+                        ("account_id", "=", account.id), ("parent_state", "=", "posted")])
+                    if in_use and not self._is_system_user():
+                        raise UserError(
+                            "Account %s already has posted entries; its type cannot be changed "
+                            "(that would rewrite historical statements). Create a new account instead."
+                            % (account.code or account.name))
+                    values["account_type"] = new_type
+            new_code = (str(payload.get("code")) if payload.get("code") is not None else "").strip()
+            if new_code and new_code != (account.code or ""):
+                dup = Account.with_context(active_test=False).search(
+                    [("code", "=", new_code), ("id", "!=", account.id)], limit=1)
+                if dup:
+                    raise UserError("Another account already uses code %s." % new_code)
+                values["code"] = new_code
+            if action == "archive":
+                values["active"] = False
+            elif action == "unarchive":
+                values["active"] = True
+            elif "active" in payload:
+                values["active"] = bool(payload.get("active"))
+            account.write(values)
+            self._audit_event("finance", "account.updated", "Account %s updated" % (account.code or account.name),
+                              ", ".join(values.keys()), record=account, severity="warning", payload=payload)
+            return _serialize(account)
+
+        # create
+        code = (str(payload.get("code")) if payload.get("code") is not None else "").strip()
+        name = (payload.get("name") or "").strip()
+        atype = payload.get("type") or payload.get("account_type")
+        if not code or not name:
+            raise UserError("A new account needs both a code and a name.")
+        if atype not in valid_types:
+            raise UserError("Pick a valid account type.")
+        existing = Account.with_context(active_test=False).search([("code", "=", code)], limit=1)
+        if existing:
+            raise UserError("Account code %s already exists (%s)." % (code, existing.name))
+        values = {"code": code, "name": name, "account_type": atype}
+        if "company_ids" in Account._fields:
+            values["company_ids"] = [(6, 0, [company.id])]
+        account = Account.create(values)
+        self._audit_event("finance", "account.created", "Account created: %s %s" % (code, name),
+                          atype, record=account, severity="warning", payload=payload)
+        return _serialize(account)
+
+    # ==================================================================
+    # Per-kiosk capital expenditure — one-time build / equipment / fit-out
+    # costs, capitalized as real fixed assets on the Odoo books.
+    # ==================================================================
+    def _serialize_kiosk_capex(self, capex):
+        snapshot = capex._bayaan_depreciation_snapshot()
+        return {
+            "id": capex.id,
+            "name": capex.name,
+            "kioskId": capex.kiosk_id.kiosk_code or capex.kiosk_id.display_name,
+            "kioskName": capex.kiosk_id.name,
+            "category": capex.category,
+            "categoryLabel": dict(capex._fields["category"].selection).get(capex.category, capex.category),
+            "amount": capex.amount,
+            "date": fields.Date.to_string(capex.date),
+            "usefulLifeMonths": capex.useful_life_months,
+            "supplier": capex.supplier_id.name or "",
+            "note": capex.note or "",
+            "state": capex.state,
+            "error": capex.error_message or "",
+            "moveName": capex.move_id.name or "",
+            "moveId": capex.move_id.id or False,
+            "assetAccount": capex.asset_account_id.code or "",
+            "fundingAccount": capex.funding_account_id.code or "",
+            "monthlyDepreciation": snapshot["monthlyDepreciation"],
+            "monthsElapsed": snapshot["monthsElapsed"],
+            "depreciatedToDate": snapshot["depreciatedToDate"],
+            "netBookValue": snapshot["netBookValue"],
+        }
+
+    def _kiosk_capex_totals(self, rows):
+        posted = rows.filtered(lambda r: r.state == "posted")
+        invested = sum(posted.mapped("amount"))
+        nbv = sum(r._bayaan_depreciation_snapshot()["netBookValue"] for r in posted)
+        return {
+            "invested": round(invested, 2),
+            "netBookValue": round(nbv, 2),
+            "count": len(rows),
+            "posted": len(posted),
+            "failed": len(rows.filtered(lambda r: r.state == "failed")),
+        }
+
+    @http.route("/bayaan/api/kiosk_capex", type="jsonrpc", auth="user")
+    def kiosk_capex(self, **kwargs):
+        payload = self._payload(kwargs)
+        action = (payload.get("action") or payload.get("type") or "").lower()
+        Capex = request.env["bayaan.kiosk.capex"].sudo()
+        is_list = action in ("read", "list") or (
+            not action and not payload.get("amount") and not payload.get("name")
+        )
+        if is_list:
+            self._require_chain_read_scope("read kiosk capital costs")
+            domain = [("company_id", "=", request.env.company.id), ("active", "=", True)]
+            kiosk_code = payload.get("kiosk")
+            if kiosk_code:
+                kiosk = request.env["bayaan.kiosk"].sudo().search([
+                    ("company_id", "=", request.env.company.id),
+                    ("kiosk_code", "=", kiosk_code),
+                ], limit=1)
+                domain.append(("kiosk_id", "=", kiosk.id if kiosk else 0))
+            rows = Capex.search(domain)
+            return {
+                "capex": [self._serialize_kiosk_capex(row) for row in rows],
+                "totals": self._kiosk_capex_totals(rows),
+            }
+        if action in ("delete", "remove", "reverse"):
+            self._require_manager_scope("reverse kiosk capital costs")
+            row = Capex.browse(int(payload.get("id") or 0))
+            if not row.exists() or row.company_id != request.env.company:
+                raise UserError("Kiosk capital cost not found.")
+            row._bayaan_reverse()
+            self._audit_event("finance", "capex.reversed", "Kiosk CapEx reversed: %s" % row.name,
+                              row.kiosk_id.kiosk_code, record=row, severity="warning", payload=payload)
+            return {"reversed": True, "id": row.id}
+        # default: create + capitalize
+        self._require_manager_scope("record kiosk capital costs")
+        kiosk = self._require_kiosk(payload.get("kiosk"))
+        name = (payload.get("name") or "").strip()
+        amount = self._float_value(payload.get("amount"), 0.0)
+        category = (payload.get("category") or "equipment").strip()
+        valid_categories = set(dict(Capex._fields["category"].selection))
+        if category not in valid_categories:
+            category = "other"
+        if not name or amount <= 0:
+            raise UserError("Kiosk capital cost requires a name and a positive amount.")
+        supplier = False
+        supplier_ref = payload.get("supplier") or payload.get("supplierId")
+        if supplier_ref:
+            Partner = request.env["res.partner"].sudo()
+            if str(supplier_ref).isdigit():
+                supplier = Partner.browse(int(supplier_ref)).exists()
+            if not supplier:
+                supplier = Partner.search([("name", "=", str(supplier_ref))], limit=1)
+        useful_life = int(self._float_value(payload.get("usefulLifeMonths") or payload.get("useful_life_months"), 36) or 0)
+        capex = Capex.create({
+            "name": name,
+            "kiosk_id": kiosk.id,
+            "category": category,
+            "amount": amount,
+            "date": payload.get("date") or fields.Date.context_today(request.env.user),
+            "useful_life_months": useful_life,
+            "supplier_id": supplier.id if supplier else False,
+            "note": (payload.get("note") or "").strip() or False,
+            "company_id": request.env.company.id,
+        })
+        capex._bayaan_post_capitalization()
+        self._audit_event(
+            "finance",
+            "capex.created" if capex.state == "posted" else "capex.failed",
+            "Kiosk CapEx %s: %s" % (kiosk.kiosk_code, capex.name),
+            "%s %.0f %s" % (category, amount, capex.state),
+            record=capex,
+            kiosk=kiosk,
+            severity="warning" if capex.state == "posted" else "critical",
+            payload=payload,
+        )
+        return self._serialize_kiosk_capex(capex)
+
+    # ==================================================================
+    # Tax / VAT settings — Iraq has no VAT (0%), but the rate is tenant-
+    # configurable. Saving it normalizes every POS product + the company
+    # default tax in Odoo and drives the POS receipt rate. The kiosk_sale
+    # path records the sticker price as the order total, so for a tax-
+    # inclusive 0% rate nothing changes in what the customer pays.
+    # ==================================================================
+    def _bayaan_pos_taxable_products(self):
+        return request.env["product.template"].sudo().search([("available_in_pos", "=", True)])
+
+    def _bayaan_product_sale_rate(self, product):
+        sale_taxes = product.taxes_id.filtered(lambda t: t.type_tax_use == "sale")
+        if not sale_taxes:
+            return 0.0
+        rates = sorted({round(t.amount, 4) for t in sale_taxes})
+        return rates[0] if len(rates) == 1 else -1.0  # -1 == mixed/multiple
+
+    def _serialize_tax_settings(self):
+        company = request.env.company
+        vat = self._bayaan_vat_config()
+        products = self._bayaan_pos_taxable_products()
+        on_rate = sum(1 for p in products if abs(self._bayaan_product_sale_rate(p) - vat["rate"]) < 0.001)
+        return {
+            "rate": vat["rate"],
+            "priceInclude": vat["priceInclude"],
+            "country": company.country_id.name or "",
+            "countryCode": company.country_id.code or "",
+            "currency": company.currency_id.name,
+            "company": company.name,
+            "posProductCount": len(products),
+            "productsOnRate": on_rate,
+            "productsOther": len(products) - on_rate,
+            "engine": "odoo_account",
+        }
+
+    def _bayaan_resolve_sale_tax(self, rate, price_include):
+        company = request.env.company
+        Tax = request.env["account.tax"].sudo()
+        tax = Tax.search([
+            ("company_id", "=", company.id),
+            ("type_tax_use", "=", "sale"),
+            ("amount_type", "=", "percent"),
+            ("amount", "=", rate),
+        ], limit=1)
+        if not tax:
+            vals = {
+                "name": ("VAT %g%%" % rate) if rate else "VAT 0%",
+                "amount": rate,
+                "amount_type": "percent",
+                "type_tax_use": "sale",
+                "company_id": company.id,
+            }
+            # price_include was a boolean in older Odoo; v19 uses price_include_override.
+            if "price_include" in Tax._fields:
+                vals["price_include"] = bool(price_include)
+            elif "price_include_override" in Tax._fields:
+                vals["price_include_override"] = "tax_included" if price_include else "tax_excluded"
+            tax = Tax.create(vals)
+        return tax
+
+    def _bayaan_apply_vat(self, rate, price_include, set_country_iraq):
+        company = request.env.company
+        Product = request.env["product.template"].sudo()
+        params = request.env["ir.config_parameter"].sudo()
+        products = self._bayaan_pos_taxable_products()
+        if rate and rate > 0:
+            tax = self._bayaan_resolve_sale_tax(rate, price_include)
+            products.write({"taxes_id": [(6, 0, [tax.id])]})
+            company.sudo().account_sale_tax_id = tax.id
+        else:
+            # 0% — clear product sale taxes; default new products to a 0% sale tax.
+            zero_tax = self._bayaan_resolve_sale_tax(0.0, price_include)
+            products.write({"taxes_id": [(5, 0, 0)]})
+            if zero_tax:
+                company.sudo().account_sale_tax_id = zero_tax.id
+        if set_country_iraq:
+            iraq = request.env.ref("base.iq", raise_if_not_found=False)
+            if not iraq:
+                iraq = request.env["res.country"].sudo().search([("code", "=", "IQ")], limit=1)
+            if iraq:
+                company.sudo().country_id = iraq.id
+        params.set_param("bayaan.vat_rate.%s" % company.id, str(rate))
+        params.set_param("bayaan.vat_price_include.%s" % company.id, "1" if price_include else "0")
+        return len(products)
+
+    @http.route("/bayaan/api/tax_settings", type="jsonrpc", auth="user")
+    def tax_settings(self, **kwargs):
+        payload = self._payload(kwargs)
+        action = (payload.get("action") or "").lower()
+        has_write = ("rate" in payload) or action in ("save", "set", "update", "apply")
+        if not has_write:
+            self._require_chain_read_scope("read tax settings")
+            return self._serialize_tax_settings()
+        self._require_manager_scope("change tax settings")
+        rate = self._float_value(payload.get("rate"), 0.0)
+        if rate < 0 or rate > 100:
+            raise UserError("VAT rate must be between 0 and 100.")
+        price_include = payload.get("priceInclude")
+        price_include = True if price_include is None else bool(price_include)
+        set_country = bool(payload.get("setCountryIraq"))
+        updated = self._bayaan_apply_vat(rate, price_include, set_country)
+        self._audit_event("finance", "tax.updated", "VAT rate set to %g%%" % rate,
+                          "%d POS products updated" % updated, severity="warning", payload=payload)
+        result = self._serialize_tax_settings()
+        result["updated"] = updated
+        return result
+
+    # ==================================================================
+    # Company / fiscal setup + period lock — the one-time / advanced config
+    # the accountant would otherwise open Odoo for. Defaults to the Iraqi
+    # domain (country Iraq, IQD, calendar fiscal year, 0% VAT). The period
+    # lock sets res.company.fiscalyear_lock_date, which account_move.py
+    # already enforces (no posting on/before the lock date).
+    # ==================================================================
+    def _serialize_company_config(self):
+        company = request.env.company
+        # fiscalyear_last_month is a Selection (string "1".."12"); normalise to int.
+        try:
+            fy_month = int(company.fiscalyear_last_month)
+        except (TypeError, ValueError):
+            fy_month = 12
+        return {
+            "company": company.name,
+            "country": company.country_id.name or "",
+            "countryCode": company.country_id.code or "",
+            "currency": company.currency_id.name,
+            "fiscalYearDay": company.fiscalyear_last_day,
+            "fiscalYearMonth": fy_month,
+            "lockDate": fields.Date.to_string(company.fiscalyear_lock_date) if company.fiscalyear_lock_date else "",
+            "taxLockDate": fields.Date.to_string(company.tax_lock_date) if company.tax_lock_date else "",
+            "vat": self._bayaan_vat_config()["rate"],
+            "isIraqiDefault": (company.country_id.code == "IQ" and company.fiscalyear_last_day == 31 and fy_month == 12),
+        }
+
+    @http.route("/bayaan/api/company_config", type="jsonrpc", auth="user")
+    def company_config(self, **kwargs):
+        payload = self._payload(kwargs)
+        action = (payload.get("action") or "read").lower()
+        company = request.env.company
+        if action in ("read", ""):
+            self._require_chain_read_scope("read company configuration")
+            return self._serialize_company_config()
+
+        if not (self._is_bayaan_accountant() or self._is_bayaan_manager()):
+            raise UserError("Only Bayaan accountants or managers can change company configuration.")
+
+        if action in ("lock", "set_lock", "close_period"):
+            values = {}
+            raw_lock = payload.get("lockDate")
+            # An explicit empty string clears the lock; a date closes everything up to it.
+            new_lock = self._parse_report_date(raw_lock, None) if raw_lock else False
+            current_lock = company.fiscalyear_lock_date
+            # Separation of duties: an accountant may TIGHTEN the lock (set it / move it
+            # forward), but only a manager may CLEAR it or move it BACKWARD — re-opening an
+            # already-locked period. The one hard audit guardrail must not be removable by
+            # the role it constrains.
+            loosening = bool(current_lock) and (not new_lock or new_lock < current_lock)
+            if loosening and not self._is_bayaan_manager():
+                raise UserError(
+                    "Only a manager can clear or move the accounting lock date backward. "
+                    "An accountant can set it or move it forward, not re-open a locked period.")
+            values["fiscalyear_lock_date"] = new_lock
+            if "taxLockDate" in payload:
+                raw_tax = payload.get("taxLockDate")
+                values["tax_lock_date"] = self._parse_report_date(raw_tax, None) if raw_tax else False
+            company.sudo().write(values)
+            self._audit_event(
+                "finance", "period.lock",
+                "Accounting lock date set to %s" % (values["fiscalyear_lock_date"] or "cleared"),
+                "", severity="warning", payload=payload,
+            )
+            return self._serialize_company_config()
+
+        if action in ("update", "update_company", "iraqi_defaults", "apply_iraqi_defaults"):
+            values = {}
+            name = (payload.get("companyName") or "").strip()
+            if name:
+                values["name"] = name
+            apply_iraq = action in ("iraqi_defaults", "apply_iraqi_defaults") or payload.get("setCountryIraq")
+            if apply_iraq:
+                iraq = request.env.ref("base.iq", raise_if_not_found=False)
+                if not iraq:
+                    iraq = request.env["res.country"].sudo().search([("code", "=", "IQ")], limit=1)
+                if iraq:
+                    values["country_id"] = iraq.id
+                values["fiscalyear_last_day"] = 31
+                values["fiscalyear_last_month"] = "12"  # Selection field expects a string
+            else:
+                if payload.get("fiscalYearDay"):
+                    values["fiscalyear_last_day"] = max(1, min(31, int(self._float_value(payload.get("fiscalYearDay"), 31))))
+                if payload.get("fiscalYearMonth"):
+                    values["fiscalyear_last_month"] = str(max(1, min(12, int(self._float_value(payload.get("fiscalYearMonth"), 12)))))
+            if values:
+                company.sudo().write(values)
+            self._audit_event("finance", "company.config", "Company configuration updated",
+                              ", ".join(values.keys()), severity="warning", payload=payload)
+            return self._serialize_company_config()
+
+        raise UserError("Unsupported company config action: %s" % action)
 
     @http.route("/bayaan/api/hr_schedule", type="jsonrpc", auth="user")
     def hr_schedule(self, **kwargs):
@@ -4137,6 +5460,11 @@ class BayaanKioskApi(http.Controller):
         employee = self._employee(payload.get("employee") or payload.get("employee_id") or payload.get("employeeId"))
         if employee.kiosk_id:
             self._require_kiosk_scope(employee.kiosk_id, "review")
+        else:
+            # Kiosk-less (HQ) employee: the kiosk-scope path is skipped, and the create
+            # below runs via sudo() which bypasses the ORM ACL — so require an explicit
+            # manager scope here, otherwise any role could record an HQ payroll adjustment.
+            self._require_manager_scope("record payroll adjustments")
         adjustment_type = payload.get("type") or payload.get("kind")
         if adjustment_type not in ("bonus", "deduction", "advance", "cash_shortage"):
             raise UserError("Unsupported payroll adjustment type: %s" % (adjustment_type or "empty value"))
@@ -5438,6 +6766,25 @@ class BayaanKioskApi(http.Controller):
             )
             period_revenue = read_group_sum(PosOrder, period_sale_domain, "amount_total")
             period_cogs = read_group_sum(Consumption, period_consumption_domain, "total_cost")
+            # Finished/hybrid goods carry std-cost COGS that the recipe consumption ledger
+            # does NOT capture (e.g. a cake slice). The GL poster (_bayaan_post_cogs) adds it
+            # on top, so the operational COGS must too — otherwise the Finance overview
+            # understates COGS and overstates gross margin vs the formal P&L / ledger.
+            finished_cogs_by_kiosk = {}
+            finished_cogs_total = 0.0
+            for fline in request.env["pos.order.line"].sudo().search([
+                ("order_id.company_id", "=", company.id),
+                ("order_id.state", "in", ["paid", "done", "invoiced"]),
+                ("order_id.date_order", ">=", start),
+                ("order_id.date_order", "<", end),
+                ("product_id.product_tmpl_id.bayaan_consumption_mode", "in", ["finished", "hybrid"]),
+                ("qty", ">", 0),
+            ]):
+                cost = (fline.qty or 0.0) * (fline.product_id.standard_price or 0.0)
+                kid = fline.order_id.bayaan_kiosk_id.id if fline.order_id.bayaan_kiosk_id else False
+                finished_cogs_by_kiosk[kid] = finished_cogs_by_kiosk.get(kid, 0.0) + cost
+                finished_cogs_total += cost
+            period_cogs = round(period_cogs + finished_cogs_total, 2)
             period_waste = read_group_sum(Waste, period_waste_domain, "estimated_cost")
             period_cash_expected = read_group_sum(ShiftClose, period_closing_domain, "expected_cash") or period_payments["cash"]
             period_cash_variance = read_group_sum(ShiftClose, period_closing_domain, "cash_variance")
@@ -5470,6 +6817,8 @@ class BayaanKioskApi(http.Controller):
                 (g[0].id if g[0] else False): (g[1] or 0.0)
                 for g in Consumption._read_group(period_consumption_domain, ["kiosk_id"], ["total_cost:sum"])
             }
+            for _kid, _fc in finished_cogs_by_kiosk.items():
+                period_cogs_by_kiosk[_kid] = period_cogs_by_kiosk.get(_kid, 0.0) + _fc
             period_waste_by_kiosk = {
                 (g[0].id if g[0] else False): (g[1] or 0.0)
                 for g in Waste._read_group(period_waste_domain, ["kiosk_id"], ["estimated_cost:sum"])
@@ -5620,6 +6969,16 @@ class BayaanKioskApi(http.Controller):
             row = kiosk_summaries.get(ledger.kiosk_id.id)
             if row:
                 row["cogs"] += ledger.total_cost
+        # Finished/hybrid std-cost COGS (e.g. cake slices) — not captured by the recipe
+        # consumption ledger, so add it from the day's order lines to match the GL poster.
+        for sale in sales:
+            row = kiosk_summaries.get(sale.bayaan_kiosk_id.id)
+            if not row:
+                continue
+            for line in sale.lines:
+                mode = line.product_id.product_tmpl_id.bayaan_consumption_mode
+                if mode in ("finished", "hybrid") and line.qty > 0:
+                    row["cogs"] += line.qty * (line.product_id.standard_price or 0.0)
         # Per-kiosk staff cost: prorated daily share of each kiosk-assigned employee's
         # monthly salary. Office staff (no kiosk) stay as company overhead, not per-kiosk.
         days_this_month = max(days_in_month(today), 1)
@@ -5716,8 +7075,12 @@ class BayaanKioskApi(http.Controller):
                 "totals": {
                     "salesToday": revenue_total,
                     "ordersToday": order_count,
-                    "profitEstimate": revenue_total - consumption_cost - waste_cost + variance_impact,
-                    "cogs": consumption_cost,
+                    # Use the COMPLETE today COGS (recipe consumption + finished-goods COGS),
+                    # the same figure the daily report period and the GL post — not the
+                    # recipe-only `consumption_cost`, which understated COGS and so overstated
+                    # profit. report_periods["daily"] is built above and covers today (today..today).
+                    "profitEstimate": revenue_total - report_periods["daily"]["cogs"] - waste_cost + variance_impact,
+                    "cogs": report_periods["daily"]["cogs"],
                     "wasteCost": waste_cost,
                     "cashVariance": cash_variance_total,
                     "stockVarianceValue": stock_variance_value,
@@ -6316,7 +7679,7 @@ class BayaanKioskApi(http.Controller):
                 if token in self._payment_method_tokens(method):
                     return method
         raise UserError(
-            "Payment method '%s' is not configured on POS %s. Configure it in Odoo first."
+            "Payment method '%s' is not configured on POS %s. Configure it in settings first."
             % (method_name or "empty", session.config_id.display_name)
         )
 
@@ -6372,7 +7735,12 @@ class BayaanKioskApi(http.Controller):
         today = ShiftClose._bayaan_local_day(fields.Datetime.now())
         existing = Session.search([
             ("config_id", "=", kiosk.pos_config_id.id),
-            ("state", "in", ("opening_control", "opened")),
+            # closing_control included: a close that fails mid-way (e.g. a
+            # blocked accounting post) leaves the session in closing_control,
+            # and trying to create a fresh one then raises Odoo's "Another
+            # session is already opened for this point of sale." Recover the
+            # wedged session here instead of crashing the cashier login.
+            ("state", "in", ("opening_control", "opened", "closing_control")),
         ], order="start_at desc", limit=1)
         if existing:
             stale = ShiftClose._bayaan_local_day(existing.start_at or fields.Datetime.now()) < today
@@ -6405,11 +7773,20 @@ class BayaanKioskApi(http.Controller):
         cashier = request.env.user
         opening_cash = self._float_value(payload.get("opening_cash"), 0.0)
         session = self._open_kiosk_session(kiosk, cashier, opening_cash)
+        # The shared-tablet pick-your-name screen may select a colleague; the
+        # official pos.session stays under the authenticated user, but the
+        # operating cashier is recorded on the audit trail.
+        picked_cashier = str(payload.get("cashier") or "").strip()
+        cashier_detail = (
+            "Shift cashier %s (signed in as %s)" % (picked_cashier, cashier.name)
+            if picked_cashier and picked_cashier != cashier.name
+            else "Cashier %s" % cashier.name
+        )
         self._audit_event(
             "pos",
             "session.opened",
             "POS session opened: %s" % kiosk.kiosk_code,
-            "Cashier %s" % cashier.name,
+            cashier_detail,
             record=session,
             kiosk=kiosk,
             severity="success",
@@ -7038,6 +8415,9 @@ class BayaanKioskApi(http.Controller):
             else:
                 for picking in open_pickings:
                     self._validate_picking(picking)
+            # Book the received goods as a real vendor bill (Dr Inventory / Cr AP)
+            # so purchases build inventory and payables on the formal books.
+            request.env["bayaan.gl"].sudo()._bayaan_create_vendor_bill(order, pay=bool(payload.get("pay")))
         elif action == "cancel":
             order.button_cancel()
         else:
@@ -7202,6 +8582,9 @@ class BayaanKioskApi(http.Controller):
                 raise UserError("No warehouse receipt was created for %s." % order.name)
             for picking in open_pickings:
                 self._validate_picking(picking)
+            # Book the received goods as a real vendor bill (Dr Inventory / Cr AP) so an
+            # AI-received supplier invoice produces a payable like the manual receive path.
+            request.env["bayaan.gl"].sudo()._bayaan_create_vendor_bill(order, pay=bool(payload.get("pay")))
             order.invalidate_recordset()
             receipt_state = (
                 "none" if not order.picking_ids
@@ -7340,6 +8723,27 @@ class BayaanKioskApi(http.Controller):
             counted_overrides=counted_overrides or None,
             preserve_counted=False,
         )
+
+        # Finalize the linked Odoo POS session through the OFFICIAL close workflow so it
+        # posts its own Z-report account.move (revenue + native VAT + cash/card clearing),
+        # then post the deterministic Bayaan cost side (recipe COGS + waste). We close the
+        # session(s) tied to THIS close's orders (not every open session on the config).
+        # No exception is swallowed: any failure propagates so the whole shift close rolls
+        # back atomically — a failed accounting post must never leave a "successful" close.
+        # Close ONLY the sessions tied to THIS close's orders. Never fall back to a
+        # config-level search of every open session — that would let one kiosk's close
+        # accidentally close an unrelated open session sharing the pos.config (P0.1).
+        # A close with no linked orders (e.g. a cash-only variance close) legitimately
+        # closes no session; the lazy-on-open + stale-session cron handle abandoned
+        # sessions. _bayaan_finalize_pos_sessions on an empty set is a safe no-op.
+        sessions = record.pos_order_ids.mapped("session_id").filtered(lambda s: s.state != "closed")
+        counted = {sessions.id: record.actual_cash} if len(sessions) == 1 else None
+        request.env["bayaan.shift.close"].sudo()._bayaan_finalize_pos_sessions(sessions, counted_cash=counted)
+        gl = request.env["bayaan.gl"].sudo()
+        df = fields.Date.to_date(record.opened_at) if record.opened_at else fields.Date.context_today(request.env.user)
+        dt = fields.Date.to_date(record.closed_at) if record.closed_at else fields.Date.context_today(request.env.user)
+        gl._bayaan_post_cogs(request.env.company, kiosk=kiosk, date_from=df, date_to=dt)
+        gl._bayaan_post_waste(request.env.company, kiosk=kiosk, date_from=df, date_to=dt)
 
         self._audit_event(
             "closing",

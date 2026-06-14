@@ -512,6 +512,8 @@ class BayaanPayrollRun(models.Model):
             if run.state != "approved":
                 raise UserError("Only approved payroll can be marked paid.")
             run.state = "paid"
+            # Post the wage expense to the real ledger (Dr Salaries & Wages / Cr Bank).
+            self.env["bayaan.gl"].sudo()._bayaan_post_payroll(run)
 
 
 class BayaanPayrollLine(models.Model):

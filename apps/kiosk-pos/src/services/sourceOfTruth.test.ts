@@ -215,6 +215,23 @@ describe("simulation source-of-truth gateway helpers", () => {
     });
   });
 
+  it("posts the AI product-photo request to ai_image_generate and returns the base64 draft", async () => {
+    const fetchSpy = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({ result: { engine: "odoo_pos", configured: true, imageBase64: "SU1H", mimeType: "image/png" } }),
+    }));
+    await withLiveOdooWindow(fetchSpy as unknown as typeof fetch, async () => {
+      const gateway = createSourceOfTruthGateway();
+      const result = await gateway.generateProductImage({ name: "Espresso", category: "Coffee" }) as { imageBase64?: string; mimeType?: string };
+      const [url, init] = fetchSpy.mock.calls[0]!;
+      const body = JSON.parse(String(init?.body));
+      expect(String(url)).toMatch(/\/bayaan\/api\/ai_image_generate$/);
+      expect(result.imageBase64).toBe("SU1H");
+      expect(result.mimeType).toBe("image/png");
+      expect(body.params.payload).toMatchObject({ name: "Espresso", category: "Coffee" });
+    });
+  });
+
   it("posts an invoice photo to the vision extract route and the confirmed draft to invoice_commit", async () => {
     const extractSpy = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => ({
       ok: true,
@@ -378,6 +395,31 @@ describe("simulation source-of-truth gateway helpers", () => {
         amount: 44_000,
         date: "2026-05-10",
         note: "Payroll-adjacent store operating cost",
+      });
+    });
+  });
+
+  it("sends the reversal reason (and optional date) to the journal_entry reverse route", async () => {
+    const fetchSpy = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({ result: { id: 7, name: "REV/2026/0007", state: "posted", reversedFrom: "MISC/2026/0003" } }),
+    }));
+
+    await withLiveOdooWindow(fetchSpy as unknown as typeof fetch, async () => {
+      const gateway = createSourceOfTruthGateway();
+      const result = await gateway.reverseJournalEntry(3, "correcting a mistaken capital injection", "2026-06-13") as { reversedFrom: string };
+      const firstCall = fetchSpy.mock.calls[0];
+      if (!firstCall) throw new Error("reverseJournalEntry did not call fetch");
+      const [url, init] = firstCall;
+      const body = JSON.parse(String(init?.body));
+
+      expect(result).toMatchObject({ reversedFrom: "MISC/2026/0003" });
+      expect(String(url)).toMatch(/\/bayaan\/api\/journal_entry$/);
+      expect(body.params.payload).toMatchObject({
+        action: "reverse",
+        id: 3,
+        reason: "correcting a mistaken capital injection",
+        date: "2026-06-13",
       });
     });
   });

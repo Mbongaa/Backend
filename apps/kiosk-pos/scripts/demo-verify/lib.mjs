@@ -11,7 +11,54 @@ export const OUT = path.resolve(__dirname, "../../verification/demo-verify");
 fs.mkdirSync(OUT, { recursive: true });
 
 export async function launch() {
-  return chromium.launch();
+  // Prefer Playwright's bundled Chromium, but fall back to a system Chrome/Edge when the
+  // bundled binary is absent (CI / fresh machine without `npx playwright install`). A
+  // missing bundled Chromium must NOT abort the whole suite.
+  const attempts = [{}, { channel: "chrome" }, { channel: "msedge" }];
+  let lastErr;
+  for (const opts of attempts) {
+    try {
+      return await chromium.launch({ headless: true, ...opts });
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("Unable to launch a browser: no bundled Chromium and no system Chrome/Edge found.");
+}
+
+// Recipe / made-to-order products open a size/modifier popup before they add to the cart.
+// Dismiss it by picking a size and confirming, so the caller can proceed to Charge.
+// A no-op when no popup is showing (finished goods add straight to the cart).
+export async function handleModifierPopup(page) {
+  const body = await bodyText(page);
+  if (/Choose|\bSize\b|الحجم|اختر|Medium|Large|Small/i.test(body)) {
+    await page.getByRole("button", { name: /Medium|^M$|متوسط/ }).first().click().catch(() => {});
+    await page.getByRole("button", { name: /Add to (order|cart)|إضافة|^Add$/ }).first().click().catch(() => {});
+    await page.waitForTimeout(600);
+  }
+}
+
+// Tie-preserving cashier close via /bayaan/api/shift_close. A verification run that opens a
+// POS session MUST close it, or the day's sale sits in an open session with no Z-report move
+// and the books stop tying. We also pass a CLEAN ingredient count (counted == current kiosk
+// qty), which equals `expected` in the close math (expected = current_qty), so the close
+// shows ~0 variance — a realistic "counted and matches" close instead of an alarming
+// uncounted full-stock loss. `cashAmount` is the CASH collected (0 for card-only sales) so
+// the native close's cash register reconciles with no phantom difference.
+export async function closeKioskSession(cookie, kiosk, orderNames, cashAmount = 0) {
+  const names = (Array.isArray(orderNames) ? orderNames : [orderNames]).filter(Boolean);
+  const b = await api("/bayaan/api/chain_bootstrap", cookie);
+  const ingredient_counts = (b?.kiosk_stock_rows || [])
+    .filter((r) => r.kiosk === kiosk && r.item)
+    .map((r) => ({ ingredient: r.item, actual_qty: Number(r.actual_qty || 0) }));
+  return api("/bayaan/api/shift_close", cookie, {
+    kiosk,
+    opened_at: new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace("T", " "),
+    expected_cash: cashAmount,
+    actual_cash: cashAmount,
+    pos_invoices: names,
+    ingredient_counts,
+  });
 }
 
 // A page wired with console/page/request error capture. Ignore offline font noise.
@@ -22,7 +69,17 @@ export async function makePage(browser, { width = 1680, height = 1020 } = {}) {
   const ignore = (t) =>
     t.includes("ERR_NETWORK_ACCESS_DENIED") ||
     t.includes("fonts.gstatic.com") ||
-    t.includes("fonts.googleapis.com");
+    t.includes("fonts.googleapis.com") ||
+    // Transient environmental network/DNS failures (e.g. a font/icon CDN that didn't
+    // resolve this run). Chromium echoes resource-load failures to the console WITHOUT the
+    // URL ("Failed to load resource: net::ERR_NAME_NOT_RESOLVED"), so the URL-based ignore
+    // above can't catch them — match the network error code instead. Real broken app assets
+    // still surface via the requestfailed (URL) and HTTP 5xx handlers below.
+    t.includes("ERR_NAME_NOT_RESOLVED") ||
+    t.includes("ERR_INTERNET_DISCONNECTED") ||
+    t.includes("ERR_CONNECTION") ||
+    t.includes("ERR_NETWORK_CHANGED") ||
+    t.includes("ERR_TIMED_OUT");
   page.on("console", (m) => { if (m.type() === "error" && !ignore(m.text())) errors.push("console: " + m.text().slice(0, 200)); });
   page.on("pageerror", (e) => errors.push("pageerror: " + (e.message || "").slice(0, 200)));
   page.on("requestfailed", (r) => { const u = r.url(); if (!ignore(u)) errors.push("reqfail: " + u.slice(0, 160)); });

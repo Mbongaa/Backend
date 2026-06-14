@@ -102,6 +102,14 @@ class BayaanTestBase(TransactionCase):
             "available_in_pos": True,
             "default_code": "MENU-OJ",
             "bayaan_consumption_mode": "recipe",
+            # Iraq default VAT is 0%; clear any chart-template default sale tax so a
+            # native POS close posts a balanced Z-report (a tax with no configured
+            # account would otherwise leave the session move out of balance). We do NOT
+            # pin property_account_income_id to 400000 — the native close would then post
+            # revenue there too and collide with the (separately tested) Bayaan revenue
+            # method on that code. The native close uses the chart's default income
+            # account, which the account-agnostic tripwire test asserts against.
+            "taxes_id": [(5, 0, 0)],
         })
 
         # Stock the kiosk location with starting quantities.

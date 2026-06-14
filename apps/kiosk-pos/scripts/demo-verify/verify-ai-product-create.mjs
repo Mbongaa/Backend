@@ -73,7 +73,9 @@ async function run() {
     log("4b) Attach a product image via the new drag/drop field…");
     let imageAttached = false;
     try {
-      const imgInput = page.locator('label:has-text("Drag an image here") input[type="file"]').first();
+      // Copy-robust: matches the image-pane dropzone label in both the old
+      // ("Drag an image here") and redesigned ("drag one here") empty-state copy.
+      const imgInput = page.locator('label:has-text("drag") input[type="file"]').first();
       await imgInput.setInputFiles(TMP_PNG, { timeout: 8000 });
       await page.waitForTimeout(800);
       imageAttached = await page.locator('label:has-text("Remove") , img[alt=""]').first().isVisible({ timeout: 4000 }).catch(() => false);

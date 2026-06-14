@@ -701,9 +701,13 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
         self.assertAlmostEqual(by_ingredient[self.ingredient_cup.id]["consumed_qty"], 4.0)
 
     def test_shift_close_approval_locks_record(self):
+        # opened_at = now (not now-30min): this close must land in TODAY's daily period
+        # for the chain_bootstrap cashVariance assertion below. A 30-minutes-ago stamp
+        # crosses the day boundary when the suite runs just after midnight, dropping the
+        # close out of "today" so the daily aggregate read returns no rows.
         close = self._jsonrpc("/bayaan/api/shift_close", {
             "kiosk": "K-TEST",
-            "opened_at": fields.Datetime.to_string(datetime.now() - timedelta(minutes=30)),
+            "opened_at": fields.Datetime.to_string(datetime.now()),
             "expected_cash": 100.0,
             "actual_cash": 85.0,
         })
@@ -771,3 +775,34 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
         })
         self.assertIn("error", approved)
         self.assertIn("missing or failed recipe consumption", str(approved["error"]))
+
+    def test_shift_close_without_orders_does_not_batch_close_sessions(self):
+        """P0.1: a close with no linked orders (e.g. a cash-only variance close) must
+        NOT fall back to closing every open session on the kiosk's pos.config. The old
+        config-level fallback could close an unrelated open session by accident."""
+        sale = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-NO-BATCH-CLOSE",
+            "items": [{"product": "MENU-OJ", "name": "Orange Juice", "qty": 1, "price_unit": 5500.0}],
+            "payments": [{"method": "cash", "amount": 5500.0}],
+        })
+        if "error" in sale:
+            self.fail("kiosk_sale errored: %s" % sale["error"])
+        session = self.env["pos.session"].sudo().search([
+            ("config_id", "=", self.pos_config.id),
+            ("state", "in", ("opening_control", "opened")),
+        ], limit=1)
+        self.assertTrue(session, "a sale must leave an open session on the config")
+
+        close = self._jsonrpc("/bayaan/api/shift_close", {
+            "kiosk": "K-TEST",
+            "opened_at": fields.Datetime.to_string(datetime.now() - timedelta(minutes=30)),
+            "expected_cash": 0.0,
+            "actual_cash": 0.0,
+        })
+        if "error" in close:
+            self.fail("variance shift_close errored: %s" % close["error"])
+        session.invalidate_recordset(["state"])
+        self.assertNotEqual(
+            session.state, "closed",
+            "a close with no linked orders must not batch-close the open session on the config")

@@ -9,7 +9,9 @@ from . import bayaan_waste
 from . import bayaan_audit_event
 from . import bayaan_realtime
 from . import account_move
+from . import bayaan_gl
 from . import pos_order
+from . import pos_session
 from . import stock_scrap
 from . import stock_picking
 from . import stock_landed_cost
@@ -18,5 +20,6 @@ from . import bayaan_alert
 from . import bayaan_recurring_purchase
 from . import bayaan_hr_payroll
 from . import bayaan_finance
+from . import bayaan_kiosk_capex
 from . import ir_websocket
 from . import demo_seed

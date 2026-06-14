@@ -52,11 +52,15 @@ export async function runGroupA(browser, rec) {
       orders: t.ordersToday || 0,
       profit: Math.round(t.profitEstimate || 0),
       cashExp: Math.round(t.cashExpected || 0),
-      cogs: Math.round(t.cogs || 0),
+      // The Finance P&L COGS row renders the active-period (Daily) figure, daily.cogs —
+      // NOT the summary.totals.cogs aggregate. Match what the screen actually shows.
+      cogs: Math.round((daily.cogs != null ? daily.cogs : t.cogs) || 0),
       netAfterPayroll: Math.round(daily.netProfitAfterPayroll || 0),
     };
-    // Overview shows full numbers: sales, profit estimate, cash expected, orders.
-    SCREENS.find((s) => s.id === "A1").nums = [gt.sales, gt.profit, gt.cashExp, gt.orders];
+    // Overview shows full numbers: sales, profit estimate, cash expected, orders. The
+    // "Profit estimate" tile binds netProfitAfterPayroll (summaryTotals.profitEstimate is
+    // set to the daily net-after-payroll), NOT the pre-payroll summary.totals.profitEstimate.
+    SCREENS.find((s) => s.id === "A1").nums = [gt.sales, gt.netAfterPayroll, gt.cashExp, gt.orders];
     // Finance shows revenue, COGS, net-after-payroll (all full format).
     SCREENS.find((s) => s.id === "A13").nums = [gt.sales, gt.cogs, gt.netAfterPayroll];
     rec.add("A-gt", "Live ground truth fetched from chain_bootstrap", true,

@@ -1,5 +1,35 @@
 # Bayaan POS Handoff
 
+> **Whole demo gate — verified GREEN 2026-06-14 (incl. codex re-audit rounds 2 & 3).**
+> The full role/flow browser suite `npm run demo:verify:full` (groups A–I) is **62/62
+> passed, 0 failed** on freshly seeded data — admin read-paths + live math, role scoping,
+> cashier POS sale/consumption/waste, manager close review, stock transfer lifecycle,
+> staff/HR/payroll, realtime, card + Customer-Account tenders, Arabic RTL + dark. Every
+> mutating POS group (C/G/H/I) self-closes its session, so a full run leaves **0 open
+> sessions** and the books still tie; the verification closes post **0 ingredient variance**
+> (clean counts). The browser launch falls back to system Chrome when bundled Chromium is
+> absent. For a pristine presentation, run `~/seed-miza-demo.sh` (demo-morning reseed).
+>
+> **Accounting remediation — verified GREEN (incl. codex re-audit round 2).**
+> Native Odoo POS close (per-day sessions, one Z-report move each, single revenue source);
+> **per-day POS revenue == GL on every sale day**; TB/BS balanced. App is **live-only**
+> (demo mode removed, simulation archived); Odoo is hidden from the UI — the last
+> user-facing leaks (three `api.py` error/AI strings) were de-branded this round.
+> Gates: addon suite on a disposable DB, `npm run verify` (vitest **192** + wiring +
+> build), `npm run smoke:live` **`ok:true`** (now chained into `verify:live`), live
+> reconcile (revenue+VAT == POS gross TIE, TB balanced, assets == liab+equity+net TIE,
+> 0 missing moves, 0 legacy revenue moves), and the demo-verify trio
+> (`verify-accounting` 12/12, `verify-finance-vs-ledger` delta-0 TIE, `accountant-audit`
+> every accounting page in **EN + Arabic RTL + dark**, no console errors). The two
+> mutating browser suites (group C, smoke:live) are now **tie-preserving** — they close
+> the sessions they open, so a verification run no longer leaves the books untied.
+> Bank reconciliation is performed in the engine, not the Bayaan UI (on roadmap), and
+> the cash-flow badge/Settings copy say so honestly. See
+> `docs/accounting-remediation-status-2026-06-14.md` ("Codex re-audit round 2") for the
+> ground-truthed per-blocker status + commands; the original spec is
+> `docs/accounting-remediation-handoff-2026-06-13.md`. Re-run every gate before trusting
+> any status line below.
+
 ## Active Workspace
 
 Use this folder as the active project workspace:
@@ -145,12 +175,21 @@ Run the full local release gate from the repository root:
 make verify
 ```
 
-Run smoke against a specific local port:
+Run the live browser gate (needs the backend + dev server up). The app is live-only, so the
+old demo `npm run smoke` was removed. There are two live gates:
 
-```powershell
-$env:KIOSK_POS_URL="http://127.0.0.1:5174"
-npm run smoke
-Remove-Item Env:\KIOSK_POS_URL
+```bash
+# Accounting + ledger live gate (fast, deterministic). Runs:
+#   verify (vitest + wiring + build) → verify-accounting → verify-finance-vs-ledger
+#   → accountant-audit (EN + Arabic RTL + dark) → smoke:live
+npm run verify:live
+
+# Full role/flow browser sweep — groups A–I (admin read-paths, role scoping, cashier POS,
+# manager close-review, staff, cross-cutting, gap-closure, edge cases). Heavier; the
+# mutating groups (C/G/H/I) self-close their POS sessions so the books stay tied.
+npm run demo:verify:full
+
+npm run smoke:live                   # live Odoo browser smoke (also chained into verify:live)
 ```
 
 The current smoke flow verifies the exact admin overview and sections, including Warehouses, POS login, paired customer-facing display, product sale, payment prompt, payment completion, waste entry, Arabic RTL, and narrow-screen rendering.

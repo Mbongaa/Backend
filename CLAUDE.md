@@ -63,13 +63,14 @@ npm install
 npm run dev        # vite on http://127.0.0.1:5174 (port is hardcoded)
 npm run build      # tsc + vite build
 npm test           # vitest run (deterministic domain tests)
-npm run smoke      # Playwright browser smoke against the running/ensured dev server
-npm run verify     # frontend gate: test + wiring gate + build + smoke
+npm run verify     # frontend gate: test + wiring gate + build (self-contained, no backend)
+npm run verify:live # verify + the live demo-verify browser suite (needs backend + dev server up)
+npm run smoke:live # live Odoo browser smoke (needs backend + dev server)
 ```
 
 Run a single vitest file: `npx vitest run src/domain/pos.test.ts`.
 
-Point the smoke at a custom URL via the `KIOSK_POS_URL` env var (e.g. `KIOSK_POS_URL=http://127.0.0.1:5174 npm run smoke`). The smoke script auto-starts a Vite server if none is reachable. Screenshots land in `apps/kiosk-pos/verification/`.
+The app is **live-only** — demo mode was removed and the old demo `smoke.mjs` deleted. The deterministic gate is `npm run verify` (test + wiring gate + build, no backend needed). The live browser gate is the demo-verify suite (`apps/kiosk-pos/scripts/demo-verify/*`, run via `npm run verify:live` or `node scripts/demo-verify/run-all.mjs`) plus `npm run smoke:live`, both against the running backend + dev server. Screenshots land in `apps/kiosk-pos/verification/`.
 
 The frontend optionally talks to a real Odoo backend via `VITE_ODOO_URL` and `VITE_ODOO_TOKEN` (see `.env.example`). When unset, `services/sourceOfTruth.ts` returns a no-op gateway so the demo runs without Odoo.
 
@@ -99,7 +100,7 @@ There must be exactly one backend database. Bayaan must not run a second account
 - Failure must be visible: paid orders without a recipe are flagged `missing_recipe`; posting failures are flagged `failed` with the error on the chatter. Silent failure is not allowed.
 
 Bayaan API routes (in `backend/bayaan_odoo_addons/bayaan_fnb_kiosk/controllers/api.py`):
-`/bayaan/api/auth_status`, `/auth_logout`, `/audit_log`, `/realtime_config`, `/warehouse_setup`, `/payment_gateways`, `/ai_dashboard_plan`, `/payment_transaction`, `/payment_transaction_action`, `/hr_snapshot`, `/hr_employee`, `/hr_attendance`, `/operating_expense`, `/hr_schedule`, `/payroll_adjustment`, `/payroll_adjustment_action`, `/payroll_run`, `/payroll_run_action`, `/create_warehouse`, `/create_kiosk`, `/create_supplier`, `/create_stock_item`, `/product_catalog`, `/chain_bootstrap`, `/peak_hour_report`, `/recipe_version`, `/pos_sale` (guardrail), `/open_session`, `/kiosk_sale`, `/waste`, `/stock_transfer`, `/stock_transfer_action`, `/purchase_order`, `/recurring_purchase`, `/purchase_order_action`, `/landed_cost`, `/shift_close`, `/shift_close_review`, plus `/bayaan/payment/webhook/<provider>`. **Re-grep before quoting this list — Codex adds routes regularly.**
+`/bayaan/api/auth_status`, `/auth_logout`, `/audit_log`, `/realtime_config`, `/warehouse_setup`, `/payment_gateways`, `/ai_dashboard_plan`, `/payment_transaction`, `/payment_transaction_action`, `/hr_snapshot`, `/hr_employee`, `/hr_attendance`, `/operating_expense`, `/hr_schedule`, `/payroll_adjustment`, `/payroll_adjustment_action`, `/payroll_run`, `/payroll_run_action`, `/create_warehouse`, `/create_kiosk`, `/create_supplier`, `/create_stock_item`, `/product_catalog`, `/chain_bootstrap`, `/peak_hour_report`, `/recipe_version`, `/pos_sale` (guardrail), `/open_session`, `/kiosk_sale`, `/waste`, `/stock_transfer`, `/stock_transfer_action`, `/purchase_order`, `/recurring_purchase`, `/purchase_order_action`, `/landed_cost`, `/shift_close`, `/shift_close_review`, `/accounting_report` (formal books — general ledger / journal entries / trial balance / income statement / balance sheet / chart of accounts, read-only from real `account.move` / `account.move.line`), `/journal_entry` (accountant/manager posts a balanced manual journal entry; `action:detail` drills its lines; `action:reverse` posts an opposite entry — governed by `account_move.py` lock dates + branch analytic on P&L lines), `/kiosk_capex` (per-kiosk one-time/CapEx costs capitalized to real fixed-asset journal entries), `/tax_settings` (tenant VAT rate — default 0% for Iraq; saving normalizes every POS product + the Odoo company default tax and drives the POS receipt rate; the rate also rides on `auth_status` as `vatRate`), `/chart_account` (accountant/manager create/rename/reclassify/archive `account.account` — chart-of-accounts management from the Bayaan UI), `/company_config` (company/fiscal-year setup + period lock: sets `res.company.fiscalyear_lock_date` to close a period, enforced by `account_move.py`; `iraqi_defaults` action sets Iraq/calendar-year), `/accounting_control` (accountant/manager-only governed maintenance: `action:post_opening_balance` one-time opening inventory, `post_expenses_backfill`, `post_depreciation` — all source-based/idempotent and audited; monthly depreciation also runs via an `ir.cron`), plus `/bayaan/payment/webhook/<provider>`. **Re-grep before quoting this list — Codex adds routes regularly.**
 
 ## Architecture: Product Consumption Modes
 
@@ -160,6 +161,6 @@ P1+ items (also in the gap plan): supplier price catalog, warehouse setup flow, 
 
 - TypeScript is configured with `noUnusedLocals`, `noUnusedParameters`, `erasableSyntaxOnly`, `verbatimModuleSyntax`, `noFallthroughCasesInSwitch` (see `apps/kiosk-pos/tsconfig.json`). Builds will fail on unused names — clean as you go.
 - The exact-design runtime files (`ExactKioskApp.jsx`, `exact.css`) are a port; preserve their structure and class names rather than rewriting in idiomatic React, or the design fidelity drifts.
-- Bilingual UI is required: text comes through `LocalText { en, ar }` and the app supports an Arabic RTL toggle. The smoke test asserts `dir="rtl"` after switching language — don't break it.
-- The smoke test verifies fixed copy strings ("Miza", "STREAM ACTIVE", "Top performers", per-section headings including "Today's brief" on AI Insights, "Customer-facing display", "Step up when ready", "Amount due", "Payment complete", "Record waste"). Renaming user-facing text requires updating `apps/kiosk-pos/scripts/smoke.mjs`.
+- Bilingual UI is required: text comes through `LocalText { en, ar }` and the app supports an Arabic RTL toggle. The live browser gates assert `dir="rtl"` after switching language — don't break it.
+- The app is live-only (no demo mode; the demo `smoke.mjs` was removed). The live browser gates are the demo-verify suite (`apps/kiosk-pos/scripts/demo-verify/`, incl `accountant-audit.mjs` which walks every accounting page in EN + Arabic RTL + dark mode) and `scripts/live-odoo-smoke.mjs`. Renaming user-facing text or changing seed kiosk names may require updating those scripts' assertions. **Odoo is the hidden engine — it must never appear in user-facing UI strings (EN or AR); say "accounting engine" / "the ledger" instead.**
 - Narrow-screen rendering is intentional horizontal scroll, not responsive collapse — the exact desktop/tablet canvas must not be crushed.

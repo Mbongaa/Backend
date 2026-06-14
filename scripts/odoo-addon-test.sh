@@ -3,6 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ODOO_DIR="${ODOO_DIR:-$ROOT_DIR/backend/odoo}"
+# The Python interpreter that runs odoo-bin. Defaults to the in-tree venv for
+# backward compatibility, but the verified WSL environment uses a separate venv
+# (/home/hassan/bayaan-venv/bin/python), so allow an explicit override.
+PYTHON_BIN="${PYTHON_BIN:-$ODOO_DIR/.venv/bin/python}"
 ADDON="${ADDON:-bayaan_fnb_kiosk}"
 ADDONS_PATH="${ADDONS_PATH:-addons,../bayaan_odoo_addons}"
 TEST_TAGS="${TEST_TAGS:-/$ADDON}"
@@ -32,9 +36,10 @@ if [ ! -f "$ODOO_DIR/odoo-bin" ]; then
   exit 2
 fi
 
-if [ ! -x "$ODOO_DIR/.venv/bin/python" ]; then
-  echo "Cannot find executable Odoo venv at $ODOO_DIR/.venv/bin/python" >&2
-  echo "Create it from backend/odoo with: python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt" >&2
+if [ ! -x "$PYTHON_BIN" ]; then
+  echo "Cannot find executable Odoo Python at $PYTHON_BIN" >&2
+  echo "Set PYTHON_BIN to the interpreter that has Odoo's requirements installed," >&2
+  echo "or create $ODOO_DIR/.venv with: python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt" >&2
   exit 2
 fi
 
@@ -76,7 +81,7 @@ echo "  timeout: ${TEST_TIMEOUT_SECONDS}s"
 
 cmd=(
   timeout "$TEST_TIMEOUT_SECONDS"
-  .venv/bin/python odoo-bin server
+  "$PYTHON_BIN" odoo-bin server
   --addons-path="$ADDONS_PATH"
   -d "$DB"
   -i "$ADDON"

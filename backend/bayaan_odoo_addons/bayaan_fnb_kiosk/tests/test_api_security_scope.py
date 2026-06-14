@@ -452,3 +452,113 @@ class TestApiSecurityScope(BayaanTestBase, HttpCase):
         })
         self.assertIn("error", response)
         self.assertIn("Only Bayaan managers", str(response["error"]))
+
+    # ============================================================== P0.4 RBAC
+    # Accounting write routes must be server-enforced, not just UI-hidden. These
+    # lock the capability matrix: only accountant/manager may post/reverse manual
+    # journals, manage the chart, register payments, and run accounting maintenance;
+    # only manager may change VAT. A broken guard must fail a test here.
+
+    def _expect_denied(self, route, payload, phrase=None):
+        response = self._jsonrpc(route, payload)
+        self.assertIn("error", response, "%s must be denied for this role" % route)
+        if phrase:
+            self.assertIn(phrase, str(response["error"]))
+        return response
+
+    def _ensure_account(self, code, name, account_type):
+        Account = self.env["account.account"].sudo().with_context(active_test=False)
+        account = Account.search([("code", "=", code), ("company_ids", "in", [self.company.id])], limit=1)
+        if not account:
+            account = Account.create({"code": code, "name": name, "account_type": account_type,
+                                      "company_ids": [(6, 0, [self.company.id])]})
+        return account
+
+    def _make_manual_move(self, ref):
+        """A balanced manual general-journal entry (two balance-sheet legs, so the
+        branch-analytic guard does not apply), posted — i.e. reversal-eligible."""
+        Journal = self.env["account.journal"].sudo()
+        journal = Journal.search([("type", "=", "general"), ("company_id", "=", self.company.id)], limit=1) or \
+            Journal.create({"name": "Misc RBAC", "code": "MRBAC", "type": "general", "company_id": self.company.id})
+        inv = self._ensure_account("115000", "Inventory", "asset_current")
+        ap = self._ensure_account("211000", "Accounts Payable", "liability_payable")
+        move = self.env["account.move"].sudo().create({
+            "move_type": "entry", "journal_id": journal.id, "ref": ref, "company_id": self.company.id,
+            "line_ids": [
+                (0, 0, {"name": "dr", "account_id": inv.id, "debit": 1000.0, "credit": 0.0}),
+                (0, 0, {"name": "cr", "account_id": ap.id, "debit": 0.0, "credit": 1000.0}),
+            ],
+        })
+        move.action_post()
+        return move
+
+    def test_cashier_denied_every_accounting_write_route(self):
+        self.authenticate("bayaan_cashier_scope", "test")
+        bal = {"lines": [{"account": "115000", "debit": 100.0}, {"account": "211000", "credit": 100.0}]}
+        self._expect_denied("/bayaan/api/journal_entry", bal, "Only Bayaan accountants or managers")
+        self._expect_denied("/bayaan/api/journal_entry", {"action": "reverse", "id": 1, "reason": "x"},
+                            "Only Bayaan accountants or managers")
+        self._expect_denied("/bayaan/api/register_payment", {"move": 1},
+                            "Only Bayaan accountants or managers")
+        self._expect_denied("/bayaan/api/chart_account",
+                            {"action": "create", "code": "490001", "name": "X", "type": "income"},
+                            "Only Bayaan accountants or managers")
+        self._expect_denied("/bayaan/api/accounting_control", {"action": "post_opening_balance"},
+                            "Only Bayaan accountants or managers")
+
+    def test_supervisor_and_logistics_denied_accounting_writes(self):
+        bal = {"lines": [{"account": "115000", "debit": 100.0}, {"account": "211000", "credit": 100.0}]}
+        for login in ("bayaan_supervisor_scope", "bayaan_logistics_scope"):
+            self.authenticate(login, "test")
+            self._expect_denied("/bayaan/api/journal_entry", bal, "Only Bayaan accountants or managers")
+            self._expect_denied("/bayaan/api/accounting_control", {"action": "post_opening_balance"},
+                                "Only Bayaan accountants or managers")
+
+    def test_only_manager_changes_vat(self):
+        self.authenticate("bayaan_cashier_scope", "test")
+        self._expect_denied("/bayaan/api/tax_settings", {"rate": 5})
+        self.authenticate("bayaan_accountant_scope", "test")
+        self._expect_denied("/bayaan/api/tax_settings", {"rate": 5})  # accountant cannot change VAT
+        self.authenticate("bayaan_manager_scope", "test")
+        ok = self._jsonrpc("/bayaan/api/tax_settings", {"rate": 0, "priceInclude": True})
+        self.assertNotIn("error", ok)
+
+    def test_accountant_can_reverse_manual_entry_with_reason(self):
+        move = self._make_manual_move("RBAC manual A")
+        self.authenticate("bayaan_accountant_scope", "test")
+        no_reason = self._jsonrpc("/bayaan/api/journal_entry", {"action": "reverse", "id": move.id})
+        self.assertIn("error", no_reason)
+        self.assertIn("reason", str(no_reason["error"]).lower())
+        ok = self._jsonrpc("/bayaan/api/journal_entry", {"action": "reverse", "id": move.id, "reason": "correcting"})
+        if "error" in ok:
+            self.fail("accountant reverse with reason errored: %s" % ok["error"])
+
+    def test_cashier_cannot_reverse_manual_entry(self):
+        move = self._make_manual_move("RBAC manual B")
+        self.authenticate("bayaan_cashier_scope", "test")
+        resp = self._jsonrpc("/bayaan/api/journal_entry", {"action": "reverse", "id": move.id, "reason": "x"})
+        self.assertIn("error", resp)
+        self.assertIn("Only Bayaan accountants or managers", str(resp["error"]))
+
+    def test_system_entry_cannot_be_reversed_even_by_accountant(self):
+        move = self._make_manual_move("Bayaan Sales · K-TEST · 2026-06-13")
+        self.authenticate("bayaan_accountant_scope", "test")
+        resp = self._jsonrpc("/bayaan/api/journal_entry", {"action": "reverse", "id": move.id, "reason": "try"})
+        self.assertIn("error", resp)
+        self.assertIn("system entries", str(resp["error"]).lower())
+
+    def test_auth_status_capabilities_match_role_matrix(self):
+        expected = {
+            "bayaan_cashier_scope": {"postJournal": False, "reverseJournal": False, "registerPayment": False,
+                                     "manageChart": False, "approveClose": False, "changeVat": False},
+            "bayaan_accountant_scope": {"postJournal": True, "reverseJournal": True, "registerPayment": True,
+                                        "manageChart": True, "approveClose": False, "changeVat": False},
+            "bayaan_manager_scope": {"postJournal": True, "reverseJournal": True, "registerPayment": True,
+                                     "manageChart": True, "approveClose": True, "changeVat": True},
+        }
+        for login, caps in expected.items():
+            self.authenticate(login, "test")
+            status = self._jsonrpc("/bayaan/api/auth_status", {})
+            got = status["result"]["user"]["capabilities"]
+            for key, val in caps.items():
+                self.assertEqual(got[key], val, "%s.%s expected %s, got %s" % (login, key, val, got.get(key)))

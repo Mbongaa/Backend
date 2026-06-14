@@ -250,6 +250,16 @@ export type ExtractInvoicePayload = {
   mimeType?: string;
 };
 
+// AI product-photo draft for the human-confirmed product card. Maps to
+// /bayaan/api/ai_image_generate, which builds the prompt server-side from these
+// fields and returns base64 — nothing is written until the human confirms the
+// draft through createProductBundle.
+export type GenerateProductImagePayload = {
+  name: string;
+  category?: string;
+  notes?: string;
+};
+
 export type InvoiceCommitPayload = {
   supplier: { name: string; address?: string; category?: string };
   warehouse?: string | number;
@@ -353,6 +363,66 @@ export type FinanceAdjustmentPayload = {
   date?: string;
 };
 
+export type AccountingReportName =
+  | "ledger"
+  | "journals"
+  | "trial_balance"
+  | "pnl"
+  | "balance_sheet"
+  | "chart";
+
+export type AccountingReportPayload = {
+  report: AccountingReportName;
+  dateFrom?: string;
+  dateTo?: string;
+  kiosk?: string;
+  journal?: string;
+  account?: string;
+  limit?: number;
+  includeArchived?: boolean;
+};
+
+export type ChartAccountPayload = {
+  id?: number | string;
+  action?: "create" | "update" | "archive" | "unarchive";
+  code?: string;
+  name?: string;
+  type?: string;
+  active?: boolean;
+};
+
+export type KioskCapexPayload = {
+  kiosk: string;
+  name: string;
+  amount: number;
+  category?: string;
+  date?: string;
+  usefulLifeMonths?: number;
+  supplier?: string;
+  note?: string;
+};
+
+export type TaxSettingsPayload = {
+  rate: number;
+  priceInclude?: boolean;
+  setCountryIraq?: boolean;
+};
+
+export type JournalEntryLineInput = {
+  account: string;
+  debit?: number;
+  credit?: number;
+  label?: string;
+  kiosk?: string;
+};
+
+export type JournalEntryPayload = {
+  date?: string;
+  ref?: string;
+  journal?: string;
+  lines: JournalEntryLineInput[];
+};
+
 export type AuditLogPayload = {
   limit?: number;
   afterId?: number;
@@ -428,6 +498,9 @@ export type KioskWastePayload = {
 export type OpenSessionPayload = {
   kiosk: string;
   opening_cash: number;
+  // Operating cashier picked on the shared-tablet name screen; the official
+  // pos.session stays under the authenticated user, this is audit attribution.
+  cashier?: string;
 };
 
 export type BayaanUserRole =
@@ -455,6 +528,14 @@ export type BayaanAuthUser = {
     name: string;
     city?: string;
     area?: string;
+  }>;
+  kioskStaff?: Array<{
+    id: number;
+    name: string;
+    login: string;
+    role: string;
+    kioskCode: string;
+    kioskName: string;
   }>;
 };
 
@@ -497,6 +578,7 @@ export type SourceOfTruthGateway = {
   recurringPurchaseAction: (payload: { id: string | number; action: "run" }) => Promise<unknown>;
   submitRecipeVersion: (payload: RecipeVersionPayload) => Promise<unknown>;
   createProductBundle: (payload: CreateProductBundlePayload) => Promise<unknown>;
+  generateProductImage: (payload: GenerateProductImagePayload) => Promise<unknown>;
   extractInvoice: (payload: ExtractInvoicePayload) => Promise<unknown>;
   commitInvoice: (payload: InvoiceCommitPayload) => Promise<unknown>;
   submitWaste: (waste: WasteRecord, kioskId: string) => Promise<unknown>;
@@ -518,6 +600,20 @@ export type SourceOfTruthGateway = {
   submitOperatingExpense: (payload: OperatingExpensePayload) => Promise<unknown>;
   submitFinanceAdjustment: (payload: FinanceAdjustmentPayload) => Promise<unknown>;
   getFinanceAdjustments: () => Promise<unknown>;
+  getAccountingReport: (payload: AccountingReportPayload) => Promise<unknown>;
+  getKioskCapex: (payload?: { kiosk?: string }) => Promise<unknown>;
+  submitKioskCapex: (payload: KioskCapexPayload) => Promise<unknown>;
+  reverseKioskCapex: (payload: { id: number | string }) => Promise<unknown>;
+  getTaxSettings: () => Promise<unknown>;
+  saveTaxSettings: (payload: TaxSettingsPayload) => Promise<unknown>;
+  postJournalEntry: (payload: JournalEntryPayload) => Promise<unknown>;
+  getJournalEntryDetail: (id: number | string) => Promise<unknown>;
+  reverseJournalEntry: (id: number | string, reason: string, date?: string) => Promise<unknown>;
+  registerPayment: (move: number | string, date?: string) => Promise<unknown>;
+  saveChartAccount: (payload: ChartAccountPayload) => Promise<unknown>;
+  getCompanyConfig: () => Promise<unknown>;
+  setPeriodLock: (payload: { lockDate?: string; taxLockDate?: string }) => Promise<unknown>;
+  saveCompanyConfig: (payload: { companyName?: string; fiscalYearDay?: number; fiscalYearMonth?: number; iraqiDefaults?: boolean }) => Promise<unknown>;
 };
 
 function dispatchAiDashboardStreamEvent(eventName: string, dataText: string, handlers: AiDashboardStreamHandlers) {
@@ -926,6 +1022,15 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
         },
       });
     },
+    async generateProductImage(payload: GenerateProductImagePayload) {
+      return client.json("/bayaan/api/ai_image_generate", {
+        payload: {
+          name: payload.name,
+          category: payload.category,
+          notes: payload.notes,
+        },
+      });
+    },
     async extractInvoice(payload: ExtractInvoicePayload) {
       return client.json("/bayaan/api/invoice_extract", {
         payload: {
@@ -1160,6 +1265,92 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
     async getFinanceAdjustments() {
       return client.json("/bayaan/api/finance_adjustment", { payload: { action: "list" } });
     },
+    async getAccountingReport(payload: AccountingReportPayload) {
+      return client.json("/bayaan/api/accounting_report", {
+        payload: {
+          report: payload.report,
+          date_from: payload.dateFrom,
+          date_to: payload.dateTo,
+          kiosk: payload.kiosk,
+          journal: payload.journal,
+          account: payload.account,
+          limit: payload.limit,
+          includeArchived: payload.includeArchived,
+        },
+      });
+    },
+    async getKioskCapex(payload: { kiosk?: string } = {}) {
+      return client.json("/bayaan/api/kiosk_capex", { payload: { action: "list", kiosk: payload.kiosk } });
+    },
+    async submitKioskCapex(payload: KioskCapexPayload) {
+      return client.json("/bayaan/api/kiosk_capex", {
+        payload: {
+          kiosk: payload.kiosk,
+          name: payload.name,
+          amount: payload.amount,
+          category: payload.category,
+          date: payload.date,
+          usefulLifeMonths: payload.usefulLifeMonths,
+          supplier: payload.supplier,
+          note: payload.note,
+        },
+      });
+    },
+    async reverseKioskCapex(payload: { id: number | string }) {
+      return client.json("/bayaan/api/kiosk_capex", { payload: { action: "reverse", id: payload.id } });
+    },
+    async getTaxSettings() {
+      return client.json("/bayaan/api/tax_settings", { payload: {} });
+    },
+    async saveTaxSettings(payload: TaxSettingsPayload) {
+      return client.json("/bayaan/api/tax_settings", {
+        payload: { rate: payload.rate, priceInclude: payload.priceInclude, setCountryIraq: payload.setCountryIraq },
+      });
+    },
+    async postJournalEntry(payload: JournalEntryPayload) {
+      return client.json("/bayaan/api/journal_entry", {
+        payload: { date: payload.date, ref: payload.ref, journal: payload.journal, lines: payload.lines },
+      });
+    },
+    async getJournalEntryDetail(id: number | string) {
+      return client.json("/bayaan/api/journal_entry", { payload: { action: "detail", id } });
+    },
+    async reverseJournalEntry(id: number | string, reason: string, date?: string) {
+      return client.json("/bayaan/api/journal_entry", { payload: { action: "reverse", id, reason, date } });
+    },
+    async registerPayment(move: number | string, date?: string) {
+      return client.json("/bayaan/api/register_payment", { payload: { move, date } });
+    },
+    async saveChartAccount(payload: ChartAccountPayload) {
+      return client.json("/bayaan/api/chart_account", {
+        payload: {
+          action: payload.action || (payload.id ? "update" : "create"),
+          id: payload.id,
+          code: payload.code,
+          name: payload.name,
+          type: payload.type,
+          active: payload.active,
+        },
+      });
+    },
+    async getCompanyConfig() {
+      return client.json("/bayaan/api/company_config", { payload: { action: "read" } });
+    },
+    async setPeriodLock(payload: { lockDate?: string; taxLockDate?: string }) {
+      return client.json("/bayaan/api/company_config", {
+        payload: { action: "set_lock", lockDate: payload.lockDate ?? "", taxLockDate: payload.taxLockDate },
+      });
+    },
+    async saveCompanyConfig(payload: { companyName?: string; fiscalYearDay?: number; fiscalYearMonth?: number; iraqiDefaults?: boolean }) {
+      return client.json("/bayaan/api/company_config", {
+        payload: {
+          action: payload.iraqiDefaults ? "iraqi_defaults" : "update",
+          companyName: payload.companyName,
+          fiscalYearDay: payload.fiscalYearDay,
+          fiscalYearMonth: payload.fiscalYearMonth,
+        },
+      });
+    },
   };
 }
 
@@ -1235,19 +1426,19 @@ function runtimeOdooDb() {
   return params.get("odooDb") || window.localStorage.getItem("BAYAAN_ODOO_DB") || "bayaan";
 }
 
-const DEMO_AUTH: BayaanAuthStatus = {
-  authenticated: true,
+// Honest "no backend connected" auth state for the no-op gateway. The product is
+// live-only: when no Odoo backend URL is configured the gateway is disabled and the
+// user is simply unauthenticated — never a fabricated demo owner.
+const NO_BACKEND_AUTH: BayaanAuthStatus = {
+  authenticated: false,
   user: {
     id: false,
-    name: "Demo Owner",
-    login: "demo",
-    roles: ["superadmin"],
-    primaryRole: "superadmin",
-    allowedNav: [
-      "overview", "insights", "kiosks", "warehouses", "items", "sales", "closing",
-      "waste", "products", "suppliers", "inventory", "staff", "finance", "reports",
-    ],
-    allowedPanels: { admin: true, pos: true },
+    name: "",
+    login: "",
+    roles: [],
+    primaryRole: null,
+    allowedNav: [],
+    allowedPanels: { admin: false, pos: false },
     assignedKiosks: [],
   },
 };
@@ -1275,7 +1466,8 @@ const SIMULATION_AUTH: BayaanAuthStatus = {
     primaryRole: "superadmin",
     allowedNav: [
       "overview", "insights", "kiosks", "warehouses", "items", "sales", "closing",
-      "waste", "products", "suppliers", "inventory", "staff", "finance", "reports",
+      "waste", "products", "suppliers", "inventory", "staff", "finance",
+      "gl", "journals", "trialBalance", "statements", "coa", "reports",
     ],
     allowedPanels: { admin: true, pos: true },
     assignedKiosks: SIMULATION_ASSIGNED_KIOSKS,
@@ -4528,6 +4720,16 @@ function createSimulationGateway(): SourceOfTruthGateway {
         recipe_state: hasRecipe ? "active" : "",
       };
     },
+    async generateProductImage(_payload: GenerateProductImagePayload) {
+      // Image generation is a live-backend feature (it spends OpenAI image tokens);
+      // demo mode reports unconfigured so the card falls back to manual upload.
+      return {
+        simulation: true,
+        configured: false,
+        imageBase64: null,
+        error: "AI image generation needs the live backend.",
+      };
+    },
     async extractInvoice(_payload: ExtractInvoicePayload) {
       // Demo mode returns a small canned draft so the form is reviewable without
       // spending vision tokens; real OCR needs the live backend.
@@ -5365,10 +5567,10 @@ function createNoopGateway() {
   return {
     enabled: false,
     async getAuthStatus() {
-      return DEMO_AUTH;
+      return NO_BACKEND_AUTH;
     },
     async login(_payload: LoginPayload) {
-      return DEMO_AUTH;
+      return NO_BACKEND_AUTH;
     },
     async logout() {
       return { skipped: true };
@@ -5447,6 +5649,9 @@ function createNoopGateway() {
     async createProductBundle(_payload: CreateProductBundlePayload) {
       return { skipped: true };
     },
+    async generateProductImage(_payload: GenerateProductImagePayload) {
+      return { skipped: true };
+    },
     async extractInvoice(_payload: ExtractInvoicePayload) {
       return { skipped: true };
     },
@@ -5509,6 +5714,48 @@ function createNoopGateway() {
     },
     async getFinanceAdjustments() {
       return { skipped: true, adjustments: [] };
+    },
+    async getAccountingReport(_payload: AccountingReportPayload) {
+      return { skipped: true, rows: [], totals: {}, meta: { engine: "demo" } };
+    },
+    async getKioskCapex(_payload?: { kiosk?: string }) {
+      return { skipped: true, capex: [], totals: { invested: 0, netBookValue: 0, count: 0, posted: 0, failed: 0 } };
+    },
+    async submitKioskCapex(_payload: KioskCapexPayload) {
+      return { skipped: true };
+    },
+    async reverseKioskCapex(_payload: { id: number | string }) {
+      return { skipped: true };
+    },
+    async getTaxSettings() {
+      return { skipped: true, rate: 0, priceInclude: true, country: "", currency: "IQD", company: "", posProductCount: 0, productsOnRate: 0, productsOther: 0 };
+    },
+    async saveTaxSettings(_payload: TaxSettingsPayload) {
+      return { skipped: true };
+    },
+    async postJournalEntry(_payload: JournalEntryPayload) {
+      return { skipped: true };
+    },
+    async getJournalEntryDetail(_id: number | string) {
+      return { skipped: true, lines: [], totals: { debit: 0, credit: 0 } };
+    },
+    async reverseJournalEntry(_id: number | string, _reason: string, _date?: string) {
+      return { skipped: true };
+    },
+    async registerPayment(_move: number | string, _date?: string) {
+      return { skipped: true };
+    },
+    async saveChartAccount(_payload: ChartAccountPayload) {
+      return { skipped: true };
+    },
+    async getCompanyConfig() {
+      return { skipped: true, company: "", country: "", currency: "IQD", fiscalYearDay: 31, fiscalYearMonth: 12, lockDate: "", vat: 0, isIraqiDefault: true };
+    },
+    async setPeriodLock(_payload: { lockDate?: string; taxLockDate?: string }) {
+      return { skipped: true };
+    },
+    async saveCompanyConfig(_payload: { companyName?: string; fiscalYearDay?: number; fiscalYearMonth?: number; iraqiDefaults?: boolean }) {
+      return { skipped: true };
     },
   };
 }

@@ -1,6 +1,6 @@
 // Group G — Gap closure: deferred coverage items (PO receiving, realtime propagation,
 // cashier POS close). MUTATES the live demo DB. Re-seed afterward.
-import { makePage, adminLogin, gotoAdmin, bodyText, shot, api, odooLogin } from "./lib.mjs";
+import { makePage, adminLogin, gotoAdmin, bodyText, shot, api, odooLogin, handleModifierPopup, closeKioskSession } from "./lib.mjs";
 
 const milkQty = (b, where) => {
   if (where === "warehouse") {
@@ -67,6 +67,8 @@ export async function runGroupG(browser, rec) {
     await openP; await cashier.waitForTimeout(3000);
     await cashier.locator("button.card, .card").filter({ hasText: /Orange Juice/ }).first().click().catch(() => {});
     await cashier.waitForTimeout(700);
+    // Orange Juice is a recipe product → handle the size/modifier popup before Charge.
+    await handleModifierPopup(cashier);
     const saleP = cashier.waitForResponse((r) => r.url().includes("kiosk_sale"), { timeout: 20000 }).catch(() => null);
     await cashier.getByRole("button", { name: /Charge/ }).first().click().catch(() => {});
     await cashier.waitForTimeout(1200);
