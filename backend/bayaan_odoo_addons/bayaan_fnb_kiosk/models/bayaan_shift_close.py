@@ -26,6 +26,13 @@ class BayaanShiftClose(models.Model):
     expected_card = fields.Monetary(currency_field="currency_id")
     actual_card = fields.Monetary(currency_field="currency_id")
     card_variance = fields.Monetary(currency_field="currency_id", compute="_compute_card_variance", store=True)
+    # Cash accountability (#4): how the counted drawer is allocated at close, plus the confirmed
+    # opening float. Safe deposit + retained float are physical cash movements (asset stays cash,
+    # not income/expense); only cash_variance (counted vs expected) is the unexplained over/short.
+    # retained_float carries forward as the next shift's opening float.
+    safe_deposit = fields.Monetary(currency_field="currency_id", help="Cash moved from the drawer to the safe at close.")
+    retained_float = fields.Monetary(currency_field="currency_id", help="Cash kept in the drawer as the next shift's opening float.")
+    opening_discrepancy = fields.Monetary(currency_field="currency_id", help="Confirmed opening cash minus the standard float at shift start.")
     pos_order_ids = fields.Many2many("pos.order", string="POS Orders")
     stock_count_line_ids = fields.One2many(
         "bayaan.shift.close.line",
@@ -58,6 +65,11 @@ class BayaanShiftClose(models.Model):
     manager_reviewed_at = fields.Datetime(copy=False, readonly=True)
     locked_at = fields.Datetime(copy=False, readonly=True)
     locked_by_id = fields.Many2one("res.users", copy=False, readonly=True)
+    # #2 — set the moment the cashier submits the close. The counted cash + blind stock counts are
+    # then FROZEN for everyone (cashier, supervisor, manager) so nobody can quietly alter the
+    # figures while the close sits in pending review. The manager review only writes the decision
+    # and note; a recount goes through a controlled reject (which surfaces a fresh submission).
+    counts_locked = fields.Boolean(default=False, copy=False)
     investigation_status = fields.Selection(
         [
             ("none", "None"),
@@ -111,6 +123,13 @@ class BayaanShiftClose(models.Model):
                 record.name = "BSC-%s-%05d" % (kiosk_code, record.id)
         return records
 
+    # Counted cash/allocation fields frozen at submission (#2). The blind STOCK counts live on
+    # bayaan.shift.close.line and are frozen by that model's own guard.
+    _BAYAAN_COUNTED_FIELDS = (
+        "actual_cash", "actual_card", "safe_deposit", "retained_float",
+        "opening_cash", "expected_cash", "expected_card", "opening_discrepancy",
+    )
+
     def _check_not_locked(self, vals=None):
         locked = self.filtered("locked_at")
         if locked and vals:
@@ -118,8 +137,20 @@ class BayaanShiftClose(models.Model):
                 "Approved shift closes are locked. Reopen through a controlled manager workflow before changing counts or cash."
             )
 
+    def _check_counts_frozen(self, vals=None):
+        if not vals:
+            return
+        touched = set(vals) & set(self._BAYAAN_COUNTED_FIELDS)
+        if touched and self.filtered("counts_locked"):
+            raise UserError(
+                "Submitted shift-close counts are frozen (%s). They cannot be edited in place — "
+                "reject the close so it is recounted and re-submitted."
+                % ", ".join(sorted(touched))
+            )
+
     def write(self, vals):
         self._check_not_locked(vals)
+        self._check_counts_frozen(vals)
         return super().write(vals)
 
     def unlink(self):
@@ -455,6 +486,12 @@ class BayaanShiftCloseLine(models.Model):
     expected_qty = fields.Float(string="Expected Quantity")
     actual_qty = fields.Float(string="Actual Count")
     variance_qty = fields.Float(compute="_compute_variance_qty", store=True)
+    # #6 — unit cost FROZEN at close time (normalized to this line's UoM). The variance value
+    # must read this stored cost, never the product's live standard_price, so re-opening a
+    # historical close after a cost change never re-prices old variances.
+    unit_cost = fields.Float(string="Unit Cost (frozen)")
+    variance_value = fields.Monetary(currency_field="currency_id", compute="_compute_variance_value", store=True)
+    currency_id = fields.Many2one(related="shift_close_id.currency_id")
     note = fields.Char()
     company_id = fields.Many2one(related="shift_close_id.company_id", store=True)
 
@@ -465,22 +502,53 @@ class BayaanShiftCloseLine(models.Model):
             locked = self.env["bayaan.shift.close"].browse(close_ids).filtered("locked_at")
             if locked:
                 raise UserError("Approved shift closes cannot receive new stock-count lines.")
+        # #6 — freeze the unit cost AT creation time when the caller did not supply one. The
+        # /shift_close route already passes its own UoM-normalized cost, but the seed,
+        # auto-close, and other programmatic paths created count lines with no unit_cost, so
+        # variance_value silently showed 0 even when the qty variance was real. Defaulting it
+        # here (the cost at close time) guarantees every path freezes a cost — never re-priced
+        # against the product's live standard_price later.
+        Product = self.env["product.product"]
+        Uom = self.env["uom.uom"]
+        for vals in vals_list:
+            if vals.get("unit_cost"):
+                continue
+            product = Product.browse(vals.get("product_id"))
+            if not product.exists():
+                continue
+            cost = product.standard_price or 0.0
+            line_uom = Uom.browse(vals["uom_id"]) if vals.get("uom_id") else product.uom_id
+            if cost and line_uom and product.uom_id and line_uom.id != product.uom_id.id:
+                cost = product.uom_id._compute_price(cost, line_uom)
+            vals["unit_cost"] = cost
         return super().create(vals_list)
 
     def write(self, vals):
-        if self.mapped("shift_close_id").filtered("locked_at"):
+        closes = self.mapped("shift_close_id")
+        if closes.filtered("locked_at"):
             raise UserError("Approved shift close stock-count lines cannot be edited.")
+        # #2 — the blind stock count is frozen the instant it is submitted (for everyone).
+        if closes.filtered("counts_locked"):
+            raise UserError("Submitted blind stock counts are frozen and cannot be edited. Reject the close to recount.")
         return super().write(vals)
 
     def unlink(self):
-        if self.mapped("shift_close_id").filtered("locked_at"):
+        closes = self.mapped("shift_close_id")
+        if closes.filtered("locked_at"):
             raise UserError("Approved shift close stock-count lines cannot be deleted.")
+        if closes.filtered("counts_locked"):
+            raise UserError("Submitted blind stock counts are frozen and cannot be deleted. Reject the close to recount.")
         return super().unlink()
 
     @api.depends("actual_qty", "expected_qty")
     def _compute_variance_qty(self):
         for line in self:
             line.variance_qty = line.actual_qty - line.expected_qty
+
+    @api.depends("variance_qty", "unit_cost")
+    def _compute_variance_value(self):
+        for line in self:
+            line.variance_value = line.variance_qty * line.unit_cost
 
 
 class BayaanShiftCloseIngredientLine(models.Model):

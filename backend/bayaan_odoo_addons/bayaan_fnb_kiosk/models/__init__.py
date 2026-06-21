@@ -6,6 +6,7 @@ from . import bayaan_recipe
 from . import bayaan_consumption
 from . import bayaan_shift_close
 from . import bayaan_waste
+from . import bayaan_order_correction
 from . import bayaan_audit_event
 from . import bayaan_realtime
 from . import account_move

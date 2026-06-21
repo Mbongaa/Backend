@@ -6,7 +6,7 @@ const log = (m) => console.log("  " + m);
 const milk = (b) => { const r = (b?.kiosk_stock_rows || []).find((x) => x.kiosk === "K-01" && /milk/i.test(x.item || "")); return r ? r.actual_qty : null; };
 
 const browser = await launch();
-const { cookie } = await odooLogin("owner@miza.iq");
+const { cookie } = await odooLogin("owner@koub.iq");
 const milkBefore = milk(await api("/bayaan/api/chain_bootstrap", cookie));
 log(`K-01 milk starts at ${milkBefore} (low — reorder is 10)`);
 
@@ -16,7 +16,7 @@ let reqResp = null;
 {
   const page = await makePage(browser);
   page.on("response", async (r) => { if (r.url().includes("stock_request")) { try { reqResp = (await r.json())?.result ?? (await r.json())?.error; } catch {} } });
-  await adminLogin(page, "zainab@miza.iq");
+  await adminLogin(page, "zainab@koub.iq");
   await page.getByRole("button", { name: /^POS$/ }).first().click().catch(() => {});
   await page.waitForTimeout(1200);
   await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(() => {});
@@ -36,7 +36,7 @@ let reqResp = null;
 console.log("\n2) WAREHOUSE (logistics) — sees the request, approves + dispatches:");
 {
   const page = await makePage(browser);
-  await adminLogin(page, "hassan@miza.iq");
+  await adminLogin(page, "hassan@koub.iq");
   await gotoAdmin(page, "Stock & Allocation");
   await page.waitForTimeout(2500);
   const t = await bodyText(page);
@@ -63,7 +63,7 @@ let recvResp = null;
 {
   const page = await makePage(browser);
   page.on("response", async (r) => { if (r.url().includes("stock_transfer_action")) { try { recvResp = (await r.json())?.result ?? (await r.json())?.error; } catch {} } });
-  await adminLogin(page, "zainab@miza.iq");
+  await adminLogin(page, "zainab@koub.iq");
   await page.getByRole("button", { name: /^POS$/ }).first().click().catch(() => {});
   await page.waitForTimeout(1200);
   await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(() => {});

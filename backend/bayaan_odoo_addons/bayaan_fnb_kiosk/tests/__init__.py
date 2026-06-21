@@ -19,3 +19,4 @@ from . import test_product_create_bundle
 from . import test_invoice_commit
 from . import test_accounting_report_api
 from . import test_bayaan_gl
+from . import test_waste_notes

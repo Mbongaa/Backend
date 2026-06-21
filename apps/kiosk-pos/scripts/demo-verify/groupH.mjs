@@ -1,10 +1,10 @@
 // Group H — deeper interactions & edge cases (card payment, live AI answer, manager
 // approve-with-variance + lock, kiosk drill-down, reports export, recipe edit, empty-cart
 // guard, Arabic render, mobile). MUTATES (H1 card sale, H3 approve). Re-seed after.
-import { makePage, adminLogin, gotoAdmin, bodyText, has, numRe, shot, api, odooLogin, URL, handleModifierPopup, closeKioskSession } from "./lib.mjs";
+import { makePage, adminLogin, gotoAdmin, bodyText, has, numRe, shot, api, odooLogin, URL, handleModifierPopup, closeKioskSession, fillOpeningCash } from "./lib.mjs";
 
 export async function runGroupH(browser, rec) {
-  const { cookie } = await odooLogin("owner@miza.iq");
+  const { cookie } = await odooLogin("owner@koub.iq");
 
   // ---- H1: CARD payment at the POS ----
   {
@@ -13,11 +13,12 @@ export async function runGroupH(browser, rec) {
     page.on("response", async (r) => { if (r.url().includes("kiosk_sale")) { try { sale = (await r.json())?.result ?? (await r.json())?.error; } catch {} } });
     try {
       const before = (await api("/bayaan/api/chain_bootstrap", cookie))?.today?.orders?.length || 0;
-      await adminLogin(page, "zainab@miza.iq");
+      await adminLogin(page, "zainab@koub.iq");
       await page.getByRole("button", { name: /^POS$/ }).first().click().catch(() => {});
       await page.waitForTimeout(1200);
       await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(() => {});
       await page.waitForTimeout(800);
+      await fillOpeningCash(page);
       const openP = page.waitForResponse((r) => r.url().includes("open_session"), { timeout: 20000 }).catch(() => null);
       await page.getByRole("button", { name: /Start shift|ابدأ الوردية/ }).first().click().catch(() => {});
       await openP; await page.waitForTimeout(3000);
@@ -55,7 +56,7 @@ export async function runGroupH(browser, rec) {
     const page = await makePage(browser);
     try {
       const sales = Math.round((await api("/bayaan/api/chain_bootstrap", cookie))?.summary?.totals?.salesToday || 0);
-      await adminLogin(page, "owner@miza.iq");
+      await adminLogin(page, "owner@koub.iq");
       await gotoAdmin(page, "AI Assistant");
       await page.waitForTimeout(2500);
       const before = (await bodyText(page)).length;
@@ -85,7 +86,7 @@ export async function runGroupH(browser, rec) {
     let reviewResp = null;
     page.on("response", async (r) => { if (r.url().includes("shift_close_review")) { try { reviewResp = (await r.json())?.result ?? (await r.json())?.error; } catch {} } });
     try {
-      await adminLogin(page, "layla@miza.iq");
+      await adminLogin(page, "layla@koub.iq");
       await gotoAdmin(page, "Daily Close");
       await page.waitForTimeout(1800);
       // Expand the K-03 close (largest variance −28k).
@@ -113,7 +114,7 @@ export async function runGroupH(browser, rec) {
   {
     const page = await makePage(browser);
     try {
-      await adminLogin(page, "owner@miza.iq");
+      await adminLogin(page, "owner@koub.iq");
 
       // H4 — kiosk drill-down
       await gotoAdmin(page, "Kiosks");
@@ -157,7 +158,7 @@ export async function runGroupH(browser, rec) {
   {
     const page = await makePage(browser);
     try {
-      await adminLogin(page, "owner@miza.iq");
+      await adminLogin(page, "owner@koub.iq");
       await page.getByRole("button", { name: /^AR$/ }).first().click().catch(() => {});
       await page.waitForTimeout(1500);
       let mojibake = false, rtlAll = true;

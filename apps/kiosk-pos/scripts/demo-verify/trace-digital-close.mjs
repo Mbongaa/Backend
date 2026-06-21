@@ -10,7 +10,7 @@ import { launch, makePage, adminLogin, bodyText, shot, api, odooLogin } from "./
 const log = (m) => console.log("  " + m);
 
 const browser = await launch();
-const { cookie } = await odooLogin("owner@miza.iq");
+const { cookie } = await odooLogin("owner@koub.iq");
 const beforeClose = (await api("/bayaan/api/chain_bootstrap", cookie)).closings.length;
 
 const sales = [];
@@ -23,7 +23,7 @@ page.on("response", async (r) => {
   if (r.url().includes("shift_close") && !r.url().includes("review")) { try { closeResp = (await r.json())?.result ?? (await r.json())?.error; } catch {} }
 });
 
-await adminLogin(page, "zainab@miza.iq");
+await adminLogin(page, "zainab@koub.iq");
 await page.getByRole("button", { name: /^POS$/ }).first().click().catch(() => {});
 await page.waitForTimeout(1200);
 await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(() => {});

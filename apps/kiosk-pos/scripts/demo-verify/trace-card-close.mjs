@@ -1,11 +1,11 @@
 import { launch, makePage, adminLogin, bodyText, shot, api, odooLogin } from "./lib.mjs";
 const log=(m)=>console.log("  "+m);
-const b=await launch(); const {cookie}=await odooLogin("owner@miza.iq");
+const b=await launch(); const {cookie}=await odooLogin("owner@koub.iq");
 const before=(await api("/bayaan/api/chain_bootstrap",cookie)).closings.length;
 const p=await makePage(b);
 let closeResp=null;
 p.on("response", async r=>{ if(r.url().includes("shift_close")&&!r.url().includes("review")){ try{closeResp=(await r.json())?.result??(await r.json())?.error;}catch{} } });
-await adminLogin(p,"zainab@miza.iq");
+await adminLogin(p,"zainab@koub.iq");
 await p.getByRole("button",{name:/^POS$/}).first().click().catch(()=>{});
 await p.waitForTimeout(1200);
 await p.locator("div").filter({hasText:/^Zainab Hassancashier$/}).first().click().catch(()=>{});

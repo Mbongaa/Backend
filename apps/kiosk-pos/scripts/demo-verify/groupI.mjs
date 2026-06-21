@@ -1,20 +1,21 @@
 // Group I — payment-method edge cases. Verifies the POS offers exactly the configured
 // source tenders and that a non-cash/non-card tender behaves (completes or fails gracefully,
 // never crashes). MUTATES (one sale). Re-seed after.
-import { makePage, adminLogin, bodyText, shot, api, odooLogin, handleModifierPopup, closeKioskSession } from "./lib.mjs";
+import { makePage, adminLogin, bodyText, shot, api, odooLogin, handleModifierPopup, closeKioskSession, fillOpeningCash } from "./lib.mjs";
 
 export async function runGroupI(browser, rec) {
-  const { cookie } = await odooLogin("owner@miza.iq");
+  const { cookie } = await odooLogin("owner@koub.iq");
   const beforeNames = new Set(((await api("/bayaan/api/chain_bootstrap", cookie))?.today?.orders || []).map((o) => o.name));
   const page = await makePage(browser);
   let sale = null;
   page.on("response", async (r) => { if (r.url().includes("kiosk_sale")) { try { sale = (await r.json())?.result ?? (await r.json())?.error; } catch {} } });
   try {
-    await adminLogin(page, "zainab@miza.iq");
+    await adminLogin(page, "zainab@koub.iq");
     await page.getByRole("button", { name: /^POS$/ }).first().click().catch(() => {});
     await page.waitForTimeout(1200);
     await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(() => {});
     await page.waitForTimeout(800);
+    await fillOpeningCash(page);
     const openP = page.waitForResponse((r) => r.url().includes("open_session"), { timeout: 20000 }).catch(() => null);
     await page.getByRole("button", { name: /Start shift|ابدأ الوردية/ }).first().click().catch(() => {});
     await openP; await page.waitForTimeout(3000);

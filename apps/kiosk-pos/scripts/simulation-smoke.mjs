@@ -600,7 +600,7 @@ async function main() {
   assert(!hrReportCsv.includes("Summary,Payroll,1180000,HR payroll schedule"), "exported management report retained stale payroll after source-backed HR changes");
 
   await page.locator(".nav-item", { hasText: "AI Insights" }).first().click();
-  await expectVisible(page, "Miza Insights");
+  await expectVisible(page, "Koub Insights");
   await expectBodyMatch(
     page,
     /Verified aggregate sources[\s\S]*orders\s+\d+[\s\S]*attendance\s+1[1-9][\s\S]*adjustments\s+3[\s\S]*payroll runs\s+1[\s\S]*expenses\s+1/,

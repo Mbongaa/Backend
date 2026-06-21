@@ -174,6 +174,48 @@ class TestAiDashboardApi(BayaanTestBase, HttpCase):
         self.assertEqual(visuals[0]["type"], "pie-chart")
         self.assertEqual(visuals[0]["sourceRefs"], ["pos.payment"])
 
+    def test_ai_claim_validation_rejects_untraceable_account_move_numbers(self):
+        """#13 — a claim tagged account.move whose number is NOT in the deterministic
+        accounting snapshot must be dropped (the model cannot invent a ledger figure and
+        get it through by merely tagging it account.move)."""
+        api = BayaanKioskApi()
+        report_pack = {
+            "sourceEvidence": [{"model": "account.move", "rowCount": 10}],
+            "metrics": {"accounting": {
+                "rowCount": 10,
+                "dateFrom": "2026-06-01",
+                "dateTo": "2026-06-16",
+                "incomeStatement": {
+                    "revenue": 16734000.0,
+                    "cogs": 4800000.0,
+                    "grossProfit": 11934000.0,
+                    "netProfit": 4430000.0,
+                },
+                "balanceSheet": {"assets": 33259106.0},
+            }},
+        }
+        plan = {"sourceRefsRequired": ["account.move"]}
+
+        # A real ledger figure (even slightly rounded) survives.
+        survives = api._ai_validate_provider_claims([
+            {
+                "text": "Revenue this period is 16.7M IQD per the income statement.",
+                "numericValues": [{"label": "revenue", "value": 16700000.0, "unit": "currency"}],
+                "sourceRefs": ["account.move"],
+            },
+        ], report_pack, plan, fallback=False)
+        self.assertEqual(len(survives), 1, "a real (rounded) ledger figure must survive validation")
+
+        # An invented figure tagged account.move is rejected.
+        fabricated = api._ai_validate_provider_claims([
+            {
+                "text": "Net profit is 999,999,999 IQD.",
+                "numericValues": [{"label": "netProfit", "value": 999999999.0, "unit": "currency"}],
+                "sourceRefs": ["account.move"],
+            },
+        ], report_pack, plan, fallback=False)
+        self.assertEqual(fabricated, [], "an invented account.move figure must be rejected")
+
     def test_ai_dashboard_classifies_greetings_as_conversation(self):
         api = BayaanKioskApi()
         greeting_plan = api._ai_template_plan("hi", {"scope": {"sectionId": "insights", "timeRange": "today"}})

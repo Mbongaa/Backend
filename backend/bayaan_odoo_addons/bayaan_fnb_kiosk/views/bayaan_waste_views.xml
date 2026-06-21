@@ -15,6 +15,7 @@
         <field name="product_id"/>
         <field name="qty"/>
         <field name="reason"/>
+        <field name="note" optional="show"/>
         <field name="estimated_cost"/>
         <field name="state"/>
       </list>
@@ -36,6 +37,7 @@
             <field name="product_id"/>
             <field name="qty"/>
             <field name="reason"/>
+            <field name="note"/>
             <field name="estimated_cost"/>
           </group>
           <field name="scrap_ids" readonly="1"/>

@@ -1,5 +1,41 @@
 # Bayaan POS Handoff
 
+> **Accountant internal-control gaps — ALL 13 CLOSED + verified GREEN 2026-06-15
+> (re-confirmed after the Codex P0 functional re-audit, round 2 — see the gate doc).**
+> The accountant's 13 formal internal-control / fraud-prevention / auditability requirements
+> (7 P0 + 6 P1) are implemented and verified: POS session history + drill-down, **blind**
+> end-of-shift stock count (server-derived expected), cash float + safe-deposit/retained-float,
+> order-linked wrong-order workflow (no more waste double-count), AA button contrast, working
+> Ctrl-K command palette + table search, stock-bar colour from stock health, kiosk→kiosk
+> transfers, **close-time-frozen** variance cost, receiving discrepancy capture, waste notes,
+> realtime reconnect/backoff/heartbeat + honest stream badge, and an AI assistant wired to the
+> formal books (`account.move`). Hardened across 3 Codex re-audits (rounds 2–4): cashier-scoped
+> wrong-order + channel-correct refund reversal, safe-deposit→drawer ledger transfer + retained-
+> float carry-forward, counts frozen at submission, palette search incl. sessions/journals/
+> accounts, cash float fix. **Round 5 (2026-06-16) — Codex P1 re-audit: 4 real bugs fixed, 2
+> non-issues.** #6 frozen variance VALUE showed "-"/0 on seeded+auto-close closes (count line
+> `unit_cost` only set by the route) → model now defaults it on create (every path freezes a cost) +
+> live data backfilled; #8 waste note enforcement extended to unusual-quantity / repeated-pattern /
+> manager-flagged (new `product.template.bayaan_waste_requires_note`, `-u`); #12 realtime now detects
+> a half-open socket via an inbound-staleness heartbeat watchdog (~45s) + reconnects; #13 AI claim
+> validator now rejects `account.move`-tagged numbers not traceable to `metrics.accounting`. Non-
+> issues: #3 "completed" transfer state (aspirational, not a gate criterion — `received` is terminal),
+> #7 admin bulk-receive (the kiosk receive modal is the production path). **Round 6 (2026-06-17) —
+> Codex P1 UI re-audit: 4 UI/test gaps closed.** #6 recon ("Variance inputs") table gained a
+> Variance-value (IQD) column (the frozen value was correct but only the lower stock table showed it
+> — verified live RAW-CUP −4 → −800); #7 receive modal gained an explicit Missing column + a
+> structured Reason select (new `reason` field on `bayaan.stock.receipt.discrepancy`, `-u`), and a
+> shared `ReceiveDiscrepancyModal` now powers BOTH the cashier and the admin "Receive" so the admin
+> path no longer force-completes without discrepancy capture; #8 cashier note-hint now mirrors the
+> server rules (high-value/manager-flagged/unusual) pre-submit (`bayaan_waste_requires_note` rides on
+> bootstrap products); #3 added a kiosk→kiosk regression test (source-loc→dest-loc picking + full
+> lifecycle + stock conservation). #12/#13 GREEN (Codex agreed); AI ~216k-token pack noted as a
+> compactness follow-up. Gates: `npm run verify`
+> (**193** + wiring + build), addon suite **178/178** (disposable DB), live API spot-checks (#6 recon
+> values, #7 reason column, #8 products flag), books reconcile **TIE** (assets == L+E+NI). New backend field needs
+> `-u bayaan_fnb_kiosk` (migrated live). Authoritative detail + per-item evidence:
+> `docs/accountant-controls-release-gate-2026-06-15.md`.
+>
 > **Whole demo gate — verified GREEN 2026-06-14 (incl. codex re-audit rounds 2 & 3).**
 > The full role/flow browser suite `npm run demo:verify:full` (groups A–I) is **62/62
 > passed, 0 failed** on freshly seeded data — admin read-paths + live math, role scoping,

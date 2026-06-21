@@ -73,6 +73,15 @@
   --shadow-1: 0 1px 0 rgba(20,20,25,0.02), 0 1px 2px rgba(20,20,25,0.04);
   --shadow-2: 0 1px 0 rgba(20,20,25,0.04), 0 4px 12px rgba(20,20,25,0.06);
   --shadow-pop: 0 12px 32px rgba(20,20,25,0.10), 0 2px 6px rgba(20,20,25,0.06);
+
+  /* Client brand palette (coffee green + warm cream) — drives the "brand" theme. */
+  --brand-green-dark: #172317;
+  --brand-green: #243623;
+  --brand-cream: #D6B496;
+  --brand-cream-light: #F4DBB8;
+  --brand-gold: #D6B082;
+  --brand-coffee: #3B210E;
+  --brand-black-soft: #0F0D06;
 }
 
 html[data-theme="dark"],
@@ -138,6 +147,109 @@ html[data-theme="dark"],
   --shadow-2: 0 1px 0 rgba(0,0,0,0.22), 0 4px 16px rgba(0,0,0,0.28);
   --shadow-pop: 0 16px 44px rgba(0,0,0,0.42), 0 2px 8px rgba(0,0,0,0.32);
 }
+
+/* ============================================================
+   "Brand" theme — the client's coffee-green + warm-cream identity.
+   A warm light base (cream surfaces, coffee-brown ink) with deep-green
+   chrome (admin sidebar + master header) and a green customer display.
+   Token-driven, so it flows through both the Admin panel and the POS.
+   ============================================================ */
+html[data-theme="brand"],
+.app-frame[data-theme="brand"] {
+  color-scheme: light;
+
+  /* Warm cream surfaces — cards lift slightly above the page. */
+  --paper: #EFD9B4;
+  --surface: #FBEFD7;
+  --surface-2: #F5E3C2;
+  --surface-sunk: #E8CFA6;
+
+  /* Warm tan hairlines */
+  --line: #D9BE93;
+  --line-strong: #B79468;
+  --line-soft: #E7D2AC;
+
+  /* Coffee-brown ink */
+  --ink: #2A1A0B;
+  --ink-1: #3B210E;
+  --ink-2: #6E4A28;
+  --ink-3: #876844;
+  --ink-4: #A98A62;
+  --ink-inverse: #F6E5C7;
+
+  /* Customer display + brand mark — deep brand green */
+  --terminal: #172317;
+  --terminal-ink: #F4DBB8;
+  --terminal-muted: rgba(244,219,184,0.70);
+  --terminal-faint: rgba(244,219,184,0.32);
+  --terminal-line: rgba(244,219,184,0.18);
+  --terminal-line-soft: rgba(244,219,184,0.10);
+  --terminal-active-bg: #D6B082;
+  --terminal-active-ink: #172317;
+  --brand-mark-bg: #172317;
+  --brand-mark-fg: #F4DBB8;
+
+  /* Accent — deep green for active/highlight states */
+  --accent: #243623;
+  --accent-soft: #E8CFA6;
+  --accent-ink: #243623;
+
+  /* Charts — warm brand ramp */
+  --chart-1: #243623;
+  --chart-2: #D6B082;
+  --chart-3: #8A5A2B;
+  --chart-4: #B79468;
+  --chart-5: #5A7150;
+
+  /* Status — tuned to stay legible on cream */
+  --pos: #2F7D32;  --pos-soft: #E3EAD3;
+  --warn: #946410; --warn-soft: #F0DEB6;
+  --crit: #A8392B; --crit-soft: #F1D9C8;
+
+  --ai: #3B210E;   --ai-soft: #EBD8B6;
+
+  /* Warm shadows */
+  --shadow-1: 0 1px 0 rgba(58,33,14,0.04), 0 1px 2px rgba(58,33,14,0.08);
+  --shadow-2: 0 1px 0 rgba(58,33,14,0.06), 0 4px 12px rgba(58,33,14,0.10);
+  --shadow-pop: 0 16px 40px rgba(23,35,23,0.22), 0 2px 8px rgba(58,33,14,0.16);
+
+  /* Sidebar tokens (Studio sidebar variant) */
+  --sidebar: var(--brand-green-dark);
+  --sidebar-foreground: var(--brand-cream-light);
+  --sidebar-primary: var(--brand-gold);
+  --sidebar-primary-foreground: var(--brand-green-dark);
+  --sidebar-accent: var(--brand-green);
+  --sidebar-accent-foreground: var(--brand-cream-light);
+  --sidebar-border: rgba(244,219,184,0.14);
+  --sidebar-ring: var(--brand-gold);
+}
+
+/* Green chrome: admin sidebar + master header (scoped to brand so light/dark
+   are untouched). Nav text/hover use translucent cream so they read on green. */
+[data-theme="brand"] .admin-sidebar {
+  background: var(--brand-green-dark);
+  color: var(--brand-cream-light);
+}
+[data-theme="brand"] .nav-item { color: rgba(244,219,184,0.82); }
+[data-theme="brand"] .nav-item:hover { background: rgba(244,219,184,0.10); color: var(--brand-cream-light); }
+[data-theme="brand"] .nav-item.active { background: rgba(244,219,184,0.16); color: var(--brand-cream-light); }
+[data-theme="brand"] .nav-item .nav-icon { color: rgba(244,219,184,0.70); }
+[data-theme="brand"] .nav-item.active .nav-icon { color: var(--brand-gold); }
+[data-theme="brand"] .nav-item .badge { background: rgba(244,219,184,0.12); border-color: rgba(244,219,184,0.20); color: var(--brand-cream-light); }
+[data-theme="brand"] .nav-section { color: rgba(244,219,184,0.52); }
+
+[data-theme="brand"] .master-top {
+  background: var(--brand-green-dark);
+  color: var(--brand-cream-light);
+  border-bottom-color: rgba(244,219,184,0.16);
+}
+[data-theme="brand"] .master-top .brand { color: var(--brand-cream-light); }
+.master-ops { color: #6E6E68; }
+[data-theme="brand"] .master-ops { color: rgba(244,219,184,0.62); }
+
+/* Logo mark reads cream on the green chrome, brown on cream content (default). */
+[data-theme="brand"] .admin-sidebar-logo,
+[data-theme="brand"] .master-brand-logo { background-color: var(--brand-cream-light); }
 
 /* ---------- Reset & base ---------- */
 *, *::before, *::after { box-sizing: border-box; }
@@ -832,12 +944,21 @@ table { border-collapse: collapse; width: 100%; }
 }
 .btn-primary { background: var(--ink); color: var(--ink-inverse); }
 .btn-primary:hover { background: var(--ink-1); }
-.btn-accent { background: var(--accent); color: #fff; }
+/* Theme-aware foreground: --ink-inverse flips with the theme so the accent CTA
+   stays high-contrast in both light (near-white on dark) and dark (dark on near-white).
+   Hardcoded #fff failed AA in dark mode (white on near-white --accent, ~1.26:1). */
+.btn-accent { background: var(--accent); color: var(--ink-inverse); }
 .btn-accent:hover { background: var(--accent-ink); }
 .btn-ghost { background: transparent; color: var(--ink-1); border-color: var(--line); }
 .btn-ghost:hover { background: var(--surface-2); border-color: var(--line-strong); }
 .btn-quiet { background: transparent; color: var(--ink-2); }
 .btn-quiet:hover { background: var(--surface-sunk); color: var(--ink); }
+/* Destructive variant: fixed dark red in both themes (the --crit token flips to a
+   light salmon in dark mode, so it can't back white text). 5.15:1 rest / 6.39:1 hover. */
+.btn-danger { background: oklch(0.55 0.2 25); color: oklch(0.985 0 0); }
+.btn-danger:hover { background: oklch(0.5 0.2 25); }
+/* Disabled: dim but keep text legible (>=3:1) and signal non-interactivity. */
+.btn:disabled, .btn[disabled], .btn.is-disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-lg { height: 40px; padding: 0 16px; font-size: 14px; border-radius: var(--r-3); }
 .btn-xl { height: 56px; padding: 0 22px; font-size: 16px; border-radius: var(--r-3); font-weight: 500; }
 
@@ -2425,12 +2546,17 @@ table { border-collapse: collapse; width: 100%; }
   border-radius: var(--r-2);
   font-size: 13px;
   outline: none;
+  /* min-width:0 lets inputs shrink inside flex rows / grid cells instead of
+     holding their ~170px intrinsic width and pushing a dialog into horizontal
+     scroll. max-width keeps a full-width input from exceeding its container. */
+  min-width: 0;
+  max-width: 100%;
   transition: border-color 80ms ease, box-shadow 80ms ease;
 }
 .input:focus { border-color: var(--ink-2); }
 .input:focus-visible {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px rgba(35, 66, 216, 0.55);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px color-mix(in srgb, var(--accent) 55%, transparent);
   outline: none;
 }
 .btn:focus-visible,
@@ -2438,7 +2564,7 @@ table { border-collapse: collapse; width: 100%; }
 .nav-item:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  box-shadow: 0 0 0 4px rgba(35, 66, 216, 0.22);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 /* ---------- Tables ---------- */
@@ -2448,6 +2574,20 @@ table { border-collapse: collapse; width: 100%; }
 .tbl td { border-bottom: 1px solid var(--line-soft); font-size: 13px; }
 .tbl tr:last-child td { border-bottom: 0; }
 .tbl tr.row-click:hover td { background: var(--surface-2); cursor: pointer; }
+
+/* In-modal data-entry table: fixed layout + tighter padding + inputs that fill
+   and SHRINK with their cell, so the row never forces horizontal scroll inside a
+   dialog. (Plain inputs keep their intrinsic min-width and blow the table wide.) */
+.tbl-form { table-layout: fixed; }
+.tbl-form th, .tbl-form td { padding: 7px 8px; }
+.tbl-form th:first-child, .tbl-form td:first-child { padding-inline-start: 0; }
+.tbl-form th:last-child, .tbl-form td:last-child { padding-inline-end: 0; }
+.tbl-form .input,
+.tbl-form select.input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
 
 /* ---------- Staff weekly roster ---------- */
 .staff-roster-layout {
@@ -2820,15 +2960,23 @@ table { border-collapse: collapse; width: 100%; }
   font-weight: 600 !important;
   letter-spacing: -0.01em;
 }
+/* Koub cup mark — a single-colour symbol painted via CSS mask so it recolours
+   to fit each surface (brand brown on light, warm cream on dark + the always-dark
+   customer terminal). The SVG's own fill is ignored; only its shape is used. */
 .brand-logo {
-  display: block;
-  object-fit: contain;
+  display: inline-block;
   flex-shrink: 0;
   user-select: none;
+  background-color: #3b210e;
+  -webkit-mask: url(/brand/koub-logo.svg) center / contain no-repeat;
+  mask: url(/brand/koub-logo.svg) center / contain no-repeat;
+}
+[data-theme="dark"] .brand-logo {
+  background-color: #e7d6c4;
 }
 .admin-sidebar-logo {
-  width: 58px;
-  height: 28px;
+  width: 38px;
+  height: 27px;
 }
 .admin-sidebar-header > svg { display: none; }
 .admin-sidebar-actions {
@@ -3183,8 +3331,8 @@ table { border-collapse: collapse; width: 100%; }
 }
 .master-top .brand { display: flex; align-items: center; gap: 10px; font-weight: 500; color: var(--ink); }
 .master-brand-logo {
-  width: 54px;
-  height: 26px;
+  width: 34px;
+  height: 24px;
 }
 .master-top .brand-mark {
   width: 22px; height: 22px; border-radius: 5px;
@@ -3233,24 +3381,29 @@ table { border-collapse: collapse; width: 100%; }
   mix-blend-mode: screen;
 }
 .cashier-pos-logo {
-  width: 60px;
-  height: 29px;
+  width: 40px;
+  height: 28px;
 }
 .customer-display-logo {
-  width: 190px;
-  max-width: 82%;
-  height: auto;
+  width: 132px;
+  max-width: 60%;
+  height: 94px;
+  /* Always sits on the dark terminal standby — force the cream variant. */
+  background-color: #f3f2ea;
   filter: drop-shadow(0 7px 18px rgba(0, 0, 0, 0.28));
 }
+[data-theme="dark"] .customer-display-logo {
+  background-color: #f3f2ea;
+}
 .customer-display-brand-text {
-  margin-top: 8px;
+  margin-top: 10px;
   color: #F3F2EA;
   font-size: 17px;
   font-weight: 500;
   line-height: 1;
 }
 .customer-sale-logo {
-  width: 46px;
+  width: 31px;
   height: 22px;
 }
 
@@ -3309,6 +3462,133 @@ table { border-collapse: collapse; width: 100%; }
   font-family: var(--font-mono);
   font-size: 13px;
   font-feature-settings: "tnum", "zero";
+}
+
+/* ---- POS product grid (image-forward, vertically stacked) ----
+   Ported from the "POS Visual" design handoff: a tall card with the product
+   photo on top (price pill overlaid), name beneath, and size chips at the
+   bottom. The whole card stays a clickable .card button so the add/modifier
+   flow (and the browser gates that click `button.card`) are unchanged. */
+.pos-product-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+.pos-product-card {
+  padding: 0;
+  text-align: start;
+  overflow: hidden;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-4);
+  position: relative;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+.pos-product-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-2);
+  transform: translateY(-2px);
+}
+.pos-product-card:active { transform: scale(0.985); }
+.pos-product-media {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 11;
+  overflow: hidden;
+  background: var(--surface-sunk);
+}
+.pos-product-media img,
+.pos-product-media > div {
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.pos-product-card:hover .pos-product-media img,
+.pos-product-card:hover .pos-product-media > div {
+  transform: scale(1.05);
+}
+.pos-price-pill {
+  position: absolute;
+  top: 8px;
+  inset-inline-end: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #15161a;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  font-feature-settings: "tnum", "zero";
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+.pos-add-badge {
+  position: absolute;
+  inset-inline-end: 8px;
+  bottom: 8px;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--ink-inverse);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 200ms ease, transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+.pos-add-badge.on { opacity: 1; transform: scale(1); }
+.pos-product-body {
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+.pos-product-name {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+.pos-size-row {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: auto;
+}
+.pos-size-chip {
+  min-width: 30px;
+  height: 26px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-2);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+.pos-size-chip.on {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--ink-inverse);
+}
+.pos-size-chip-pick {
+  cursor: pointer;
+  transition: border-color 100ms ease, background 100ms ease, color 100ms ease, transform 90ms ease;
+}
+.pos-size-chip-pick:hover { border-color: var(--line-strong); }
+.pos-size-chip-pick:active { transform: scale(0.94); }
+.pos-customize-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: auto;
+  font-size: 11.5px;
+  color: var(--ink-3);
 }
 
 /* ---------- Tablet bezel for POS ---------- */

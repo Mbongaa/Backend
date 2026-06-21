@@ -12,7 +12,7 @@ export async function runGroupE(browser, rec) {
   });
 
   try {
-    await adminLogin(page, "owner@miza.iq");
+    await adminLogin(page, "owner@koub.iq");
     await gotoAdmin(page, "Staff");
     await page.waitForTimeout(2000);
     const text = await bodyText(page);

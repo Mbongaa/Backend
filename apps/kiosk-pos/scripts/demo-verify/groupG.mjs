@@ -1,6 +1,6 @@
 // Group G — Gap closure: deferred coverage items (PO receiving, realtime propagation,
 // cashier POS close). MUTATES the live demo DB. Re-seed afterward.
-import { makePage, adminLogin, gotoAdmin, bodyText, shot, api, odooLogin, handleModifierPopup, closeKioskSession } from "./lib.mjs";
+import { makePage, adminLogin, gotoAdmin, bodyText, shot, api, odooLogin, handleModifierPopup, closeKioskSession, fillOpeningCash } from "./lib.mjs";
 
 const milkQty = (b, where) => {
   if (where === "warehouse") {
@@ -12,7 +12,7 @@ const milkQty = (b, where) => {
 };
 
 export async function runGroupG(browser, rec) {
-  const { cookie } = await odooLogin("owner@miza.iq");
+  const { cookie } = await odooLogin("owner@koub.iq");
 
   // ---- G1: purchase order -> confirm -> receive -> warehouse stock up (backend) ----
   try {
@@ -46,7 +46,7 @@ export async function runGroupG(browser, rec) {
   const owner = await makePage(browser);
   const cashier = await makePage(browser);
   try {
-    await adminLogin(owner, "owner@miza.iq");
+    await adminLogin(owner, "owner@koub.iq");
     await gotoAdmin(owner, "Today Command");
     await owner.waitForTimeout(2000);
     const readSales = async () => {
@@ -57,11 +57,12 @@ export async function runGroupG(browser, rec) {
     const before = await readSales();
 
     // Cashier makes a real sale (emits the realtime event after the backend write).
-    await adminLogin(cashier, "zainab@miza.iq");
+    await adminLogin(cashier, "zainab@koub.iq");
     await cashier.getByRole("button", { name: /^POS$/ }).first().click().catch(() => {});
     await cashier.waitForTimeout(1200);
     await cashier.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(() => {});
     await cashier.waitForTimeout(800);
+    await fillOpeningCash(cashier);
     const openP = cashier.waitForResponse((r) => r.url().includes("open_session"), { timeout: 20000 }).catch(() => null);
     await cashier.getByRole("button", { name: /Start shift|ابدأ الوردية/ }).first().click().catch(() => {});
     await openP; await cashier.waitForTimeout(3000);
@@ -100,20 +101,34 @@ export async function runGroupG(browser, rec) {
   try {
     const b0 = await api("/bayaan/api/chain_bootstrap", cookie);
     const closesBefore = (b0?.closings || []).length;
-    await adminLogin(page, "zainab@miza.iq");
+    await adminLogin(page, "zainab@koub.iq");
     await page.getByRole("button", { name: /^POS$/ }).first().click().catch(() => {});
     await page.waitForTimeout(1200);
     await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(() => {});
     await page.waitForTimeout(800);
+    await fillOpeningCash(page);
     const openP = page.waitForResponse((r) => r.url().includes("open_session"), { timeout: 20000 }).catch(() => null);
     await page.getByRole("button", { name: /Start shift|ابدأ الوردية/ }).first().click().catch(() => {});
     await openP; await page.waitForTimeout(3000);
     // End shift -> close screen
     await page.getByRole("button", { name: /End shift|إنهاء الوردية|Close shift/ }).first().click().catch(() => {});
     await page.waitForTimeout(1500);
-    const onClose = /Counted cash|Stock count|Submit close|Close shift|إغلاق/i.test(await bodyText(page));
-    // Enter a counted-cash figure in the first numeric input, then submit.
-    await page.locator("input[inputmode='numeric'], input[type='number'], input.input").first().fill("175000").catch(() => {});
+    const closeBody = await bodyText(page);
+    const onClose = /Counted cash|Stock count|Submit close|Close shift|إغلاق/i.test(closeBody);
+    // #2 blind close: the cashier screen must NOT reveal expected qty / "Correct" shortcuts.
+    const blind = !/Expected cash|Cash matches expected|Count matches expected|النقد المتوقع|مطابق للمتوقع/i.test(closeBody);
+    // The UI hides the expected on-hand (blind), so read it from the API and type it back per
+    // item to keep this close tie-preserving (counted == on-hand == expected => 0 variance).
+    const kioskCode = (closeBody.match(/K-\d{2,}/) || ["K-01"])[0];
+    const onHand = (b0?.kiosk_stock_rows || [])
+      .filter((r) => r.kiosk === kioskCode && r.item)
+      .slice(0, 12)
+      .map((r) => Number(r.actual_qty || 0));
+    // Counted cash = 0 (a freshly opened shift with no sales has 0 expected cash) -> 0 variance.
+    await page.locator("input[type='number']").first().fill("0").catch(() => {});
+    const stockInputs = page.locator("table.tbl input[type='number']");
+    const sc = await stockInputs.count().catch(() => 0);
+    for (let i = 0; i < sc; i++) await stockInputs.nth(i).fill(String(onHand[i] ?? 0)).catch(() => {});
     await shot(page, "G-G3-pos-close");
     const closeP = page.waitForResponse((r) => r.url().includes("shift_close") && !r.url().includes("review"), { timeout: 15000 }).catch(() => null);
     await page.getByRole("button", { name: /Submit close|إرسال الإغلاق/ }).first().click().catch(() => {});
@@ -122,9 +137,9 @@ export async function runGroupG(browser, rec) {
     const b1 = await api("/bayaan/api/chain_bootstrap", cookie);
     const closesAfter = (b1?.closings || []).length;
     const posted = (closesAfter > closesBefore) || (closeResp && !closeResp.message && !closeResp.error);
-    rec.add("G3", "Cashier POS daily close (/shift_close creates a close)",
-      onClose && posted,
-      `closeScreen=${onClose} closings ${closesBefore}→${closesAfter} resp=${JSON.stringify(closeResp || "").slice(0, 70)}`,
+    rec.add("G3", "Cashier POS daily close (blind stock count, /shift_close creates a close)",
+      onClose && blind && posted,
+      `closeScreen=${onClose} blind=${blind} stockInputs=${sc} closings ${closesBefore}→${closesAfter} resp=${JSON.stringify(closeResp || "").slice(0, 70)}`,
       JSON.stringify(closeResp || "").slice(0, 160));
   } catch (e) {
     rec.add("G3", "Cashier POS daily close", false, "error: " + (e.message || e));

@@ -20,7 +20,7 @@ export async function runGroupD(browser, rec) {
     // regardless of how many times the suite has already run. No orders → no GL/session
     // impact; the cash variance just flags it for manager review. Created pre-login so it
     // is included in the bootstrap the manager loads.
-    const { cookie: ownerCookie } = await odooLogin("owner@miza.iq");
+    const { cookie: ownerCookie } = await odooLogin("owner@koub.iq");
     // A STOCK-variance close gets status "issue" (Investigation open) → manager review
     // controls render. (A cash-only variance close does NOT surface the review buttons.)
     await api("/bayaan/api/shift_close", ownerCookie, {
@@ -30,7 +30,7 @@ export async function runGroupD(browser, rec) {
       actual_cash: 0,
       stock_counts: [{ item: "Fresh Milk", expected_qty: 10, actual_qty: 6 }],
     }).catch(() => {});
-    await adminLogin(page, "layla@miza.iq");
+    await adminLogin(page, "layla@koub.iq");
     await gotoAdmin(page, "Daily Close");
     await page.waitForTimeout(1800);
     // Find a close that still NEEDS review. The review controls (Add note / Reject /
@@ -69,7 +69,7 @@ export async function runGroupD(browser, rec) {
   // ---- D2: stock transfer builder opens (owner UI) ----
   const page2 = await makePage(browser);
   try {
-    await adminLogin(page2, "owner@miza.iq");
+    await adminLogin(page2, "owner@koub.iq");
     await gotoAdmin(page2, "Stock & Allocation");
     await page2.waitForTimeout(1500);
     // Content builder trigger is "New transfer" (lowercase t); the sidebar "New Transfer" only navigates.
@@ -92,7 +92,7 @@ export async function runGroupD(browser, rec) {
 
   // ---- D3: transfer state machine (backend, authoritative) ----
   try {
-    const { cookie } = await odooLogin("owner@miza.iq");
+    const { cookie } = await odooLogin("owner@koub.iq");
     const b0 = await api("/bayaan/api/chain_bootstrap", cookie);
     const milkBefore = k01Milk(b0);
     const create = await api("/bayaan/api/stock_transfer", cookie, { kiosk: "K-01", items: [{ item: "Fresh Milk", qty: 3 }] });
@@ -121,7 +121,7 @@ export async function runGroupD(browser, rec) {
   // ---- D4: purchases / receiving screen renders ----
   const page4 = await makePage(browser);
   try {
-    await adminLogin(page4, "owner@miza.iq");
+    await adminLogin(page4, "owner@koub.iq");
     await gotoAdmin(page4, "Purchases & Suppliers");
     await page4.waitForTimeout(1500);
     const text = await bodyText(page4);

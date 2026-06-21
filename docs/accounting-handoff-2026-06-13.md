@@ -137,10 +137,10 @@ bash ~/seed-miza-demo.sh                       # full; or just the accounting la
 
 # verify:
 cd <repo>/apps/kiosk-pos && npm test && npm run build
-node scripts/demo-verify/accountant-audit.mjs   # logs in as accountant noor@miza.iq, tie-outs + screenshots
+node scripts/demo-verify/accountant-audit.mjs   # logs in as accountant noor@koub.iq, tie-outs + screenshots
 ```
 
-Logins (all pw `test`): owner@miza.iq (superadmin), layla@ (manager), hassan@ (logistics),
+Logins (all pw `test`): owner@koub.iq (superadmin), layla@ (manager), hassan@ (logistics),
 noor@ (accountant), zainab@ (cashier/POS).
 
 ---

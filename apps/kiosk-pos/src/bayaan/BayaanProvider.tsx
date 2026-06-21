@@ -5,6 +5,7 @@ import {
   type KioskSalePayload,
   type KioskWastePayload,
   type LoginPayload,
+  type OrderCorrectionPayload,
   type ShiftClosePayload,
   type SourceOfTruthGateway,
   type StockTransferPayload,
@@ -29,6 +30,7 @@ export type ShiftSession = {
   cashierId?: string;
   openedAt: string;
   openingCash: number;
+  openingDiscrepancy?: number; // #4 confirmed opening cash minus the standard float
   sessionId?: number | string;
 };
 
@@ -69,10 +71,22 @@ export type BayaanContextValue = {
     item: { id?: string | number; name: string; price: number };
     qty: number;
     reason: string;
+    note?: string;
   }) => Promise<SubmitResult>;
   submitTransfer: (input: StockTransferPayload) => Promise<SubmitResult>;
   submitShiftClose: (payload: ShiftClosePayload) => Promise<SubmitResult>;
+  recentOrders: (limit?: number) => Promise<{ orders: RecentOrder[] }>;
+  submitOrderCorrection: (input: Omit<OrderCorrectionPayload, "kioskId">) => Promise<SubmitResult>;
   flushQueue: () => Promise<{ ok: number; failed: number; remaining: number }>;
+};
+
+export type RecentOrder = {
+  id: number | string;
+  name: string;
+  date_order?: string;
+  cashier?: string;
+  amount_total?: number;
+  lines: Array<{ id: number | string; product_id?: number; product: string; qty: number; price_subtotal_incl: number }>;
 };
 
 const BayaanContext = React.createContext<BayaanContextValue | null>(null);
@@ -383,6 +397,7 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
           item: input.item,
           qty: input.qty,
           reason: input.reason,
+          note: input.note,
         });
       } catch (error) {
         return { ok: false, error: errorMessage(error), queued: false };
@@ -479,6 +494,31 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
     [gateway, isLive, pending.length, sourceOnlyWithoutBackend],
   );
 
+  const recentOrders = React.useCallback<BayaanContextValue["recentOrders"]>(async (limit = 3) => {
+    if (!shift) return { orders: [] };
+    try {
+      const res = (await gateway.getRecentOrders({ kiosk: shift.kioskId, limit })) as { orders?: RecentOrder[] };
+      return { orders: Array.isArray(res?.orders) ? res.orders : [] };
+    } catch {
+      return { orders: [] };
+    }
+  }, [gateway, shift]);
+
+  const submitOrderCorrection = React.useCallback<BayaanContextValue["submitOrderCorrection"]>(async (input) => {
+    if (sourceOnlyWithoutBackend) {
+      return { ok: false, error: "Connect the source engine before recording an order correction", queued: false };
+    }
+    if (!shift) return { ok: false, error: "Open a shift first", queued: false };
+    try {
+      const result = await gateway.submitOrderCorrection({ ...input, kioskId: shift.kioskId });
+      const err = (result as { error?: string })?.error;
+      if (err) return { ok: false, error: err, queued: false };
+      return { ok: true, result };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error), queued: false };
+    }
+  }, [gateway, shift, sourceOnlyWithoutBackend]);
+
   const value = React.useMemo<BayaanContextValue>(
     () => ({
       mode,
@@ -500,6 +540,8 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       submitWaste,
       submitTransfer,
       submitShiftClose,
+      recentOrders,
+      submitOrderCorrection,
       flushQueue,
     }),
     [
@@ -519,6 +561,8 @@ export function BayaanProvider({ children }: { children: React.ReactNode }) {
       submitWaste,
       submitTransfer,
       submitShiftClose,
+      recentOrders,
+      submitOrderCorrection,
       flushQueue,
     ],
   );

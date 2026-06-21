@@ -43,7 +43,7 @@ export async function runGroupA(browser, rec) {
   // Fetch live ground truth from the backend (re-seed proof).
   let gt = null;
   try {
-    const { cookie } = await odooLogin("owner@miza.iq");
+    const { cookie } = await odooLogin("owner@koub.iq");
     const b = await api("/bayaan/api/chain_bootstrap", cookie);
     const t = b?.summary?.totals || {};
     const daily = b?.summary?.reportPeriods?.daily || {};
@@ -71,7 +71,7 @@ export async function runGroupA(browser, rec) {
 
   const page = await makePage(browser);
   try {
-    await adminLogin(page, "owner@miza.iq");
+    await adminLogin(page, "owner@koub.iq");
   } catch (e) {
     rec.add("A0", "Owner login", false, "login failed: " + (e.message || e));
     await page._context.close();

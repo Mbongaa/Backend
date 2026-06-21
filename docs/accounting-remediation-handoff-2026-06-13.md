@@ -547,7 +547,7 @@ Also perform a full in-app Browser walkthrough at:
 ```text
 Bayaan UI: http://127.0.0.1:5174
 Odoo:     http://127.0.0.1:8069
-Accountant login: noor@miza.iq
+Accountant login: noor@koub.iq
 Accountant test password: test
 ```
 

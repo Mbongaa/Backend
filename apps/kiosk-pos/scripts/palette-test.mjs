@@ -14,7 +14,7 @@ if (await signIn.isVisible().catch(() => false)) {
   await signIn.click();
   const dlg = page.locator("[role='dialog']");
   await dlg.waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
-  await dlg.locator("input").nth(0).fill("owner@miza.iq");
+  await dlg.locator("input").nth(0).fill("owner@koub.iq");
   await dlg.locator("input").nth(1).fill("test");
   await dlg.locator("button[type='submit']").click();
   await page.waitForTimeout(4000);

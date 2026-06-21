@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 // A real PNG (the brand logo) to exercise the product-image upload — a normal image
 // Odoo's Pillow pipeline can process (a synthetic 1x1 px trips "Truncated File Read").
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const TMP_PNG = path.resolve(__dirname, "../../public/brand/miza-logo.png");
+const TMP_PNG = path.resolve(__dirname, "../../public/brand/sample-upload.png");
 
 const PROMPT = "create a mango juice for 5000 IQD, with variation small medium large, each level is 500 IQD more";
 
@@ -34,8 +34,8 @@ async function run() {
   const log = (m) => console.log(m);
   let ok = true;
   try {
-    log("1) Login as owner@miza.iq (manager scope, can create products)…");
-    await adminLogin(page, "owner@miza.iq", "test");
+    log("1) Login as owner@koub.iq (manager scope, can create products)…");
+    await adminLogin(page, "owner@koub.iq", "test");
 
     log("2) Open the Insights (AI assistant) screen…");
     const opened = await gotoAdmin(page, "AI Assistant");
@@ -109,7 +109,7 @@ async function run() {
     }
 
     log("5) Click 'Confirm & create product'…");
-    const { cookie } = await odooLogin("owner@miza.iq", "test");
+    const { cookie } = await odooLogin("owner@koub.iq", "test");
     const btn = confirmBtn.first();
     await btn.scrollIntoViewIfNeeded().catch(() => {});
     const disabled = await btn.isDisabled().catch(() => "?");

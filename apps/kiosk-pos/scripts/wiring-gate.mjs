@@ -296,7 +296,7 @@ assert(exact.includes("const isSourceDrivenPayload"), "Dashboard must centralize
 assert(exact.includes("return allowDemoFallback ? demoFiscalSalesRows() : []"), "Fiscal sales helper must return no rows instead of demo sales in live/simulation mode");
 assert(exact.includes("const odooPosSessionRows = (bootstrap, kiosk"), "Kiosk detail must have a source-backed POS session row adapter");
 assert(kioskDetailScreen.includes("const sourceDriven = isSourceDrivenPayload(bootstrap)"), "Kiosk detail must use shared source-driven demo suppression");
-assert(kioskDetailScreen.includes("const sessionRows = odooPosSessionRows(bootstrap, selected)"), "Kiosk detail POS sessions must read source rows before demo rows");
+assert(kioskDetailScreen.includes("sourceOfTruth.getPosSessionHistory({ kiosk: selectedKioskId })"), "Kiosk detail POS sessions must load real session history from the dedicated pos_session_history route");
 assert(kioskDetailScreen.includes("const demoSessionRows = !sourceDriven ? ["), "Kiosk detail demo POS sessions must be disabled in source-driven mode");
 assert(kioskDetailScreen.includes("sourceDriven ? [] : MOCK.posOrders.slice"), "Kiosk detail sales tab must not fall back to demo orders in source-driven mode");
 assert(kioskDetailScreen.includes("sourceDriven ? [] : demoMovementRows"), "Kiosk detail movements tab must not fall back to demo movements in source-driven mode");
@@ -321,8 +321,8 @@ assert(kioskDetailScreen.includes("Demo AI notes for this kiosk"), "Kiosk detail
 assert(kioskDetailScreen.includes("This note is derived from source rows only"), "Kiosk detail source overview must explain source-derived notes honestly");
 assert(kioskDetailScreen.includes("Demo AI summary only"), "Kiosk detail demo overview must explain demo AI summaries honestly");
 assert(!kioskDetailScreen.includes("AI summarizes only. Official numbers"), "Kiosk detail must not use ambiguous AI-only source/demo overview copy");
-assert(kioskDetailScreen.includes("No source POS session rows loaded from /bayaan/api/chain_bootstrap"), "Kiosk detail must show an honest source-session empty state");
-assert(kioskDetailScreen.includes("/bayaan/api/open_session"), "Kiosk detail source-session empty state must point at the real open-session route");
+assert(kioskDetailScreen.includes("No sessions for this kiosk in the last 30 days"), "Kiosk detail must show an honest source-session empty state");
+assert(kioskDetailScreen.includes("sourceOfTruth.getPosSessionDetail(session.id, selectedKioskId)"), "Kiosk detail must support drilling a session into its orders/payments/stock/accounting");
 assert(exact.includes("Demo last 7 days"), "Legacy/static kiosk detail AI notes must be explicitly demo-labeled");
 assert(!exact.includes('title={ar ? "ملاحظات الذكاء" : "AI notes for this kiosk"}'), "Kiosk detail screens must not ship the old ambiguous AI-notes title");
 assert(salesMonitorScreen.includes("const sourceSessionRows = sourceDriven ? odooPosSessionRows(bootstrap) : []"), "Sales monitor open sessions must read source session rows in source-driven mode");

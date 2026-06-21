@@ -6,7 +6,7 @@ const page = await makePage(browser);
 const rec = makeRecorder();
 
 try {
-  await adminLogin(page, "owner@miza.iq");
+  await adminLogin(page, "owner@koub.iq");
 
   // ---- STAFF ----
   await gotoAdmin(page, "Staff");

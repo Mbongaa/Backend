@@ -175,6 +175,7 @@ export type WastePayload = {
   name: string;
   qty: number;
   reason: string;
+  note?: string;
   estimated_cost: number;
   recorded_at: string;
 };
@@ -185,6 +186,7 @@ export type BuildWasteInput = {
   item: { id?: string | number; name: string; price: number };
   qty: number;
   reason: string;
+  note?: string;
 };
 
 export function buildWastePayload(input: BuildWasteInput): WastePayload {
@@ -205,6 +207,7 @@ export function buildWastePayload(input: BuildWasteInput): WastePayload {
     name: input.item.name,
     qty: input.qty,
     reason: input.reason,
+    note: input.note?.trim() || undefined,
     estimated_cost: input.item.price * input.qty,
     recorded_at: new Date().toISOString(),
   };

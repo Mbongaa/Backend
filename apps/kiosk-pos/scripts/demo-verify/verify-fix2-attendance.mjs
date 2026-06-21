@@ -7,7 +7,7 @@ const page = await makePage(browser);
 const rec = makeRecorder();
 
 try {
-  await adminLogin(page, "owner@miza.iq");
+  await adminLogin(page, "owner@koub.iq");
   await gotoAdmin(page, "Staff");
   await page.waitForTimeout(1500);
   await page.locator("button", { hasText: /Payroll & costs|الرواتب/ }).first().click();

@@ -7,7 +7,7 @@ page.on("console",(m)=>{if(m.type()==="error")errors.push(m.text().slice(0,160))
 await page.goto(URL,{waitUntil:"networkidle"}); await page.waitForTimeout(1200);
 await page.getByRole("button",{name:/Sign in|دخول/}).first().click();
 const dlg=page.locator("[role='dialog']"); await dlg.waitFor({state:"visible"});
-await dlg.locator("input").nth(0).fill("zainab@miza.iq");
+await dlg.locator("input").nth(0).fill("zainab@koub.iq");
 await dlg.locator("input").nth(1).fill("test");
 await dlg.locator("button[type='submit']").click();
 await page.waitForTimeout(5000);
@@ -23,11 +23,11 @@ try {
   await page.waitForTimeout(7000);
   console.log("started shift");
 } catch(e){ console.log("step:", String(e).slice(0,90)); }
-await page.screenshot({path:"verification/miza-08-pos.png",fullPage:false});
+await page.screenshot({path:"verification/koub-08-pos.png",fullPage:false});
 // try adding a product to cart if grid is up
 try { await page.locator("button.card, .card.product, [class*='product']").filter({ hasText: /Orange Juice|Cappuccino|Cheesecake/ }).first().click({timeout:4000});
   await page.waitForTimeout(2000);
-  await page.screenshot({path:"verification/miza-09-pos-cart.png",fullPage:false});
+  await page.screenshot({path:"verification/koub-09-pos-cart.png",fullPage:false});
   console.log("added product"); } catch(e){ console.log("no grid click:", String(e).slice(0,70)); }
 console.log("CONSOLE_ERRORS:",JSON.stringify(errors.slice(0,6)));
 await browser.close();

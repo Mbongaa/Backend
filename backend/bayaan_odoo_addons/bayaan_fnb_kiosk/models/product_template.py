@@ -41,6 +41,14 @@ class ProductTemplate(models.Model):
         default=1.0,
         help="Weight used when averaging item stock percentages into kiosk stock health.",
     )
+    bayaan_waste_requires_note = fields.Boolean(
+        string="Waste Always Needs a Note",
+        help=(
+            "When set, every waste/loss entry for this product requires an investigation note "
+            "(manager-flagged item). Enforced server-side by the Bayaan waste route, alongside "
+            "the automatic 'Other'/high-value/unusual-quantity/repeated-pattern rules."
+        ),
+    )
     bayaan_pos_options = fields.Text(
         string="Bayaan POS Options",
         help=(

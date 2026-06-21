@@ -13,6 +13,7 @@ class BayaanWasteEntry(models.Model):
     product_id = fields.Many2one("product.product", required=True)
     qty = fields.Float(required=True, default=1.0)
     reason = fields.Char(required=True)
+    note = fields.Text(help="Investigation context. Required for 'Other'/uncategorized or high-value waste.")
     estimated_cost = fields.Monetary(currency_field="currency_id")
     state = fields.Selection([("draft", "Draft"), ("posted", "Posted")], default="draft")
     currency_id = fields.Many2one(related="company_id.currency_id")

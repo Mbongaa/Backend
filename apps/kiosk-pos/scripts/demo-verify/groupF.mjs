@@ -4,7 +4,7 @@ import { makePage, adminLogin, bodyText, shot } from "./lib.mjs";
 export async function runGroupF(browser, rec) {
   const page = await makePage(browser);
   try {
-    await adminLogin(page, "owner@miza.iq");
+    await adminLogin(page, "owner@koub.iq");
     await page.waitForTimeout(1000);
 
     // F4 — realtime stream indicator.

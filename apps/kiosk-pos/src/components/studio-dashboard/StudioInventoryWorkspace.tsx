@@ -90,6 +90,7 @@ type StudioInventoryWorkspaceProps = {
   locationOptions: SelectOption[];
   categoryFilter: string;
   locationFilter: string;
+  searchTerm: string;
   filteredLowCount: number;
   filteredStockValue: number;
   filteredAvgDays: string;
@@ -97,6 +98,7 @@ type StudioInventoryWorkspaceProps = {
   transferActionBusy: string;
   onCategoryChange: (value: string) => void;
   onLocationChange: (value: string) => void;
+  onSearchChange: (value: string) => void;
   onExportInventory: () => void;
   onOpenTransferModal: () => void;
   onCreateSuggestedTransfer: (suggestion: SuggestionRow) => void;
@@ -332,6 +334,7 @@ export function StudioInventoryWorkspace({
   locationOptions,
   categoryFilter,
   locationFilter,
+  searchTerm,
   filteredLowCount,
   filteredStockValue,
   filteredAvgDays,
@@ -339,6 +342,7 @@ export function StudioInventoryWorkspace({
   transferActionBusy,
   onCategoryChange,
   onLocationChange,
+  onSearchChange,
   onExportInventory,
   onOpenTransferModal,
   onCreateSuggestedTransfer,
@@ -720,6 +724,13 @@ export function StudioInventoryWorkspace({
           <CardTitle>{tInv(ar, "Inventory ledger", "دفتر المخزون")}</CardTitle>
           <CardDescription>{filteredAvgDays} {ar ? "متوسط أيام التغطية عبر الفلتر الحالي" : "average days of cover across the current filter"}</CardDescription>
           <CardAction className="flex items-center gap-2">
+            <input
+              value={searchTerm}
+              onChange={(event) => onSearchChange(event.target.value)}
+              placeholder={tInv(ar, "Search item or code…", "ابحث باسم الصنف أو الرمز…")}
+              data-testid="inventory-search"
+              className="h-8 w-48 rounded-md border border-[var(--border)] bg-transparent px-2 text-sm outline-none focus:border-[var(--accent)]"
+            />
             <Select onValueChange={onCategoryChange} value={categoryFilter}>
               <SelectTrigger className="w-40" size="sm">
                 <SelectValue />

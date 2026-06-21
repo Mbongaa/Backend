@@ -43,7 +43,7 @@ try {
   await browser.close();
 }
 
-const summary = writeReport(rec.results, "Miza demo verification");
+const summary = writeReport(rec.results, "Koub demo verification");
 console.log(`\n===== ${summary.pass}/${summary.total} passed, ${summary.fail} failed =====`);
 console.log(`Report: ${summary.dir}/REPORT.md`);
 process.exit(summary.fail ? 1 : 0);

@@ -56,9 +56,27 @@ export async function closeKioskSession(cookie, kiosk, orderNames, cashAmount = 
     opened_at: new Date(Date.now() - 10 * 60 * 1000).toISOString().slice(0, 19).replace("T", " "),
     expected_cash: cashAmount,
     actual_cash: cashAmount,
+    // #4b: allocate the full counted drawer (safe deposit) so the close is a well-behaved
+    // client; the backend hard-blocks an unallocated counted drawer.
+    safe_deposit: cashAmount,
+    retained_float: 0,
     pos_invoices: names,
     ingredient_counts,
   });
+}
+
+// #4 — the opening-cash confirmation is now MANDATORY before "Start shift" enables (anti-blank-
+// confirmation control). Fill it (with the expected float from the input placeholder, so the open
+// has no spurious discrepancy) before clicking Start shift. Call right before each Start-shift click.
+export async function fillOpeningCash(page) {
+  try {
+    const input = page.locator("input[type='number']").first();
+    if (await input.count()) {
+      const ph = await input.getAttribute("placeholder");
+      const val = ph && /\d/.test(ph) ? ph.replace(/[^\d.]/g, "") : "50000";
+      await input.fill(val || "50000");
+    }
+  } catch { /* best-effort; the Start-shift click below will reveal if it stayed disabled */ }
 }
 
 // A page wired with console/page/request error capture. Ignore offline font noise.

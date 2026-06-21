@@ -1,5 +1,5 @@
 // Zero-weakness check of the ACCOUNTANT's ledger workflow, end to end, in the UI,
-// logged in as the accountant role (noor@miza.iq). Posts a real manual journal entry,
+// logged in as the accountant role (noor@koub.iq). Posts a real manual journal entry,
 // drills into it, and confirms it lands in the General Ledger — plus CSV export presence.
 import { launch, makePage, adminLogin, gotoAdmin, navLabels, bodyText, has, shot, makeRecorder, writeReport, odooLogin, api } from "./lib.mjs";
 
@@ -11,7 +11,7 @@ async function main() {
   const entryRef = `UI accountant test ${stamp}`;
 
   try {
-    await adminLogin(page, "noor@miza.iq");
+    await adminLogin(page, "noor@koub.iq");
 
     // 1) Accountant sees the whole ledger toolkit.
     const labels = await navLabels(page);
@@ -96,7 +96,7 @@ async function main() {
     rec.add("LED-7", "Trial balance still balances after the manual entry, with CSV export", has(t, "Balanced") && tbCsv, "", await shot(page, "led-07-trial"));
 
     // 7) Backend ground truth: the entry is a real posted, balanced account.move.
-    const { cookie } = await odooLogin("noor@miza.iq");
+    const { cookie } = await odooLogin("noor@koub.iq");
     const journals = await api("/bayaan/api/accounting_report", cookie, { payload: { report: "journals" } });
     const found = (journals?.rows || []).find((r) => (r.ref || "").includes(entryRef));
     rec.add("LED-8", "Backend: the manual entry is a real posted journal entry", !!found && found.state === "posted", found ? `${found.name} ${found.amount}` : "not found");

@@ -119,6 +119,41 @@ class TestIngredientVariance(BayaanTestBase):
         self.assertAlmostEqual(line.variance_value, -1500.0, places=4)
         self.assertAlmostEqual(close.ingredient_variance_value, -1500.0, places=4)
 
+    def test_stock_count_line_freezes_unit_cost_when_not_supplied(self):
+        """#6 — a stock-count line created without an explicit unit_cost (seed / auto-close /
+        programmatic path) must freeze the product's cost so its variance VALUE is the real
+        money, not 0. This is the bug that left every seeded close showing '-' IQD."""
+        close = self._make_close()
+        close.write({
+            "stock_count_line_ids": [(0, 0, {
+                "product_id": self.ingredient_cup.id,
+                "uom_id": self.uom_unit.id,
+                "expected_qty": 200.0,
+                "actual_qty": 196.0,  # -4 variance, no unit_cost supplied
+            })],
+        })
+        line = close.stock_count_line_ids
+        self.assertEqual(line.unit_cost, 200.0,
+            msg="unit_cost must be frozen from standard_price when the caller omits it")
+        self.assertAlmostEqual(line.variance_qty, -4.0, places=4)
+        self.assertAlmostEqual(line.variance_value, -800.0, places=4,
+            msg="variance_value must be -4 x 200, not 0")
+
+    def test_stock_count_line_keeps_supplied_unit_cost(self):
+        """An explicit (route-supplied, UoM-normalized) cost is never overwritten by the default."""
+        close = self._make_close()
+        close.write({
+            "stock_count_line_ids": [(0, 0, {
+                "product_id": self.ingredient_cup.id,
+                "uom_id": self.uom_unit.id,
+                "expected_qty": 10.0,
+                "actual_qty": 9.0,
+                "unit_cost": 250.0,
+            })],
+        })
+        self.assertEqual(close.stock_count_line_ids.unit_cost, 250.0)
+        self.assertAlmostEqual(close.stock_count_line_ids.variance_value, -250.0, places=4)
+
     def test_recompute_preserves_actual_qty(self):
         close = self._make_close()
         close.write({

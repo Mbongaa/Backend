@@ -11,7 +11,7 @@ const page = await makePage(browser);
 const rec = makeRecorder();
 
 try {
-  await adminLogin(page, "owner@miza.iq");
+  await adminLogin(page, "owner@koub.iq");
 
   // Switch to the POS panel (top-bar Admin | POS toggle).
   await page.locator("button", { hasText: /^POS$/ }).first().click();
@@ -22,7 +22,7 @@ try {
     .filter((name) => t.includes(name));
   rec.add("POS-2", "Kiosk staff visible to superadmin (not just self)", colleagues.length >= 1,
     colleagues.length ? `sees: ${colleagues.join(", ")}` : "only self card rendered");
-  rec.add("POS-3", "Signed-in user card present", has(t, "Miza Owner"));
+  rec.add("POS-3", "Signed-in user card present", has(t, "Koub Owner"));
   await shot(page, "pos-staff-picker.png");
 
   // Pick a colleague's card (scoped to .card to avoid the top-bar account

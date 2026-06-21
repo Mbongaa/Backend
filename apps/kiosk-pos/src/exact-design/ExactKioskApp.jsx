@@ -83,18 +83,20 @@ function useTweenedNumber(value, durationMs = 700) {
 /* This file is a mechanical Vite port of design/exact-pos-v2/kiosk-pos/project/Kiosk POS.html and its imports. */
 
 const BRAND = {
-  name: "Miza",
-  arabic: "ميزا",
-  logoSrc: "/brand/miza-logo.png",
+  name: "Koub",
+  arabic: "كوب",
 };
 
+// The Koub mark is a single-colour cup symbol. It is rendered as a CSS mask
+// (see .brand-logo in exact.css) rather than an <img> so it can recolour per
+// surface — brand brown on light, cream on dark/terminal — instead of being a
+// fixed-colour bitmap that would vanish against a dark background.
 function BrandLogo({ className = "", alt = BRAND.name, ...props }) {
   return (
-    <img
+    <span
       className={`brand-logo ${className}`.trim()}
-      src={BRAND.logoSrc}
-      alt={alt}
-      draggable="false"
+      role="img"
+      aria-label={alt}
       {...props}
     />
   );
@@ -5535,7 +5537,7 @@ function RankIndicator({ rank }) {
 // ============================================================
 // Main screen
 // ============================================================
-function OverviewScreen({ lang, bootstrap, scope = "Daily" }) {
+function OverviewScreen({ lang, bootstrap, scope = "Daily", realtime = null }) {
   const ar = lang === "ar";
   const liveOnly = isLiveOnlyPayload(bootstrap);
   const isDailyScope = !scope || scope === "Daily";
@@ -6083,10 +6085,23 @@ function OverviewScreen({ lang, bootstrap, scope = "Daily" }) {
         fontFamily: "var(--font-mono)", fontSize: 11.5,
         letterSpacing: "0.04em",
       }}>
-        <div className="row" style={{ gap: 8 }}>
-          <PulseDot color="#48D597"/>
-          <span style={{ fontWeight: 600 }}>{ar ? "التدفق نشط" : "STREAM ACTIVE"}</span>
-        </div>
+        {(() => {
+          // #12 — honest stream status (no more hard-coded "STREAM ACTIVE"). Reflects the
+          // real realtime.status: live/polling = active, reconnecting = amber, offline = red.
+          const st = realtime?.status || "connecting";
+          const live = st === "live" || st === "polling";
+          const down = st === "offline" || st === "error";
+          const color = live ? "#48D597" : down ? "#E5484D" : "#F5A623";
+          const label = ar
+            ? (st === "live" ? "التدفق مباشر" : st === "polling" ? "استرجاع عبر الناقل" : st === "reconnecting" ? "إعادة الاتصال" : down ? "غير متصل" : "جارٍ الاتصال")
+            : (st === "live" ? "STREAM LIVE" : st === "polling" ? "BUS FALLBACK" : st === "reconnecting" ? "RECONNECTING" : down ? "OFFLINE" : "CONNECTING");
+          return (
+            <div className="row" style={{ gap: 8 }}>
+              <PulseDot color={color}/>
+              <span style={{ fontWeight: 600 }}>{label}</span>
+            </div>
+          );
+        })()}
         <span style={{ color: "var(--terminal-faint)" }}>|</span>
         <span style={{ color: "var(--terminal-muted)" }}>
           <LiveClock style={{ color: "var(--terminal-ink)" }}/>
@@ -6094,11 +6109,7 @@ function OverviewScreen({ lang, bootstrap, scope = "Daily" }) {
         </span>
         <span style={{ color: "var(--terminal-faint)" }}>|</span>
         <span style={{ color: "var(--terminal-muted)" }}>
-          <span style={{ color: "var(--terminal-ink)", fontWeight: 600 }}>{kiosks.length}/{kiosks.length}</span> {ar ? "الأكشاك متصلة" : "KIOSKS ONLINE"}
-        </span>
-        <span style={{ color: "var(--terminal-faint)" }}>|</span>
-        <span style={{ color: "var(--terminal-muted)" }}>
-          <span style={{ color: "var(--terminal-ink)" }}>42</span>{ar ? " مللي ثانية زمن الاستجابة" : "ms LATENCY"}
+          <span style={{ color: "var(--terminal-ink)", fontWeight: 600 }}>{kiosks.length}</span> {ar ? "أكشاك" : "KIOSKS"}
         </span>
         <span style={{ flex: 1 }}/>
         <span className="ov-cursor" style={{ color: "var(--terminal-muted)" }}>
@@ -8986,7 +8997,7 @@ function BayaanAssistantThreadPanel({ runTurn, sourceMeta, liveMode, lang, artif
             <div className="bayaan-assistant-thread-toolbar">
               <SidebarTrigger className="bayaan-assistant-sidebar-trigger" />
               <div className="bayaan-assistant-thread-title">
-                {ar ? "مساعد ميزا الذكي" : "Miza AI Assistant"}
+                {ar ? `مساعد ${BRAND.arabic} الذكي` : `${BRAND.name} AI Assistant`}
               </div>
               {liveMode && (
                 <ReasoningModeToggle mode={reasoningMode} onChange={onReasoningModeChange} lang={lang}/>
@@ -9833,7 +9844,7 @@ function BayaanInsightsExportOverlay({ payload, lang, onClose }) {
       </div>
       <div className="bayaan-export-report">
         <div className="bayaan-export-report-head">
-          <div className="bayaan-export-report-brand">{ar ? "مساعد ميزا الذكي" : "Miza AI Assistant"}</div>
+          <div className="bayaan-export-report-brand">{ar ? `مساعد ${BRAND.arabic} الذكي` : `${BRAND.name} AI Assistant`}</div>
           <div className="bayaan-export-report-sub">{title} · {dateStr}</div>
         </div>
         {turns.length === 0 ? (
@@ -10974,7 +10985,8 @@ function aiDashboardCitation(response, sourceMeta) {
 
 // =============== KIOSKS ===============
 const clampPercent = (value) => Math.max(0, Math.min(100, Number(value) || 0));
-const stockTone = (value) => value < 55 ? "crit" : value < 70 ? "warn" : "pos";
+// Thresholds unified with stockHealthTier() + the backend (#11): <50 critical, <70 watch.
+const stockTone = (value) => value < 50 ? "crit" : value < 70 ? "warn" : "pos";
 const wasteTone = (value) => value > 85 ? "crit" : value > 60 ? "warn" : "pos";
 const statusTone = (status) => status === "good" ? "pos" : status === "warn" ? "warn" : "crit";
 
@@ -11204,10 +11216,23 @@ function deriveKioskOps(k, allowDemoEstimate = false) {
   return { inv: Math.min(96, Math.max(8, k.stockHealth || inv)), lowItems, critItems, slots, hours, queue, lastSale };
 }
 
-function InventoryMeter({ pct, status }) {
+// Current-stock health tier from the stock-health percentage only — same thresholds the
+// kiosk-row stockHealth fallback uses (odooKioskRows). #11: the inventory bar must reflect
+// CURRENT stock, never the kiosk's closing/variance status or a period rollup, so its colour
+// stays constant across Daily/Weekly/Monthly.
+function stockHealthTier(pct) {
+  const v = Number(pct);
+  if (!Number.isFinite(v)) return "good";
+  if (v < 50) return "crit";
+  if (v < 70) return "warn";
+  return "good";
+}
+
+function InventoryMeter({ pct, stockStatus }) {
   const segs = 14;
   const filled = Math.round((pct / 100) * segs);
-  const color = status === "crit" ? "var(--crit)" : status === "warn" ? "var(--warn)" : "var(--pos)";
+  const tier = stockStatus || stockHealthTier(pct);
+  const color = tier === "crit" ? "var(--crit)" : tier === "warn" ? "var(--warn)" : "var(--pos)";
   return (
     <div style={{ display: "flex", gap: 2, height: 10 }}>
       {Array.from({ length: segs }).map((_, i) => (
@@ -11335,7 +11360,7 @@ function RealtimeKioskCard({ k, ops, onPick, lang }) {
           <span className="t-micro">{ar ? "المخزون" : "Inventory"}</span>
           <span className="t-num" style={{ fontSize: 12.5, fontWeight: 500 }}>{ops.inv}%</span>
         </div>
-        <InventoryMeter pct={ops.inv} status={k.status}/>
+        <InventoryMeter pct={ops.inv}/>
         <div className="t-small subtle" style={{ marginTop: 6, fontSize: 11.5 }}>
           {ops.critItems > 0
             ? <><span style={{ color: "var(--crit)" }}>{ops.critItems} {ar ? "حرج" : "critical"}</span> · {ops.lowItems} {ar ? "منخفض" : "low"} · {stockedItems} {ar ? "متوفر" : "stocked"}</>
@@ -11598,7 +11623,7 @@ function KiosksScreen({ lang, onPick, bootstrap, sync, sourceOfTruth, refreshOdo
                   <td style={{ textAlign: "end" }} className="t-num muted">{k.orders}</td>
                   <td>
                     <div className="row" style={{ gap: 8 }}>
-                      <div style={{ flex: 1 }}><InventoryMeter pct={k.ops.inv} status={k.status}/></div>
+                      <div style={{ flex: 1 }}><InventoryMeter pct={k.ops.inv}/></div>
                       <span className="t-num" style={{ fontSize: 11.5, width: 28, textAlign: "end" }}>{k.ops.inv}%</span>
                     </div>
                   </td>
@@ -11879,6 +11904,11 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
   // Per-kiosk dated close history. chain_bootstrap only ships today's close, so
   // the "Daily closings" tab pulls the full history for this kiosk to list rows.
   const [closeHistory, setCloseHistory] = useState([]);
+  // #1 POS session history: chain_bootstrap ships no pos.session rows, so the tab was always
+  // empty. Fetch the real session history per kiosk and allow drilling into one session.
+  const [sessionHistory, setSessionHistory] = useState(null); // null=loading, []=none
+  const [sessionDetail, setSessionDetail] = useState(null);   // selected session drill-down
+  const [sessionDetailBusy, setSessionDetailBusy] = useState(false);
   // Per-kiosk one-time / capital costs (kiosk build, equipment, fit-out),
   // capitalized as real fixed assets in Odoo and tagged to this branch.
   const [capexData, setCapexData] = useState(null);
@@ -11913,6 +11943,29 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
     })();
     return () => { cancelled = true; };
   }, [sourceOfTruth, selectedKioskId, bootstrap]);
+  useEffect(() => {
+    if (!sourceDriven || !sourceOfTruth?.enabled || typeof sourceOfTruth.getPosSessionHistory !== "function") {
+      setSessionHistory([]);
+      return;
+    }
+    let cancelled = false;
+    setSessionHistory(null);
+    setSessionDetail(null);
+    sourceOfTruth.getPosSessionHistory({ kiosk: selectedKioskId })
+      .then((res) => { if (!cancelled) setSessionHistory(Array.isArray(res?.sessions) ? res.sessions : []); })
+      .catch(() => { if (!cancelled) setSessionHistory([]); });
+    return () => { cancelled = true; };
+  }, [sourceDriven, sourceOfTruth, selectedKioskId, bootstrap]);
+  const openSessionDetail = async (session) => {
+    if (!sourceOfTruth || typeof sourceOfTruth.getPosSessionDetail !== "function") return;
+    setSessionDetail(null);
+    setSessionDetailBusy(true);
+    try {
+      const res = await sourceOfTruth.getPosSessionDetail(session.id, selectedKioskId);
+      setSessionDetail(res?.session || null);
+    } catch { setSessionDetail(null); }
+    finally { setSessionDetailBusy(false); }
+  };
   const expectedCash = sourceDriven
     ? (closing?.expectedCash == null ? null : Number(closing?.expectedCash || 0))
     : Math.round(selected.revenue * 0.65);
@@ -11927,12 +11980,10 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
     { id: "demo-waste", time: "15:10", action: "Waste recorded", detail: "Wrong order / spill", source: "bayaan.waste.entry" },
   ];
   const visibleMovementRows = movementRows.length ? movementRows : sourceDriven ? [] : demoMovementRows;
-  const sessionRows = odooPosSessionRows(bootstrap, selected);
   const demoSessionRows = !sourceDriven ? [
     { id: "demo-morning", name: "Morning", open: "07:00", close: "15:00", cashier: "Maya Ahmed", status: "closed" },
     { id: "demo-evening", name: "Evening", open: "15:00", close: "23:00", cashier: "Sara Younis", status: selected.status === "crit" ? "needs closing" : "open" },
   ] : [];
-  const visibleSessionRows = sessionRows.length ? sessionRows : demoSessionRows;
   const fmtQty = (value, unit) => `${Number(value).toLocaleString("en", { maximumFractionDigits: 2 })} ${unit}`;
   const kioskWasteRows = sourceDriven
     ? odooWasteRows(bootstrap).filter((row) => matchesKiosk(row.kiosk, selected))
@@ -12141,37 +12192,169 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
     </div>
   );
 
-  const renderSessions = () => (
-    <div className="card card-pad">
-      <SectionHead
-        title={ar ? "جلسات POS" : "POS sessions"}
-        sub={sourceDriven
-          ? (ar ? "لا تُعرض إلا الجلسات القادمة من مصدر Bayaan" : "Only Bayaan source session rows are shown here")
-          : (ar ? "جلسات تجريبية للواجهة فقط" : "Demo session rows for the interface only")} />
-      <table className="tbl">
-        <tbody>
-          {visibleSessionRows.map((session) => (
-            <tr key={session.id || session.name}>
-              <td>{session.name}</td>
-              <td className="t-num muted">{session.open ? movementTimeLabel(session.open) : "--:--"}</td>
-              <td className="t-num muted">{session.close ? movementTimeLabel(session.close) : "--:--"}</td>
-              <td>{session.cashier}</td>
-              <td><span className={`badge ${session.status === "closed" ? "badge-pos" : session.status === "needs closing" ? "badge-crit" : "badge-warn"}`}>{session.status}</span></td>
-            </tr>
-          ))}
-          {!visibleSessionRows.length && (
-            <tr>
-              <td colSpan={5} className="muted" style={{ padding: 18, textAlign: "center" }}>
-                {ar
-                  ? "لا توجد جلسات POS مؤكدة في /bayaan/api/chain_bootstrap بعد. افتح الجلسة عبر /bayaan/api/open_session ولا نستنتج ورديات صباحية/مسائية."
-                  : "No source POS session rows loaded from /bayaan/api/chain_bootstrap yet. Open sessions through /bayaan/api/open_session; Morning/Evening rows are not inferred."}
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
+  const sessionStatusBadge = (status) => {
+    const s = String(status || "").toLowerCase();
+    if (s === "closed") return "badge-pos";
+    if (s === "opened" || s === "open" || s === "opening_control") return "badge-warn";
+    return "badge";
+  };
+  const renderSessions = () => {
+    if (!sourceDriven) {
+      return (
+        <div className="card card-pad">
+          <SectionHead title={ar ? "جلسات نقاط البيع" : "POS sessions"} sub={ar ? "جلسات تجريبية للواجهة فقط" : "Demo session rows for the interface only"} />
+          <table className="tbl">
+            <tbody>
+              {demoSessionRows.map((session) => (
+                <tr key={session.id}>
+                  <td>{session.name}</td>
+                  <td className="t-num muted">{session.open}</td>
+                  <td className="t-num muted">{session.close}</td>
+                  <td>{session.cashier}</td>
+                  <td><span className={`badge ${session.status === "closed" ? "badge-pos" : "badge-warn"}`}>{session.status}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+    const rows = sessionHistory || [];
+    return (
+      <div className="col" style={{ gap: 14 }}>
+        <div className="card card-pad">
+          <SectionHead
+            title={ar ? "سجل جلسات الورديات" : "Shift session history"}
+            sub={ar ? "كل جلسة لهذا الكشك — اضغط على صف لعرض الطلبات والمدفوعات والجرد والقيد المحاسبي" : "Every session for this kiosk — click a row for its orders, payments, stock count, and accounting entry"} />
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl" style={{ minWidth: 1080 }}>
+              <thead>
+                <tr>
+                  <th>{ar ? "الجلسة" : "Session"}</th>
+                  <th>{ar ? "الكاشير" : "Cashier"}</th>
+                  <th>{ar ? "فتح" : "Open"}</th>
+                  <th>{ar ? "إغلاق" : "Close"}</th>
+                  <th style={{ textAlign: "end" }}>{ar ? "العائمة" : "Float"}</th>
+                  <th style={{ textAlign: "end" }}>{ar ? "نقد/بطاقة/آجل" : "Cash / Card / Acct"}</th>
+                  <th style={{ textAlign: "end" }}>{ar ? "متوقع→معدود" : "Expected → Counted"}</th>
+                  <th style={{ textAlign: "end" }}>{ar ? "فرق النقد" : "Cash var."}</th>
+                  <th>{ar ? "الحالة" : "Status"}</th>
+                  <th>{ar ? "القيد" : "Journal"}</th>
+                  <th>{ar ? "اعتماد المدير" : "Approval"}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((s) => {
+                  const variance = Number(s.cashVariance || 0);
+                  return (
+                    <tr key={s.id} style={{ cursor: "pointer", background: sessionDetail?.id === s.id ? "var(--surface-2)" : undefined }}
+                      onClick={() => openSessionDetail(s)}>
+                      <td style={{ fontWeight: 500 }}>{s.name}</td>
+                      <td>{s.cashier}</td>
+                      <td className="t-num muted">{s.open ? movementTimeLabel(s.open) : "--:--"}</td>
+                      <td className="t-num muted">{s.close ? movementTimeLabel(s.close) : "--:--"}</td>
+                      <td className="t-num muted" style={{ textAlign: "end" }}>{fmtMoney(s.openingFloat || 0)}</td>
+                      <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(s.cashSales || 0)} / {fmtMoney(s.cardSales || 0)} / {fmtMoney(s.customerAccountSales || 0)}</td>
+                      <td className="t-num muted" style={{ textAlign: "end" }}>{fmtMoney(s.expectedCash || 0)} → {fmtMoney(s.countedCash || 0)}</td>
+                      <td className="t-num" style={{ textAlign: "end", color: Math.abs(variance) > 0.5 ? "var(--crit)" : "var(--pos)" }}>{variance > 0 ? "+" : ""}{fmtMoney(variance)}</td>
+                      <td><span className={`badge ${sessionStatusBadge(s.status)}`}>{s.status}</span></td>
+                      <td className="t-small muted">{s.journalEntry || (ar ? "—" : "—")}</td>
+                      <td>{s.managerApproval
+                        ? <span className={`badge ${s.managerApproval === "approved" ? "badge-pos" : s.managerApproval === "rejected" ? "badge-crit" : "badge-warn"}`}>{s.managerApproval}</span>
+                        : <span className="t-small muted">{ar ? "بانتظار" : "Pending"}</span>}</td>
+                    </tr>
+                  );
+                })}
+                {sessionHistory === null && (
+                  <tr><td colSpan={11} className="muted" style={{ padding: 18, textAlign: "center" }}>{ar ? "جارٍ التحميل…" : "Loading sessions…"}</td></tr>
+                )}
+                {sessionHistory !== null && !rows.length && (
+                  <tr><td colSpan={11} className="muted" style={{ padding: 18, textAlign: "center" }}>{ar ? "لا توجد جلسات لهذا الكشك في آخر 30 يوماً." : "No sessions for this kiosk in the last 30 days."}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {(sessionDetailBusy || sessionDetail) && (
+          <div className="card card-pad">
+            {sessionDetailBusy && !sessionDetail
+              ? <div className="muted" style={{ padding: 12 }}>{ar ? "جارٍ تحميل تفاصيل الجلسة…" : "Loading session detail…"}</div>
+              : sessionDetail && (
+              <div className="col" style={{ gap: 14 }}>
+                <SectionHead title={`${sessionDetail.name} — ${sessionDetail.cashier}`} sub={`${sessionDetail.open ? movementTimeLabel(sessionDetail.open) : "--:--"} → ${sessionDetail.close ? movementTimeLabel(sessionDetail.close) : "--:--"} · ${sessionDetail.orders || 0} ${ar ? "طلب" : "orders"}`} />
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+                  <KPI label={ar ? "النقد المتوقع" : "Expected cash"} value={fmtMoney(sessionDetail.expectedCash || 0)} />
+                  <KPI label={ar ? "النقد المعدود" : "Counted cash"} value={fmtMoney(sessionDetail.countedCash || 0)} />
+                  <KPI label={ar ? "فرق النقد" : "Cash variance"} value={fmtMoney(sessionDetail.cashVariance || 0)} />
+                  <KPI label={ar ? "القيد المحاسبي" : "Journal entry"} value={sessionDetail.journalEntry || "—"} />
+                </div>
+                {Array.isArray(sessionDetail.orderRows) && sessionDetail.orderRows.length > 0 && (
+                  <div>
+                    <div className="t-h2" style={{ marginBottom: 6 }}>{ar ? "الطلبات والمدفوعات" : "Orders & payments"}</div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table className="tbl" style={{ minWidth: 560 }}>
+                        <thead><tr><th>{ar ? "الطلب" : "Order"}</th><th>{ar ? "الوقت" : "Time"}</th><th style={{ textAlign: "end" }}>{ar ? "الإجمالي" : "Total"}</th><th>{ar ? "الدفع" : "Payment"}</th></tr></thead>
+                        <tbody>
+                          {sessionDetail.orderRows.map((o, i) => (
+                            <tr key={o.name || i}>
+                              <td>{o.name}</td>
+                              <td className="t-num muted">{o.date_order ? movementTimeLabel(o.date_order) : "--:--"}</td>
+                              <td className="t-num" style={{ textAlign: "end" }}>{fmtMoney(o.amount_total || 0)}</td>
+                              <td className="t-small muted">{(o.payments || []).map((p) => `${p.method} ${fmtMoney(p.amount || 0)}`).join(", ")}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+                {Array.isArray(sessionDetail.ingredientLines) && sessionDetail.ingredientLines.length > 0 && (
+                  <div>
+                    <div className="t-h2" style={{ marginBottom: 6 }}>{ar ? "جرد الإغلاق والفروقات" : "Close stock count & variance"}</div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table className="tbl" style={{ minWidth: 560 }}>
+                        <thead><tr><th>{ar ? "المكوّن" : "Ingredient"}</th><th style={{ textAlign: "end" }}>{ar ? "متوقع" : "Expected"}</th><th style={{ textAlign: "end" }}>{ar ? "معدود" : "Counted"}</th><th style={{ textAlign: "end" }}>{ar ? "الفرق" : "Variance"}</th><th style={{ textAlign: "end" }}>{ar ? "القيمة" : "Value"}</th></tr></thead>
+                        <tbody>
+                          {sessionDetail.ingredientLines.map((l, i) => (
+                            <tr key={l.ingredient || i}>
+                              <td>{cleanDisplayName(l.ingredient)}</td>
+                              <td className="t-num muted" style={{ textAlign: "end" }}>{Number(l.expected || 0).toLocaleString("en", { maximumFractionDigits: 2 })}</td>
+                              <td className="t-num" style={{ textAlign: "end" }}>{Number(l.counted || 0).toLocaleString("en", { maximumFractionDigits: 2 })}</td>
+                              <td className="t-num" style={{ textAlign: "end", color: Math.abs(Number(l.variance || 0)) > 0.001 ? "var(--crit)" : "var(--pos)" }}>{Number(l.variance || 0).toLocaleString("en", { maximumFractionDigits: 2 })}</td>
+                              <td className="t-num muted" style={{ textAlign: "end" }}>{fmtMoney(l.value || 0)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+                {sessionDetail.accounting && Array.isArray(sessionDetail.accounting.lines) && sessionDetail.accounting.lines.length > 0 && (
+                  <div>
+                    <div className="t-h2" style={{ marginBottom: 6 }}>{ar ? "القيد المحاسبي (تقرير Z)" : "Accounting entry (Z-report)"} · {sessionDetail.accounting.move}</div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table className="tbl" style={{ minWidth: 460 }}>
+                        <thead><tr><th>{ar ? "الحساب" : "Account"}</th><th style={{ textAlign: "end" }}>{ar ? "مدين" : "Debit"}</th><th style={{ textAlign: "end" }}>{ar ? "دائن" : "Credit"}</th></tr></thead>
+                        <tbody>
+                          {sessionDetail.accounting.lines.map((ml, i) => (
+                            <tr key={i}>
+                              <td className="t-small">{ml.account}</td>
+                              <td className="t-num muted" style={{ textAlign: "end" }}>{ml.debit ? fmtMoney(ml.debit) : ""}</td>
+                              <td className="t-num muted" style={{ textAlign: "end" }}>{ml.credit ? fmtMoney(ml.credit) : ""}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const renderClosings = () => {
     const historyRows = closeHistory.length ? closeHistory : (closing ? [closing] : []);
@@ -12938,7 +13121,7 @@ function KioskDetailScreen({ lang, onBack, kiosk, bootstrap, sourceOfTruth, refr
         <KPI label={ar ? "اليوم" : "Today"} value={fmtMoney(selected.revenue)} delta={sourceDriven ? "source" : "demo"} deltaDir="up" sparkData={selected.trend}/>
         <KPI label={ar ? "الطلبات" : "Orders"} value={String(selected.orders)} delta={sourceDriven ? "source POS" : "demo POS"} deltaDir="up"/>
         <KPI label={ar ? "النقد المتوقع" : "Expected cash"} value={fmtMoney(expectedCash)} footer={expectedCashFooter}/>
-        <KPI label={ar ? "صحة المخزون" : "Stock health"} value={`${selected.stockHealth}%`} delta={selected.status === "crit" ? "critical" : selected.status === "warn" ? "watch" : "ok"} deltaDir={selected.status === "crit" ? "down" : "up"}/>
+        <KPI label={ar ? "صحة المخزون" : "Stock health"} value={`${selected.stockHealth}%`} delta={stockHealthTier(selected.stockHealth) === "crit" ? "critical" : stockHealthTier(selected.stockHealth) === "warn" ? "watch" : "ok"} deltaDir={stockHealthTier(selected.stockHealth) === "crit" ? "down" : "up"}/>
         <KPI label={ar ? "الفرق" : "Variance"} value={`${selected.variance}%`} delta={selected.issue} deltaDir={selected.variance < -2 ? "down" : "up"}/>
       </div>
 
@@ -13095,7 +13278,7 @@ function RealtimeWarehouseCard({ node, lang }) {
           <span className="t-micro">{ar ? "توفر المخزون" : "Stock availability"}</span>
           <span className="t-num" style={{ fontSize: 12.5, fontWeight: 500 }}>{node.stockPct}%</span>
         </div>
-        <InventoryMeter pct={node.stockPct} status={node.status}/>
+        <InventoryMeter pct={node.stockPct} stockStatus={node.status}/>
         <div className="t-small subtle" style={{ marginTop: 6, fontSize: 11.5 }}>{arTerm(lang, node.location)}</div>
       </div>
 
@@ -13321,7 +13504,7 @@ function WarehousesScreen({ lang, sync, sourceOfTruth, refreshOdoo }) {
                     <span className="muted">Stock availability</span>
                     <span className="t-num">{node.stockPct}%</span>
                   </div>
-                  <InventoryMeter pct={node.stockPct} status={node.status}/>
+                  <InventoryMeter pct={node.stockPct} stockStatus={node.status}/>
                 </div>
                 <div className="between t-small">
                   <span className="muted">{node.metric}</span>
@@ -13625,10 +13808,13 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, sync }) 
   const inv = odooInventoryRows(bootstrap);
   const [categoryFilter, setCategoryFilter] = React.useState("all");
   const [locationFilter, setLocationFilter] = React.useState("all");
+  const [invSearch, setInvSearch] = React.useState("");
   const baseTransfers = odooTransferRows(bootstrap);
   const [draftTransfers, setDraftTransfers] = React.useState([]);
   const [transferStatusOverrides, setTransferStatusOverrides] = React.useState({});
   const [transferActionBusy, setTransferActionBusy] = React.useState("");
+  // #7 — admin "Receive" routes through the shared discrepancy modal (no silent force-complete).
+  const [adminReceiveFor, setAdminReceiveFor] = React.useState(null);
   const [purchaseDrafts, setPurchaseDrafts] = React.useState([]);
   const [poModalOpen, setPoModalOpen] = React.useState(false);
   const [itemModalOpen, setItemModalOpen] = React.useState(false);
@@ -13653,7 +13839,7 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, sync }) 
     lines: [],
   });
   const [transferModalOpen, setTransferModalOpen] = React.useState(false);
-  const [transferDraft, setTransferDraft] = React.useState({ kiosk: "", lines: [newTransferLine()] });
+  const [transferDraft, setTransferDraft] = React.useState({ kiosk: "", source: "__warehouse__", lines: [newTransferLine()] });
   React.useEffect(() => {
     const engineTransferIds = new Set(odooTransferRows(bootstrap).map((transfer) => transfer.id));
     setDraftTransfers((rows) => rows.filter((transfer) => !engineTransferIds.has(transfer.id)));
@@ -13704,10 +13890,15 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, sync }) 
   React.useEffect(() => {
     if (!locationOptions.some((option) => option.key === locationFilter)) setLocationFilter("all");
   }, [locationFilter, locationOptions]);
-  const filteredInv = React.useMemo(() => inv.filter((row) => (
-    (categoryFilter === "all" || row.category === categoryFilter) &&
-    (locationFilter === "all" || row.locationKey === locationFilter)
-  )), [inv, categoryFilter, locationFilter]);
+  const filteredInv = React.useMemo(() => {
+    const term = invSearch.trim().toLowerCase();
+    return inv.filter((row) => (
+      (categoryFilter === "all" || row.category === categoryFilter) &&
+      (locationFilter === "all" || row.locationKey === locationFilter) &&
+      (!term || [row.item, row.code, row.category, row.location]
+        .some((v) => String(v || "").toLowerCase().includes(term)))
+    ));
+  }, [inv, categoryFilter, locationFilter, invSearch]);
   const filteredLowCount = filteredInv.filter(isInventoryActionable).length;
   const valueRateFor = (item) => sourceDriven ? Number(item.unitCost || 0) : purchaseRateForInventory(item, true);
   const filteredStockValue = Math.round(filteredInv.reduce((sum, item) => sum + (Number(item.stock || 0) * valueRateFor(item)), 0));
@@ -13925,10 +14116,13 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, sync }) 
     try {
       let created = null;
       if (sourceOfTruth?.enabled) {
+        // #3 — source may be the central warehouse (default) or another kiosk.
+        const sourceKioskId = transferDraft.source && transferDraft.source !== "__warehouse__" ? transferDraft.source : undefined;
         created = await sourceOfTruth.submitStockTransfer({
           kioskId: transferDraft.kiosk,
           items: lines.map((line) => ({ itemId: line.item, qty: line.qty, uom: line.unit })),
-          fromWarehouse: centralWarehouseName,
+          fromWarehouse: sourceKioskId ? undefined : centralWarehouseName,
+          sourceKioskId,
         });
         await refreshOdoo?.();
       }
@@ -14012,10 +14206,17 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, sync }) 
     setTransferDraft((draft) => ({ ...draft, lines }));
   };
 
-  const advanceTransferStatus = async (transfer, action) => {
+  const advanceTransferStatus = async (transfer, action, items) => {
     const nextStatus = action?.next || action;
     if (sourceDriven && !sourceOfTruth?.enabled) {
       showToast("Connect the source engine before updating source stock transfers", "warn");
+      return;
+    }
+    // #7 — a "receive" must capture per-line discrepancy (received/damaged/missing/reason/note),
+    // not silently force-complete. When no items are supplied yet, open the shared discrepancy
+    // modal; it calls back with items, which then post through the live engine below.
+    if ((action?.action || action) === "receive" && !items && sourceOfTruth?.enabled && (transfer.lines || []).length) {
+      setAdminReceiveFor({ transfer, action });
       return;
     }
     if (sourceOfTruth?.enabled) {
@@ -14024,6 +14225,7 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, sync }) 
         const result = unwrapOdoo(await sourceOfTruth.stockTransferAction({
           transfer: transfer.id,
           action: action?.action || "receive",
+          items: items || undefined,
         }));
         await refreshOdoo?.();
         const displayStatus = result?.bayaan_state || nextStatus || result?.state;
@@ -14050,7 +14252,7 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, sync }) 
     showToast(ar ? "تم تحديث حالة التحويل" : `Transfer ${transfer.id} moved to ${nextStatus}`, "success");
   };
   return (
-    <div className="col" style={{ gap: 14, minHeight: 860 }}>
+    <div className="col" style={{ gap: 14, minHeight: 860, position: "relative" }}>
       <StudioInventoryWorkspace
         ar={ar}
         busyTransfer={busyTransfer}
@@ -14064,17 +14266,32 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, sync }) 
         isDispatchedTransfer={isDispatchedTransfer}
         locationFilter={locationFilter}
         locationOptions={locationOptions}
+        searchTerm={invSearch}
         onAdvanceTransferStatus={advanceTransferStatus}
         onCategoryChange={setCategoryFilter}
         onCreateSuggestedTransfer={createSuggestedTransfer}
         onExportInventory={exportInventory}
         onLocationChange={setLocationFilter}
+        onSearchChange={setInvSearch}
         onOpenTransferForItem={openTransferForItem}
         onOpenTransferModal={openManualTransferModal}
         suggestions={suggestions}
         transferActionBusy={transferActionBusy}
         transfers={transfers}
       />
+
+      {adminReceiveFor && (
+        <ReceiveDiscrepancyModal
+          lang={lang}
+          transfer={adminReceiveFor.transfer}
+          onClose={() => setAdminReceiveFor(null)}
+          onConfirm={(items) => {
+            const { transfer, action } = adminReceiveFor;
+            setAdminReceiveFor(null);
+            advanceTransferStatus(transfer, action, items || []);
+          }}
+        />
+      )}
 
       <Modal open={itemModalOpen} onClose={() => setItemModalOpen(false)}
         title={ar ? "بند مخزون جديد" : "New stock item"}
@@ -14117,10 +14334,17 @@ function InventoryScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, sync }) 
 
       <Modal open={transferModalOpen} onClose={() => setTransferModalOpen(false)}
         title={ar ? "تحويل مخزون جديد" : "New stock transfer"}
-        sub={ar ? "من المستودع إلى موقع مخزون الكشك" : "Warehouse to kiosk stock location"}>
+        sub={ar ? "من المستودع أو كشك آخر إلى موقع مخزون الكشك" : "Warehouse or another kiosk to a kiosk stock location"}>
         <form onSubmit={createManualTransfer} className="col" style={{ gap: 10 }}>
-          <input className="input" value={centralWarehouseName} readOnly aria-label="From warehouse"/>
-          <select className="input" value={transferDraft.kiosk} onChange={(event) => setTransferDraft((draft) => ({ ...draft, kiosk: event.target.value }))}>
+          <label className="t-micro">{ar ? "المصدر" : "Source"}</label>
+          <select className="input" value={transferDraft.source} onChange={(event) => setTransferDraft((draft) => ({ ...draft, source: event.target.value }))}>
+            <option value="__warehouse__">{centralWarehouseName || (ar ? "المستودع المركزي" : "Central warehouse")}</option>
+            {kioskRows.filter((k) => (k.id || k.kiosk_code) !== transferDraft.kiosk).map((kiosk) => (
+              <option key={"src-" + (kiosk.id || kiosk.kiosk_code)} value={kiosk.id || kiosk.kiosk_code}>{ar ? "كشك " : "Kiosk "}{kiosk.id || kiosk.kiosk_code} - {kiosk.name}</option>
+            ))}
+          </select>
+          <label className="t-micro">{ar ? "الوجهة (كشك)" : "Destination (kiosk)"}</label>
+          <select className="input" value={transferDraft.kiosk} onChange={(event) => setTransferDraft((draft) => ({ ...draft, kiosk: event.target.value, source: draft.source === event.target.value ? "__warehouse__" : draft.source }))}>
             {kioskRows.map((kiosk) => (
               <option key={kiosk.id || kiosk.kiosk_code} value={kiosk.id || kiosk.kiosk_code}>{kiosk.id || kiosk.kiosk_code} - {kiosk.name}</option>
             ))}
@@ -14240,9 +14464,14 @@ function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
   const categoryOptions = React.useMemo(() => (
     ["all", ...Array.from(new Set(rows.map((row) => row.category).filter(Boolean))).sort()]
   ), [rows]);
-  const filteredRows = categoryFilter === "all"
-    ? rows
-    : rows.filter((row) => row.category === categoryFilter);
+  const [search, setSearch] = React.useState("");
+  const searchTerm = search.trim().toLowerCase();
+  const filteredRows = rows.filter((row) => {
+    if (categoryFilter !== "all" && row.category !== categoryFilter) return false;
+    if (!searchTerm) return true;
+    return [row.item, row.code, row.default_code, row.supplier, row.category]
+      .filter(Boolean).some((v) => String(v).toLowerCase().includes(searchTerm));
+  });
 
   const submitStockItem = async (event) => {
     event.preventDefault();
@@ -14337,6 +14566,9 @@ function ItemsCatalogScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo }) {
             <div className="t-small subtle">{ar ? "بنود قابلة للشراء تُنشأ مرة واحدة ثم تُربط بالموردين والوصفات" : "Create purchasable items once, then link them to suppliers and recipes"}</div>
           </div>
           <div className="row" style={{ gap: 6 }}>
+            <input className="input" value={search} onChange={(event) => setSearch(event.target.value)}
+              placeholder={ar ? "ابحث بالاسم أو الرمز أو المورّد" : "Search name, code, supplier"}
+              style={{ height: 28, fontSize: 12, width: 220 }}/>
             <select className="input" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 160 }}>
               {categoryOptions.map((category) => <option key={category} value={category}>{category === "all" ? (ar ? "كل الفئات" : "All categories") : arTerm(lang, category)}</option>)}
             </select>
@@ -14769,6 +15001,7 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth, caps = null }) {
                                       <th scope="col" style={{ textAlign: "end" }}>{ar ? "متوقع" : "Expected"}</th>
                                       <th scope="col" style={{ textAlign: "end" }}>{ar ? "فعلي" : "Counted"}</th>
                                       <th scope="col" style={{ textAlign: "end" }}>{ar ? "فارق" : "Variance"}</th>
+                                      <th scope="col" style={{ textAlign: "end" }}>{ar ? "قيمة الفرق" : "Variance value"}</th>
                                     </tr>
                                   </thead>
                                   <tbody>
@@ -14783,6 +15016,10 @@ function ClosingScreen({ lang, bootstrap, sourceOfTruth, caps = null }) {
                                         <td style={{ textAlign: "end" }} className="t-num">{fmtQty(l.actual, l.unit)}</td>
                                         <td style={{ textAlign: "end", color: l.variance < 0 ? "var(--crit)" : l.variance > 0 ? "var(--pos)" : "var(--ink-3)" }} className="t-num">
                                           {l.variance > 0 ? "+" : ""}{fmtQty(l.variance, l.unit)}
+                                        </td>
+                                        {/* #6 — IQD impact from the cost FROZEN at close time (varianceInputs[].value). */}
+                                        <td style={{ textAlign: "end", color: l.value < 0 ? "var(--crit)" : l.value > 0 ? "var(--pos)" : "var(--ink-3)" }} className="t-num">
+                                          {l.value ? fmtMoney(l.value) : "-"}
                                         </td>
                                       </tr>
                                     ))}
@@ -15862,9 +16099,14 @@ function SuppliersScreen({ lang, bootstrap, sync, sourceOfTruth, refreshOdoo, ca
     : "93%";
   const supplierReceiptDelta = sourceDriven ? `${purchaseOrders.length} source POs` : "2 pts";
   const supplierCategories = ["all", ...Array.from(new Set(supplierRows.map((supplier) => supplier.category)))];
-  const filteredSuppliers = categoryFilter === "all"
-    ? supplierRows
-    : supplierRows.filter((supplier) => supplier.category === categoryFilter);
+  const [supplierSearch, setSupplierSearch] = useState("");
+  const supplierTerm = supplierSearch.trim().toLowerCase();
+  const filteredSuppliers = supplierRows.filter((supplier) => {
+    if (categoryFilter !== "all" && supplier.category !== categoryFilter) return false;
+    if (!supplierTerm) return true;
+    return [supplier.name, supplier.code, supplier.category, supplier.contact, supplier.phone]
+      .filter(Boolean).some((v) => String(v).toLowerCase().includes(supplierTerm));
+  });
   const priceChangeRows = sourceDriven ? [] : [
     ["Milk (whole) 1L", "L", "Baghdad Dairy", "Same day"],
     ["Oranges", "kg", "Najaf Fresh", "Next morning"],
@@ -16295,6 +16537,9 @@ function SuppliersScreen({ lang, bootstrap, sync, sourceOfTruth, refreshOdoo, ca
         <div className="between" style={{ padding: "14px 18px" }}>
           <div className="t-h2">{ar ? "الموردون" : "Suppliers"}</div>
           <div className="row" style={{ gap: 6 }}>
+            <input className="input" value={supplierSearch} onChange={(event) => setSupplierSearch(event.target.value)}
+              placeholder={ar ? "ابحث بالاسم أو جهة الاتصال" : "Search name or contact"}
+              style={{ height: 28, fontSize: 12, width: 200 }}/>
             <select className="input" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 150 }}>
               {supplierCategories.map((category) => <option key={category} value={category}>{category === "all" ? arTerm(lang, "All categories") : arTerm(lang, category)}</option>)}
             </select>
@@ -16969,9 +17214,13 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, caps = n
       payrollStatus: hold ? "review" : person.status === "leave" ? "leave-adjusted" : "ready",
     };
   }), [activeAdjustments, allStaff, backendPayrollLines, sourceDriven]);
+  const [staffSearch, setStaffSearch] = useState("");
+  const staffTerm = staffSearch.trim().toLowerCase();
   const filteredRoster = payrollRows.filter((person) => (
     (roleFilter === "all" || person.role === roleFilter)
     && (kioskFilter === "all" || person.kiosk === kioskFilter)
+    && (!staffTerm || [person.name, person.role, person.kiosk, person.phone]
+      .filter(Boolean).some((v) => String(v).toLowerCase().includes(staffTerm)))
   ));
   const activeStaff = allStaff.filter((person) => person.status !== "leave").length;
   const grossPayroll = payrollRows.reduce((sum, person) => sum + person.salary, 0);
@@ -18066,6 +18315,9 @@ function HRPayrollScreen({ lang, bootstrap, sourceOfTruth, refreshOdoo, caps = n
         <div className="between" style={{ padding: "14px 18px" }}>
           <div className="t-h2">{ui(ar, "roster")}</div>
           <div className="row" style={{ gap: 6 }}>
+            <input className="input" value={staffSearch} onChange={(event) => setStaffSearch(event.target.value)}
+              placeholder={ar ? "ابحث عن موظف" : "Search staff"}
+              style={{ height: 28, fontSize: 12, width: 170 }}/>
             <select className="input" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)} style={{ height: 28, fontSize: 12, width: 126 }}>
               {roles.map((role) => <option key={role} value={role}>{role === "all" ? (ar ? "كل الأدوار" : "All roles") : hrRoleLabel(role, lang)}</option>)}
             </select>
@@ -19847,15 +20099,15 @@ function JournalEntryModal({ open, onClose, lang, sourceOfTruth, chartAccounts =
           {chartAccounts.map((a) => <option key={a.code} value={a.code}>{a.code} — {a.name}</option>)}
         </datalist>
         <div style={{ overflowX: "auto" }}>
-          <table className="tbl" style={{ minWidth: 700 }}>
+          <table className="tbl tbl-form" style={{ width: "100%" }}>
             <thead>
               <tr>
-                <th scope="col" style={{ width: 140 }}>{ar ? "الحساب" : "Account"}</th>
+                <th scope="col" style={{ width: "21%" }}>{ar ? "الحساب" : "Account"}</th>
                 <th scope="col">{ar ? "البيان" : "Label"}</th>
-                <th scope="col" style={{ width: 100 }}>{ar ? "الفرع" : "Branch"}</th>
-                <th scope="col" style={{ width: 120, textAlign: "end" }}>{ar ? "مدين" : "Debit"}</th>
-                <th scope="col" style={{ width: 120, textAlign: "end" }}>{ar ? "دائن" : "Credit"}</th>
-                <th scope="col" style={{ width: 32 }}></th>
+                <th scope="col" style={{ width: "13%" }}>{ar ? "الفرع" : "Branch"}</th>
+                <th scope="col" style={{ width: "16%", textAlign: "end" }}>{ar ? "مدين" : "Debit"}</th>
+                <th scope="col" style={{ width: "16%", textAlign: "end" }}>{ar ? "دائن" : "Credit"}</th>
+                <th scope="col" style={{ width: 34 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -20270,11 +20522,11 @@ const ROLE_LABELS_DISPLAY_AR = {
 };
 
 const TEST_ACCOUNTS = [
-  { role: "Owner", login: "owner@miza.iq" },
-  { role: "Manager", login: "layla@miza.iq" },
-  { role: "Logistics", login: "hassan@miza.iq" },
-  { role: "Accountant", login: "noor@miza.iq" },
-  { role: "Cashier", login: "zainab@miza.iq" },
+  { role: "Owner", login: "owner@koub.iq" },
+  { role: "Manager", login: "layla@koub.iq" },
+  { role: "Logistics", login: "hassan@koub.iq" },
+  { role: "Accountant", login: "noor@koub.iq" },
+  { role: "Cashier", login: "zainab@koub.iq" },
 ];
 
 function authAllowsPanel(auth, hasBackend, panel) {
@@ -20421,7 +20673,112 @@ function InfoTip({ text }) {
   );
 }
 
-function AdminTopBar({ title, sub, right, lang, tip }) {
+// #10 — global command palette. Searches kiosks, products, suppliers, and staff by name/code
+// (Arabic + English), and jumps to any admin section. Opens on Ctrl/Cmd+K or the top-bar pill.
+function CommandPalette({ open, onClose, lang, bootstrap, kiosks, navigate, onPickKiosk, sourceOfTruth, canSeeAccounting = false }) {
+  const ar = lang === "ar";
+  const [q, setQ] = React.useState("");
+  const inputRef = React.useRef(null);
+  // #4 (search): POS sessions, journal entries and accounts are not in the bootstrap snapshot,
+  // so the palette FETCHES them from the live read routes when it opens (all server-scoped:
+  // pos_session_history is kiosk-scoped; accounting_report is chain-read-only, so a cashier's
+  // fetch simply returns nothing). Fetched once per open.
+  const [extra, setExtra] = React.useState({ sessions: [], journals: [], accounts: [] });
+  React.useEffect(() => {
+    if (open) { setQ(""); const id = setTimeout(() => inputRef.current?.focus(), 30); return () => clearTimeout(id); }
+  }, [open]);
+  React.useEffect(() => {
+    if (!open || !sourceOfTruth?.enabled) { setExtra({ sessions: [], journals: [], accounts: [] }); return; }
+    let cancelled = false;
+    (async () => {
+      const out = { sessions: [], journals: [], accounts: [] };
+      try {
+        const s = unwrapOdoo(await sourceOfTruth.getPosSessionHistory?.({}));
+        out.sessions = s?.sessions || s?.rows || [];
+      } catch { /* not permitted / offline */ }
+      if (canSeeAccounting) {
+        try { out.journals = (unwrapOdoo(await sourceOfTruth.getAccountingReport?.({ report: "journals" }))?.rows) || []; } catch { /* noop */ }
+        try { out.accounts = (unwrapOdoo(await sourceOfTruth.getAccountingReport?.({ report: "chart" }))?.rows) || []; } catch { /* noop */ }
+      }
+      if (!cancelled) setExtra(out);
+    })();
+    return () => { cancelled = true; };
+  }, [open, sourceOfTruth, canSeeAccounting]);
+  const index = React.useMemo(() => {
+    if (!open) return [];
+    const snapshot = unwrapOdoo(bootstrap) || {};
+    const items = [];
+    ADMIN_NAV.forEach((n) => { if (n.id) items.push({ label: n.label, sub: ar ? "قسم" : "Section", icon: n.icon || "arrowRight", go: () => navigate(n.id) }); });
+    (kiosks || []).forEach((k) => items.push({ label: `${k.name} · ${k.id}`, sub: ar ? "كشك" : "Kiosk", icon: "store", go: () => onPickKiosk(k) }));
+    (snapshot.products || []).forEach((p) => {
+      const lbl = [cleanDisplayName(p.name), p.default_code].filter(Boolean).join(" · ");
+      if (lbl) items.push({ label: lbl, sub: ar ? "منتج · المنتجات والوصفات" : "Product · Products & Recipes", icon: "coffee", go: () => navigate("products") });
+    });
+    odooSupplierRows(bootstrap).forEach((s) => { if (s.name) items.push({ label: s.name, sub: ar ? "مورّد · المشتريات" : "Supplier · Purchases", icon: "truck", go: () => navigate("suppliers") }); });
+    odooStaffRows(bootstrap).forEach((e) => { if (e.name) items.push({ label: e.name, sub: ar ? "موظف · الطاقم" : "Employee · Staff", icon: "users", go: () => navigate("staff") }); });
+    // #10 — orders + POS sessions are searchable (accountant need). Source rows are already
+    // server-scoped in the bootstrap snapshot, so this adds no client-side privilege.
+    odooPosOrderRows(bootstrap).forEach((o) => {
+      const lbl = [o.id, o.kioskId, o.cashier].filter(Boolean).join(" · ");
+      if (o.id) items.push({ label: lbl, sub: ar ? `طلب · ${fmtMoney(o.amount)}` : `Order · ${fmtMoney(o.amount)}`, icon: "receipt", go: () => navigate("sales") });
+    });
+    odooPosSessionRows(bootstrap).forEach((s) => {
+      const lbl = [s.name, s.kiosk, s.cashier].filter(Boolean).join(" · ");
+      if (s.name) items.push({ label: lbl, sub: ar ? `جلسة نقاط بيع · ${s.kiosk}` : `POS session · ${s.kiosk}`, icon: "store", go: () => navigate("sales") });
+    });
+    // #4 — fetched POS sessions, journal entries and accounts (live, server-scoped).
+    (extra.sessions || []).forEach((s) => {
+      const code = s.kiosk || s.kioskCode || s.kiosk_code || "";
+      const lbl = [s.name, code, s.cashier].filter(Boolean).join(" · ");
+      if (s.name) items.push({ label: lbl, sub: ar ? `جلسة نقاط بيع · ${code}` : `POS session · ${code}`, icon: "store",
+        go: () => (code ? onPickKiosk({ id: code, kiosk_code: code }) : navigate("finance")) });
+    });
+    (extra.journals || []).forEach((j) => {
+      const lbl = [j.name, j.ref, j.journalName || j.journal].filter(Boolean).join(" · ");
+      if (lbl) items.push({ label: lbl, sub: ar ? "قيد محاسبي · القيود" : "Journal entry · Journals", icon: "fileText", go: () => navigate("journals") });
+    });
+    (extra.accounts || []).forEach((a) => {
+      const lbl = [a.code, a.name].filter(Boolean).join(" · ");
+      if (lbl) items.push({ label: lbl, sub: ar ? "حساب · دليل الحسابات" : "Account · Chart of accounts", icon: "wallet", go: () => navigate("coa") });
+    });
+    return items;
+  }, [open, bootstrap, kiosks, ar, navigate, onPickKiosk, extra]);
+  const term = q.trim().toLowerCase();
+  const results = React.useMemo(() => {
+    if (!term) return index.filter((it) => it.icon === "arrowRight" || it.sub === (ar ? "قسم" : "Section")).slice(0, 14);
+    return index.filter((it) => it.label.toLowerCase().includes(term) || (it.sub || "").toLowerCase().includes(term)).slice(0, 50);
+  }, [index, term, ar]);
+  const pick = (it) => { it.go(); onClose(); };
+  if (!open) return null;
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 4000, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "10vh" }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "min(640px, 92vw)", maxHeight: "70vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div className="row" style={{ gap: 8, padding: "12px 14px", borderBottom: "1px solid var(--line)" }}>
+          <Icon name="search" size={15}/>
+          <input ref={inputRef} className="input" style={{ border: "none", flex: 1, height: 28, background: "transparent" }}
+            placeholder={ar ? "ابحث عن كشك، منتج، طلب، جلسة، مورّد، موظف، أو انتقل إلى قسم…" : "Search kiosks, products, orders, sessions, suppliers, staff — or jump to a section…"}
+            value={q} onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && results[0]) pick(results[0]); if (e.key === "Escape") onClose(); }}/>
+          <span className="t-small muted">esc</span>
+        </div>
+        <div style={{ overflowY: "auto" }}>
+          {results.map((it, i) => (
+            <button key={i} type="button" onClick={() => pick(it)} style={{ display: "flex", width: "100%", alignItems: "center", gap: 10, padding: "10px 14px", background: "transparent", border: "none", borderBottom: "1px solid var(--line)", textAlign: "start", cursor: "pointer", color: "var(--ink)" }}>
+              <Icon name={it.icon} size={14}/>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: "block", fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{it.label}</span>
+                <span className="t-small muted">{it.sub}</span>
+              </span>
+            </button>
+          ))}
+          {!results.length && <div className="muted" style={{ padding: 18, textAlign: "center" }}>{ar ? "لا نتائج" : "No results"}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminTopBar({ title, sub, right, lang, tip, onSearch }) {
   return (
     <div className="admin-topbar" style={{
       height: 56, padding: "0 24px",
@@ -20439,15 +20796,15 @@ function AdminTopBar({ title, sub, right, lang, tip }) {
       </div>
       <div className="row" style={{ gap: 8 }}>
         {right}
-        <div className="row" style={{
-          gap: 6, padding: "0 10px", height: 30,
+        <button type="button" onClick={onSearch} aria-label={lang === "ar" ? "بحث" : "Search"} className="row" style={{
+          gap: 6, padding: "0 10px", height: 30, cursor: "pointer",
           background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 6,
           color: "var(--ink-3)"
         }}>
           <Icon name="search" size={13}/>
           <span style={{ fontSize: 12.5 }}>{lang === "ar" ? "بحث" : "Search"}</span>
           <span style={{ fontSize: 10.5, padding: "1px 5px", background: "var(--surface-sunk)", borderRadius: 3, marginInlineStart: 12 }}>Ctrl K</span>
-        </div>
+        </button>
         <button className="btn btn-ghost"><Icon name="bell" size={13}/></button>
       </div>
     </div>
@@ -20568,6 +20925,7 @@ function AdminPanel({ lang, scope = "Daily" }) {
   const bayaan = useBayaan();
   const [active, setActive] = useState("overview");
   const [selectedKiosk, setSelectedKiosk] = useState(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const allowedIds = useMemo(() => allowedAdminIds(bayaan.auth, bayaan.hasBackend), [bayaan.auth, bayaan.hasBackend]);
   const canViewAuditLog = isSuperadminAuth(bayaan.auth);
   // Backend requires procurement + manager scope for /product_create_bundle; a
@@ -20627,6 +20985,18 @@ function AdminPanel({ lang, scope = "Daily" }) {
     return () => {
       if (window.__bayaanSetAdminSection === setActive) delete window.__bayaanSetAdminSection;
     };
+  }, []);
+  // #10 — Ctrl/Cmd+K opens the global command palette.
+  useEffectIns(() => {
+    if (typeof window === "undefined") return undefined;
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   const refreshOdoo = React.useCallback(async () => {
@@ -20713,6 +21083,11 @@ function AdminPanel({ lang, scope = "Daily" }) {
           }, 250);
         }
       },
+      onReconnect: () => {
+        // #12 — stream recovered after an outage: resync the authoritative snapshot so any
+        // events missed during the gap are backfilled (no manual refresh needed).
+        void refreshOdoo();
+      },
       onError: (error) => {
         setRealtime((current) => ({ ...current, status: "error", error: compactError(error) }));
       },
@@ -20766,7 +21141,7 @@ function AdminPanel({ lang, scope = "Daily" }) {
   );
 
   const screens = {
-    overview: <OverviewScreen lang={lang} bootstrap={scopedBootstrap} scope={scope}/>,
+    overview: <OverviewScreen lang={lang} bootstrap={scopedBootstrap} scope={scope} realtime={realtime}/>,
     insights: <InsightsScreen lang={lang} bootstrap={scopedBootstrap} sourceOfTruth={sourceOfTruth} navigate={setActive} refreshOdoo={refreshOdoo} canCreateProduct={canCreateProduct} canReceiveInvoice={canReceiveInvoice} warehouses={dashboardWarehouses}/>,
     sales: <SalesMonitorScreen lang={lang} bootstrap={scopedBootstrap} scope={scope} sourceOfTruth={sourceOfTruth}/>,
     kiosks: <KiosksScreen lang={lang} bootstrap={scopedBootstrap} sync={dashboardSync} sourceOfTruth={sourceOfTruth} refreshOdoo={refreshOdoo} onPick={openKiosk} scope={scope}/>,
@@ -20888,6 +21263,7 @@ function AdminPanel({ lang, scope = "Daily" }) {
       <main className={`admin-content-inset ${assistantCanvasActive ? "admin-content-inset-assistant" : "admin-content-inset-dashboard"}`}>
         <AdminTopBar title={lang === "ar" ? t.ar : t.en} sub={lang === "ar" ? t.sub.ar : t.sub.en} lang={lang}
           tip={t.tip ? (lang === "ar" ? t.tip.ar : t.tip.en) : null}
+          onSearch={() => setPaletteOpen(true)}
           right={(
             <div className="row" style={{ gap: 6 }}>
               {canViewAuditLog && (
@@ -20910,14 +21286,18 @@ function AdminPanel({ lang, scope = "Daily" }) {
                       : (lang === "ar" ? "جار مزامنة المحرك" : "Engine syncing")}
               </span>
               <span
-                className={`badge ${["live", "polling"].includes(realtime.status) ? "badge-pos" : realtime.status === "error" ? "badge-crit" : "badge-warn"}`}
+                className={`badge ${["live", "polling"].includes(realtime.status) ? "badge-pos" : (realtime.status === "error" || realtime.status === "offline") ? "badge-crit" : "badge-warn"}`}
                 title={realtime.lastEvent?.title || realtime.error || "Bayaan realtime stream"}
               >
-                <span className={`dot ${["live", "polling"].includes(realtime.status) ? "pos" : realtime.status === "error" ? "crit" : "warn"}`}></span>
+                <span className={`dot ${["live", "polling"].includes(realtime.status) ? "pos" : (realtime.status === "error" || realtime.status === "offline") ? "crit" : "warn"}`}></span>
                 {realtime.status === "live"
                   ? (lang === "ar" ? "التدفق مباشر" : "Stream live")
                   : realtime.status === "polling"
                     ? (lang === "ar" ? "استرجاع عبر الناقل" : "Bus fallback")
+                    : realtime.status === "reconnecting"
+                      ? (lang === "ar" ? "إعادة الاتصال" : "Reconnecting")
+                    : realtime.status === "offline"
+                      ? (lang === "ar" ? "غير متصل" : "Offline")
                     : realtime.status === "error"
                       ? (lang === "ar" ? "خطأ في التدفق" : "Stream error")
                     : realtime.status === "missing"
@@ -20945,6 +21325,17 @@ function AdminPanel({ lang, scope = "Daily" }) {
           </div>
         </div>
       </main>
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        lang={lang}
+        bootstrap={dashboardBootstrap}
+        kiosks={adminKiosks}
+        navigate={(id) => setActive(id)}
+        onPickKiosk={openKiosk}
+        sourceOfTruth={sourceOfTruth}
+        canSeeAccounting={allowedIds.includes("journals")}
+      />
     </div>
   );
 }
@@ -21070,7 +21461,7 @@ function POSPanel({ lang }) {
     return () => subscription?.close();
   }, [bayaan.gateway, bayaan.hasBackend, bayaan.mode, loadPosTransfers, posKioskId]);
 
-  const receivePosTransfer = async (transfer) => {
+  const receivePosTransfer = async (transfer, items = null) => {
     if (bayaan.mode === "live" && !bayaan.hasBackend) {
       showToast("Connect the source engine before receiving source stock transfers", "warn");
       return;
@@ -21078,7 +21469,7 @@ function POSPanel({ lang }) {
     setTransferBusy(transfer.id);
     try {
       if (bayaan.mode === "live" && bayaan.hasBackend) {
-        const result = unwrapOdoo(await bayaan.gateway.stockTransferAction({ transfer: transfer.id, action: "receive" }));
+        const result = unwrapOdoo(await bayaan.gateway.stockTransferAction({ transfer: transfer.id, action: "receive", items: items || undefined }));
         const receivedStatus = result?.bayaan_state || "received";
         setPosTransfers((rows) => rows.map((row) => row.id === transfer.id
           ? { ...row, status: receivedStatus, engineState: result?.state || row.engineState || "done", eta: "received" }
@@ -21103,7 +21494,7 @@ function POSPanel({ lang }) {
       <div className="tablet">
         <div className="tablet-cam"></div>
         <div className="tablet-screen" dir={lang === "ar" ? "rtl" : "ltr"}>
-          {screen === "login" && <POSLogin lang={lang} onIn={goSale}/>}
+          {screen === "login" && <POSLogin lang={lang} onIn={goSale} bootstrap={posScreenBootstrap}/>}
           {screen === "sale" && <POSSale lang={lang}
             cart={cart} setCart={setCart} addItem={wrappedAdd}
             lastAdded={lastAdded}
@@ -21111,6 +21502,7 @@ function POSPanel({ lang }) {
             bootstrap={posScreenBootstrap}
             onCharge={() => setScreen("payment")}
             onWaste={() => setScreen("waste")}
+            onWrongOrder={() => setScreen("wrongorder")}
             onStock={() => setScreen("stock")}
             expectedTransfers={posTransfers}
             onLogout={() => setScreen("close")}
@@ -21125,6 +21517,8 @@ function POSPanel({ lang }) {
           />}
           {screen === "waste" && <POSWaste lang={lang}
             bootstrap={posScreenBootstrap}
+            onDone={() => setScreen("sale")} onBack={() => setScreen("sale")}/>}
+          {screen === "wrongorder" && <POSWrongOrder lang={lang}
             onDone={() => setScreen("sale")} onBack={() => setScreen("sale")}/>}
           {screen === "close" && <POSClose lang={lang}
             bootstrap={posScreenBootstrap}
@@ -21168,11 +21562,29 @@ const SIMULATION_STAFF = [
   { name: "Sara Younis", arName: "سارة يونس", role: "Barista", arRole: "باريستا", pin: "4567", openingCash: 175000 },
 ];
 
-function POSLogin({ lang, onIn }) {
+function POSLogin({ lang, onIn, bootstrap }) {
   const ar = lang === "ar";
   const bayaan = useBayaan();
   const { showToast } = useToast();
   const simulationRuntime = isSimulationRuntime();
+  // #4 — standard cash float configured for this kiosk (shown at open for the cashier to
+  // confirm the actual opening drawer; any difference is recorded as an opening discrepancy).
+  // Expected opening = the kiosk's STANDARD cash float (server-computed `expectedOpening`); the
+  // drawer is replenished to it each morning, so a short count is a real opening discrepancy. #4
+  // Returns null while the POS bootstrap is still loading (no kiosks yet) so the UI shows a loading
+  // dash instead of flashing IQD 0 before the real float (e.g. 50,000) arrives.
+  const standardFloatRaw = React.useMemo(() => {
+    const snapshot = unwrapOdoo(bootstrap) || {};
+    const kioskRows = snapshot.kiosks || [];
+    if (!kioskRows.length) return null; // bootstrap not loaded yet
+    const row = kioskRows.find((k) =>
+      matchesKiosk(k.kiosk_code || k.id, { id: bayaan.kioskId, kiosk_code: bayaan.kioskId }));
+    if (!row) return null;
+    return Number(row.expectedOpening != null ? row.expectedOpening : (row.defaultCashFloat || 0));
+  }, [bootstrap, bayaan.kioskId]);
+  const floatReady = standardFloatRaw != null;
+  const standardFloat = standardFloatRaw || 0;
+  const [openingConfirm, setOpeningConfirm] = useStatePOS("");
   const sourceEngineMissing = bayaan.mode === "live" && !bayaan.hasBackend;
   const sourceBackedShift = bayaan.mode === "live" && bayaan.hasBackend && !simulationRuntime;
   const sourceUser = bayaan.auth?.user || {};
@@ -21236,10 +21648,14 @@ function POSLogin({ lang, onIn }) {
       return;
     }
     setBusy(true);
+    const confirmedOpening = sourceBackedShift
+      ? (openingConfirm === "" ? standardFloat : Number(openingConfirm || 0))
+      : picked.openingCash;
     const result = await bayaan.startShift({
       kioskId: bayaan.kioskId,
       cashier: picked.name,
-      openingCash: sourceBackedShift ? 0 : picked.openingCash,
+      openingCash: confirmedOpening,
+      openingDiscrepancy: sourceBackedShift ? confirmedOpening - standardFloat : 0,
     });
     setBusy(false);
     if (!result.ok) {
@@ -21340,7 +21756,23 @@ function POSLogin({ lang, onIn }) {
             {error && (
               <div style={{ marginTop: 10, fontSize: 12, color: "var(--crit, #C04A38)", textAlign: "center" }}>{error}</div>
             )}
-            <button onClick={tryStartShift} disabled={busy || (!sourceBackedShift && pin.length !== 4)} className="btn btn-primary btn-xl" style={{ marginTop: 14, justifyContent: "center", opacity: sourceBackedShift || pin.length === 4 ? 1 : 0.4 }}>
+            {sourceBackedShift && (
+              <div style={{ marginTop: 14, textAlign: "start" }}>
+                <label className="t-micro">{ar ? "أكّد النقد الافتتاحي في الدرج" : "Confirm opening cash in drawer"}</label>
+                <input className="input" type="number" min={0} value={openingConfirm}
+                  onChange={(e) => setOpeningConfirm(e.target.value)}
+                  placeholder={floatReady ? String(Math.round(standardFloat)) : "…"} style={{ marginTop: 4 }}/>
+                <div className="t-small subtle" style={{ marginTop: 6 }}>
+                  {!floatReady
+                    ? (ar ? "الافتتاح المتوقع: جارٍ التحميل…" : "Expected opening: loading…")
+                    : (ar ? `الافتتاح المتوقع: د.ع ${Math.round(standardFloat).toLocaleString("en")}` : `Expected opening: IQD ${Math.round(standardFloat).toLocaleString("en")}`)}
+                  {floatReady && openingConfirm !== "" && Number(openingConfirm) !== standardFloat && (
+                    <span style={{ color: "var(--warn)" }}>{ar ? ` · فرق ${Math.round(Number(openingConfirm) - standardFloat).toLocaleString("en")}` : ` · discrepancy ${Math.round(Number(openingConfirm) - standardFloat).toLocaleString("en")}`}</span>
+                  )}
+                </div>
+              </div>
+            )}
+            <button onClick={tryStartShift} disabled={busy || (!sourceBackedShift && pin.length !== 4) || (sourceBackedShift && (openingConfirm === "" || !floatReady))} className="btn btn-primary btn-xl" style={{ marginTop: 14, justifyContent: "center", opacity: (sourceBackedShift ? (openingConfirm !== "" && floatReady) : pin.length === 4) ? 1 : 0.4 }}>
               {busy ? (ar ? "جارٍ الفتح..." : "Opening...") : (ar ? "ابدأ الوردية" : "Start shift")} <Icon name="arrowRight" size={14}/>
             </button>
             <div style={{ marginTop: 14, fontSize: 11.5, color: "var(--ink-3)", textAlign: "center" }}>
@@ -21363,7 +21795,7 @@ function POSLogin({ lang, onIn }) {
    POS Sale screen — order taking
    ============================================================ */
 
-function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total, vatRatePct = 0, bootstrap, onCharge, onWaste, onStock, expectedTransfers = [], onLogout }) {
+function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total, vatRatePct = 0, bootstrap, onCharge, onWaste, onWrongOrder, onStock, expectedTransfers = [], onLogout }) {
   const ar = lang === "ar";
   const bayaan = useBayaan();
   const { showToast } = useToast();
@@ -21379,6 +21811,11 @@ function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total
   const [activeCat, setActiveCat] = useStatePOS(0);
   const [search, setSearch] = useStatePOS("");
   const [modifierTarget, setModifierTarget] = React.useState(null); // { item, groups }
+  // Per-card selected size for "size-only" products (no real modifier groups), so the
+  // cashier can pick a size inline and the photo tap adds it — matching the visual design.
+  const [sizeSel, setSizeSel] = useStatePOS({}); // { [productId]: size }
+  // Transient confirmation badge that pops on the card whose item was just added.
+  const [justAddedKey, setJustAddedKey] = useStatePOS(null);
   // Tabs are derived from the actual menu categories, with a leading "All" tab, so products
   // always appear under their real category instead of a fixed positional slot (Hot/Iced/...).
   const allItems = React.useMemo(() => menu.flatMap((g) => g.items), [menu]);
@@ -21462,6 +21899,13 @@ function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total
     line?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [lastAdded?.t]);
 
+  React.useEffect(() => {
+    if (!lastAdded?.key) return undefined;
+    setJustAddedKey(lastAdded.key);
+    const timer = setTimeout(() => setJustAddedKey(null), 900);
+    return () => clearTimeout(timer);
+  }, [lastAdded?.t, lastAdded?.key]);
+
   return (
     <div style={{ height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }}>
       {/* Top bar */}
@@ -21477,6 +21921,7 @@ function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total
         </div>
         <div className="row" style={{ gap: 6 }}>
           <button className="btn btn-ghost" onClick={onWaste}><Icon name="trash" size={13}/>{ar ? "هدر" : "Waste"}</button>
+          <button className="btn btn-ghost" onClick={onWrongOrder}><Icon name="rotateCcw" size={13}/>{ar ? "طلب خاطئ" : "Wrong order"}</button>
           <button className="btn btn-ghost" onClick={onStock}>
             <Icon name="box" size={13}/>{ar ? "استلام المخزون" : "Receive stock"}
             {dispatchedTransfers.length > 0 && <span className="badge badge-warn" style={{ marginInlineStart: 4 }}>{dispatchedTransfers.length}</span>}
@@ -21567,37 +22012,70 @@ function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total
           </div>
 
           <div className="scroll" style={{ flex: 1, overflow: "auto", padding: "8px 18px 24px" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+            {items.length > 0 && (
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "2px 2px 12px" }}>
+                <span style={{ fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>{search ? (ar ? "النتائج" : "Results") : cat.cat}</span>
+                <span className="t-small subtle" style={{ fontFamily: "var(--font-mono)" }}>{items.length} {ar ? "صنف" : "items"}</span>
+              </div>
+            )}
+            <div className="pos-product-grid">
               {items.map(it => {
                 // Robust resolution: source options → category bindings → synthesized size group.
                 const modGroups = posModifierGroupsFor(it, cat.cat);
+                // A "size-only" product (its sole group is the synthesized Size) carries no
+                // price/recipe deltas per size — the chosen size is just a recorded label, so it
+                // is safe to pick inline and add directly. Richer products open the modifier sheet.
+                const sizeOnly = modGroups.length === 1 && modGroups[0].id === "size";
+                const customizable = modGroups.length > 0 && !sizeOnly;
+                const chipSizes = (Array.isArray(it.sizes) ? it.sizes : []).map(s => String(s).trim()).filter(Boolean);
+                const selSize = sizeSel[it.id] || chipSizes[0] || "S";
+                // Pop the confirmation badge on whichever card produced the last add. Keys are
+                // "<id>:<size>[:<signature>]"; the ":" separator makes the prefix test collision-free.
+                const justAdded = justAddedKey != null && justAddedKey.startsWith(it.id + ":");
                 const handleClick = () => {
-                  if (modGroups.length > 0) {
+                  if (customizable) {
                     setModifierTarget({ item: it, groups: modGroups });
                   } else {
-                    addItem(it, it.sizes[0]);
+                    addItem(it, sizeOnly ? selSize : (chipSizes[0] || it.sizes?.[0]));
                   }
                 };
                 return (
                 <button key={it.id} onClick={handleClick}
                   data-product-id={it.id}
                   data-has-modifiers={modGroups.length > 0 ? "true" : "false"}
-                  className="card"
-                  style={{
-                    padding: 0, textAlign: "start", overflow: "hidden",
-                    cursor: "pointer", display: "flex", flexDirection: "row",
-                    minHeight: 110, position: "relative", transition: "transform 100ms, border-color 100ms"
-                  }}
-                  onMouseDown={e => e.currentTarget.style.transform = "scale(0.985)"}
-                  onMouseUp={e => e.currentTarget.style.transform = "none"}
-                  onMouseLeave={e => e.currentTarget.style.transform = "none"}>
-                  <div style={{ width: "50%", aspectRatio: "1 / 1", flexShrink: 0, alignSelf: "stretch", overflow: "hidden", background: "var(--surface-sunk)" }}>
+                  className="card pos-product-card">
+                  <div className="pos-product-media">
                     <ProductImage slug={it.image} name={it.name} fill radius={0}/>
+                    <span className="pos-price-pill">IQD {it.price.toLocaleString("en")}</span>
+                    <span className={"pos-add-badge" + (justAdded ? " on" : "")}>
+                      <Icon name="check" size={15} stroke={2.2}/>
+                    </span>
                   </div>
-                  <div style={{ flex: 1, padding: "12px 14px", display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0, gap: 4 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 500, lineHeight: 1.3 }}>{it.name}</div>
-                    <div className="t-num" style={{ fontSize: 13 }}>IQD {it.price.toLocaleString("en")}</div>
-                    <div className="t-small subtle">{it.sizes.join(" · ")}{modGroups.length > 0 ? (ar ? " · قابل للتخصيص" : " · customizable") : ""}</div>
+                  <div className="pos-product-body">
+                    <div className="pos-product-name">{it.name}</div>
+                    {sizeOnly && chipSizes.length > 1 ? (
+                      <div className="pos-size-row" onClick={(e) => e.stopPropagation()}>
+                        {chipSizes.map(sz => (
+                          <span key={sz} role="button" tabIndex={0}
+                            className={"pos-size-chip pos-size-chip-pick" + (selSize === sz ? " on" : "")}
+                            onClick={(e) => { e.stopPropagation(); setSizeSel(s => ({ ...s, [it.id]: sz })); }}
+                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); setSizeSel(s => ({ ...s, [it.id]: sz })); } }}>
+                            {sz}
+                          </span>
+                        ))}
+                      </div>
+                    ) : customizable ? (
+                      <span className="pos-size-row">
+                        {chipSizes.slice(0, 4).map(sz => (
+                          <span key={sz} className="pos-size-chip">{sz}</span>
+                        ))}
+                        <span className="pos-customize-hint" style={{ marginInlineStart: chipSizes.length ? 2 : 0 }}>
+                          <Icon name="settings" size={12}/>{ar ? "خيارات" : "Options"}
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="t-small subtle" style={{ marginTop: "auto", textTransform: "capitalize" }}>{chipSizes[0] || ""}</span>
+                    )}
                   </div>
                 </button>
                 );
@@ -21708,8 +22186,103 @@ function POSSale({ lang, cart, setCart, addItem, lastAdded, subTotal, vat, total
   );
 }
 
+// #7 — shared per-line receive/discrepancy modal, used by BOTH the cashier POS receive flow and
+// the admin transfer workspace, so the admin "Receive" action can no longer bypass discrepancy
+// capture. Collects received/damaged per item, shows the computed Missing shortfall, and requires
+// a structured reason + a note when received+damaged ≠ dispatched.
+function ReceiveDiscrepancyModal({ lang, transfer, onClose, onConfirm }) {
+  const ar = lang === "ar";
+  const [recvLines, setRecvLines] = React.useState(() => (transfer.lines || []).map((l) => ({
+    item: l.product, name: cleanDisplayName(l.product), uom: l.uom || "",
+    dispatched: Number(l.qty || 0), received: String(Number(l.qty || 0)), damaged: "0",
+  })));
+  const [recvNote, setRecvNote] = React.useState("");
+  const [recvReason, setRecvReason] = React.useState("");
+  const recvHasDiscrepancy = recvLines.some((l) => Math.abs((Number(l.received || 0) + Number(l.damaged || 0)) - l.dispatched) > 0.001);
+  const confirm = () => {
+    const items = recvLines.length
+      ? recvLines.map((l) => ({ itemId: l.item, qty: Number(l.received || 0), receivedQty: Number(l.received || 0), damagedQty: Number(l.damaged || 0), reason: recvReason || undefined, note: recvNote.trim() || undefined }))
+      : null;
+    onConfirm(items);
+  };
+  return (
+    <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 18 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "min(520px, 96%)", maxHeight: "88%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div className="between" style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)" }}>
+          <div>
+            <div className="t-h2">{ar ? "استلام التحويل" : "Receive transfer"} · {transfer.id}</div>
+            <div className="t-small subtle">{ar ? "أدخل المستلم والتالف لكل صنف" : "Enter received & damaged per item"}</div>
+          </div>
+          <button className="btn btn-ghost" onClick={onClose} style={{ height: 28 }}><Icon name="x" size={13}/></button>
+        </div>
+        <div style={{ overflowY: "auto", padding: "8px 16px" }}>
+          <table className="tbl" style={{ width: "100%" }}>
+            <thead><tr>
+              <th>{ar ? "الصنف" : "Item"}</th>
+              <th style={{ textAlign: "end" }}>{ar ? "المُرسَل" : "Dispatched"}</th>
+              <th style={{ width: 84 }}>{ar ? "المستلم" : "Received"}</th>
+              <th style={{ width: 84 }}>{ar ? "التالف" : "Damaged"}</th>
+              <th style={{ textAlign: "end" }}>{ar ? "ناقص" : "Missing"}</th>
+            </tr></thead>
+            <tbody>
+              {recvLines.map((l, i) => {
+                const short = Math.abs((Number(l.received || 0) + Number(l.damaged || 0)) - l.dispatched) > 0.001;
+                // #7 — missing = dispatched − received − damaged (clamped ≥0); shown so the
+                // shortfall is explicit, not inferred. Backend stores it as shortage_qty.
+                const missing = Math.max(l.dispatched - Number(l.received || 0) - Number(l.damaged || 0), 0);
+                return (
+                  <tr key={l.item + i}>
+                    <td>{l.name}{l.uom ? <span className="t-small muted"> ({l.uom})</span> : null}</td>
+                    <td className="t-num muted" style={{ textAlign: "end" }}>{l.dispatched}</td>
+                    <td><input className="input" type="number" min={0} step={0.01} value={l.received}
+                      onChange={(e) => setRecvLines((rows) => rows.map((r, j) => j === i ? { ...r, received: e.target.value } : r))}
+                      style={{ height: 28, borderColor: short ? "var(--warn)" : undefined }}/></td>
+                    <td><input className="input" type="number" min={0} step={0.01} value={l.damaged}
+                      onChange={(e) => setRecvLines((rows) => rows.map((r, j) => j === i ? { ...r, damaged: e.target.value } : r))}
+                      style={{ height: 28 }}/></td>
+                    <td className="t-num" style={{ textAlign: "end", color: missing > 0.001 ? "var(--crit)" : "var(--ink-3)" }}>{missing > 0.001 ? missing : "-"}</td>
+                  </tr>
+                );
+              })}
+              {!recvLines.length && <tr><td colSpan={5} className="muted" style={{ textAlign: "center", padding: 16 }}>{ar ? "لا توجد بنود" : "No lines"}</td></tr>}
+            </tbody>
+          </table>
+          {recvHasDiscrepancy && (
+            <div style={{ marginTop: 12 }}>
+              <label className="t-micro">{ar ? "سبب الفرق" : "Discrepancy reason"} <span style={{ color: "var(--crit)" }}>*</span></label>
+              <select className="input" value={recvReason} onChange={(e) => setRecvReason(e.target.value)} style={{ height: 30 }}>
+                <option value="">{ar ? "اختر سبباً…" : "Select a reason…"}</option>
+                <option value="short_delivery">{ar ? "توريد ناقص (مفقود)" : "Short delivery (missing)"}</option>
+                <option value="damaged_in_transit">{ar ? "تلف أثناء النقل" : "Damaged in transit"}</option>
+                <option value="miscount">{ar ? "خطأ في العد" : "Miscount / counting error"}</option>
+                <option value="quality_reject">{ar ? "رفض جودة" : "Quality rejected"}</option>
+                <option value="other">{ar ? "أخرى" : "Other"}</option>
+              </select>
+            </div>
+          )}
+          <div style={{ marginTop: 12 }}>
+            <label className="t-micro">{ar ? "ملاحظة" : "Note"}{recvHasDiscrepancy ? <span style={{ color: "var(--crit)" }}> *</span> : null}</label>
+            <input className="input" type="text" value={recvNote} onChange={(e) => setRecvNote(e.target.value)}
+              placeholder={recvHasDiscrepancy ? (ar ? "مطلوبة عند وجود فرق" : "Required when quantities differ") : (ar ? "اختياري" : "Optional")}/>
+          </div>
+          {recvHasDiscrepancy && <div className="t-small" style={{ color: "var(--warn)", marginTop: 8 }}>{ar ? "المستلم + التالف لا يساوي المُرسَل — سيُسجَّل فرق استلام." : "Received + damaged ≠ dispatched — a receipt discrepancy will be recorded."}</div>}
+        </div>
+        <div className="between" style={{ padding: "12px 16px", borderTop: "1px solid var(--line)", gap: 8 }}>
+          <button className="btn btn-ghost" onClick={onClose} style={{ height: 34 }}>{ar ? "إلغاء" : "Cancel"}</button>
+          <button className="btn btn-primary" onClick={confirm} disabled={recvHasDiscrepancy && (!recvNote.trim() || !recvReason)} style={{ height: 34 }}>
+            <Icon name="check" size={13}/>{ar ? "تأكيد الاستلام" : "Confirm receipt"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function POSTransfers({ lang, kioskId, transfers, busy, onReceive, onRefresh, onBack }) {
   const ar = lang === "ar";
+  // #7 — per-line receive with discrepancy capture, via the shared ReceiveDiscrepancyModal.
+  const [receiveFor, setReceiveFor] = React.useState(null);
+  const openReceive = (transfer) => setReceiveFor(transfer);
   const actionable = transfers.filter((transfer) => String(transfer.status || "").toLowerCase() === "dispatched");
   const sortedTransfers = [...transfers].sort((a, b) => {
     const aReady = isDispatchedTransfer(a.status) ? 0 : isReceivedTransfer(a.status) ? 2 : 1;
@@ -21717,7 +22290,7 @@ function POSTransfers({ lang, kioskId, transfers, busy, onReceive, onRefresh, on
     return aReady - bReady;
   });
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--paper)" }}>
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--paper)", position: "relative" }}>
       <div style={{ height: 52, padding: "0 18px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid var(--line)", background: "var(--surface)" }}>
         <div className="row" style={{ gap: 10 }}>
           <button className="btn btn-ghost" onClick={onBack} style={{ width: 30, height: 30, padding: 0, justifyContent: "center" }}>
@@ -21753,7 +22326,7 @@ function POSTransfers({ lang, kioskId, transfers, busy, onReceive, onRefresh, on
                   <div className="t-small subtle">
                     {received ? ui(ar, "confirmedAtKiosk") : canReceive ? ui(ar, "transferArrivedWaiting") : (ar ? `الوصول ${transfer.eta || "--:--"}` : `ETA ${transfer.eta || "--:--"}`)}
                   </div>
-                  <button className="btn btn-primary" disabled={!canReceive || busy === transfer.id} onClick={() => onReceive(transfer)} style={{ height: 30, fontSize: 12 }}>
+                  <button className="btn btn-primary" disabled={!canReceive || busy === transfer.id} onClick={() => openReceive(transfer)} style={{ height: 30, fontSize: 12 }}>
                     {busy === transfer.id ? ui(ar, "receiving") : received ? ui(ar, "confirmed") : ui(ar, "confirmArrived")}
                   </button>
                 </div>
@@ -21773,6 +22346,15 @@ function POSTransfers({ lang, kioskId, transfers, busy, onReceive, onRefresh, on
       <div style={{ padding: "12px 18px", borderTop: "1px solid var(--line)", background: "var(--surface)" }}>
         <div className="t-small subtle">{ui(ar, "transfersWaiting", { count: actionable.length, suffix: actionable.length === 1 ? "" : "s" })}</div>
       </div>
+
+      {receiveFor && (
+        <ReceiveDiscrepancyModal
+          lang={lang}
+          transfer={receiveFor}
+          onClose={() => setReceiveFor(null)}
+          onConfirm={(items) => { const t = receiveFor; setReceiveFor(null); onReceive(t, items); }}
+        />
+      )}
     </div>
   );
 }
@@ -21828,22 +22410,34 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
     .reduce((sum, sale) => sum + sale.total, 0);
   const [actualCash, setActualCash] = useStatePOS("");
   const [actualCard, setActualCard] = useStatePOS("");
+  const [safeDeposit, setSafeDeposit] = useStatePOS("");
+  const [retainedFloat, setRetainedFloat] = useStatePOS("");
   const [counts, setCounts] = useStatePOS({});
-  const [rowMode, setRowMode] = useStatePOS({}); // item -> "confirmed" | "editing"
+  const [notes, setNotes] = useStatePOS({});
   const [busy, setBusy] = useStatePOS(false);
+  // #4 — standard drawer float to keep for change (carried forward as next shift's opening).
+  const standardFloat = Number(bayaan.shift?.openingCash || 0);
+  // #4b — every counted note must be allocated (safe + retained float = counted cash). A
+  // mismatch is a HARD block on submit, not just a warning. The backend re-validates this too.
+  // Blank retained float defaults to min(standardFloat, counted) so a 0/low drawer never implies a
+  // float bigger than the cash present. The mismatch is checked even at counted 0 (depositing cash
+  // that isn't there must still be caught). #4
+  const effectiveRetained = (counted) => (retainedFloat === "" ? Math.min(standardFloat, counted) : Number(retainedFloat || 0));
+  const allocMismatch = (() => {
+    const counted = Number(actualCash || 0);
+    const alloc = Number(safeDeposit || 0) + effectiveRetained(counted);
+    return Math.abs(counted - alloc) >= 1;
+  })();
 
-  // Check = "count matches the expected on-hand" (no typing); Modify = enter the
-  // real counted figure. Confirming sets actual := expected so variance is zero.
-  const confirmRow = (item, expected) => {
-    setCounts((current) => ({ ...current, [item]: String(expected ?? 0) }));
-    setRowMode((current) => ({ ...current, [item]: "confirmed" }));
-  };
-  const modifyRow = (item, expected) => {
-    setCounts((current) => ({ ...current, [item]: current[item] ?? String(expected ?? 0) }));
-    setRowMode((current) => ({ ...current, [item]: "editing" }));
-  };
-  const confirmCash = () => setActualCash(String(Math.round(expectedCash || 0)));
-  const confirmCard = () => setActualCard(String(Math.round(expectedCard || 0)));
+  // BLIND COUNT (#2 anti-fraud): the cashier never sees the expected on-hand, recipe usage,
+  // or variance — only the item, its unit, an empty count field, and an optional note. They
+  // physically count and type the quantity; the server derives expected + variance from its
+  // own records. Every line must be counted before the close can be submitted, so a cashier
+  // cannot fast-confirm a zero-variance close without counting.
+  const allCounted = stockRows.every((row) => {
+    const v = counts[row.item];
+    return v !== undefined && String(v).trim() !== "";
+  });
 
   const submitClose = async () => {
     if (!bayaan.shift) return;
@@ -21862,8 +22456,9 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
         const stockCounts = stockRows.map((row) => ({
           item: row.item,
           uom: row.uom || "Units",
-          expected_qty: Number(row.actual_qty || 0),
-          actual_qty: Number(counts[row.item] ?? row.actual_qty ?? 0),
+          // Counted-only blind payload: no client expected_qty (server derives it). #2
+          actual_qty: Number(counts[row.item] ?? 0),
+          note: (notes[row.item] || "").trim() || undefined,
         }));
         const result = await bayaan.submitShiftClose({
           kioskId,
@@ -21878,6 +22473,10 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
           draft: {
             actualCash: cash,
             actualCard: Number(actualCard || 0),
+            // #4 cash accountability: drawer allocation + opening discrepancy (set at shift open).
+            safeDeposit: Number(safeDeposit || 0),
+            retainedFloat: effectiveRetained(Number(actualCash || 0)),
+            openingDiscrepancy: Number(bayaan.shift?.openingDiscrepancy || 0),
             stockCounts,
             ingredientCounts: stockCounts.map((line) => ({
               ingredient: line.item,
@@ -21907,71 +22506,91 @@ function POSClose({ lang, bootstrap, onBack, onClosed }) {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
           <div className="card card-pad">
             <label className="t-micro">{ui(ar, "countedCash")}</label>
-            <input className="input" type="number" min={0} value={actualCash} onChange={(event) => setActualCash(event.target.value)} placeholder={String(Math.round(expectedCash || bayaan.shift?.openingCash || 0))}/>
+            <input className="input" type="number" min={0} value={actualCash} onChange={(event) => setActualCash(event.target.value)} placeholder={ar ? "أدخل النقد المعدود" : "Enter counted cash"}/>
             <div className="t-small subtle" style={{ marginTop: 6 }}>
-              {ar ? "المتوقع نقداً: " : "Expected cash: "}IQD {Math.round(expectedCash || 0).toLocaleString("en")}
+              {ar ? "اعدّ درج النقد فعلياً ثم أدخل المبلغ" : "Physically count the drawer, then enter the amount"}
             </div>
-            <button type="button" className="btn btn-quiet" style={{ marginTop: 8, height: 28, padding: "0 10px", color: "var(--pos, #2C7C58)" }} onClick={confirmCash}>
-              <Icon name="check" size={12}/>{ar ? "النقد مطابق للمتوقع" : "Cash matches expected"}
-            </button>
           </div>
           <div className="card card-pad">
             <label className="t-micro">{ar ? "البطاقة المعدودة (الجهاز)" : "Counted card (terminal)"}</label>
-            <input className="input" type="number" min={0} value={actualCard} onChange={(event) => setActualCard(event.target.value)} placeholder={String(Math.round(expectedCard || 0))}/>
+            <input className="input" type="number" min={0} value={actualCard} onChange={(event) => setActualCard(event.target.value)} placeholder={ar ? "أدخل دفعة البطاقة" : "Enter card batch"}/>
             <div className="t-small subtle" style={{ marginTop: 6 }}>
-              {ar ? "متوقع البطاقة: " : "Expected card: "}IQD {Math.round(expectedCard || 0).toLocaleString("en")}
+              {ar ? "طابق دفعة جهاز البطاقة" : "Reconcile the card terminal batch"}
             </div>
-            <button type="button" className="btn btn-quiet" style={{ marginTop: 8, height: 28, padding: "0 10px", color: "var(--pos, #2C7C58)" }} onClick={confirmCard}>
-              <Icon name="check" size={12}/>{ar ? "البطاقة مطابقة للمتوقع" : "Card matches expected"}
-            </button>
           </div>
+        </div>
+        {/* #4 — split the counted drawer: cash to the safe + float kept for the next shift. */}
+        <div className="card card-pad">
+          <div className="t-h2" style={{ marginBottom: 2 }}>{ar ? "إيداع النقد" : "Cash handling"}</div>
+          <div className="t-small subtle" style={{ marginBottom: 10 }}>
+            {ar ? `وزّع النقد المعدود: ما يُودع في الخزنة وما يبقى عائمة للوردية القادمة (العائمة القياسية ${fmtMoney(standardFloat)}).` : `Split the counted drawer: cash placed in the safe and the float kept for the next shift (standard float ${fmtMoney(standardFloat)}).`}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div>
+              <label className="t-micro">{ar ? "إيداع في الخزنة" : "Cash to safe"}</label>
+              <input className="input" type="number" min={0} value={safeDeposit} onChange={(event) => setSafeDeposit(event.target.value)} placeholder={ar ? "المبلغ المودع" : "Amount deposited"}/>
+            </div>
+            <div>
+              <label className="t-micro">{ar ? "العائمة المحتفظ بها" : "Retained float"}</label>
+              <input className="input" type="number" min={0} value={retainedFloat} onChange={(event) => setRetainedFloat(event.target.value)} placeholder={String(Math.round(standardFloat))}/>
+            </div>
+          </div>
+          {(() => {
+            const counted = Number(actualCash || 0);
+            const alloc = Number(safeDeposit || 0) + effectiveRetained(counted);
+            if (!counted && !Number(safeDeposit || 0)) return null;
+            const diff = Math.round(counted - alloc);
+            if (Math.abs(diff) < 1) return <div className="t-small" style={{ marginTop: 8, color: "var(--pos)" }}>{ar ? "الإيداع + العائمة = النقد المعدود ✓" : "Safe + retained float = counted cash ✓"}</div>;
+            return <div className="t-small" style={{ marginTop: 8, color: "var(--warn)" }}>{ar ? `الإيداع + العائمة لا يساوي النقد المعدود (فرق ${fmtMoney(diff)})` : `Safe + retained float doesn't match counted cash (off by ${fmtMoney(diff)})`}</div>;
+          })()}
         </div>
         <div className="card">
           <div className="between" style={{ padding: "12px 14px" }}>
             <div>
               <div className="t-h2">{ui(ar, "stockCount")}</div>
-              <div className="t-small subtle">{ui(ar, "varianceRecordSub")}</div>
+              <div className="t-small subtle">{ar ? "اعدّ كل صنف فعلياً وأدخل الكمية المعدودة. لا تظهر الكمية المتوقعة — يحسبها النظام والمدير." : "Physically count each item and enter the counted quantity. The expected figure is hidden — the system and manager compute it."}</div>
             </div>
           </div>
           <table className="tbl">
+            <thead>
+              <tr>
+                <th>{ar ? "الصنف" : "Item"}</th>
+                <th>{ar ? "الوحدة" : "Unit"}</th>
+                <th style={{ width: 150 }}>{ar ? "العدد الفعلي" : "Counted quantity"}</th>
+                <th style={{ width: 200 }}>{ar ? "ملاحظة (اختياري)" : "Note (optional)"}</th>
+              </tr>
+            </thead>
             <tbody>
               {stockRows.map((row) => (
                 <tr key={row.item}>
                   <td>{cleanDisplayName(row.item)}</td>
-                  <td className="t-num muted">{Number(row.actual_qty || 0).toLocaleString("en", { maximumFractionDigits: 2 })} {row.uom}</td>
-                  <td style={{ width: 220 }}>
-                    {rowMode[row.item] === "editing" ? (
-                      <input className="input" type="number" min={0} step={0.01} autoFocus
-                        value={counts[row.item] ?? ""}
-                        onChange={(event) => setCounts((current) => ({ ...current, [row.item]: event.target.value }))}
-                        placeholder={String(Number(row.actual_qty || 0))}/>
-                    ) : rowMode[row.item] === "confirmed" ? (
-                      <div className="row" style={{ gap: 8, justifyContent: "flex-end", alignItems: "center" }}>
-                        <span className="badge badge-pos" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                          <Icon name="check" size={11}/>{ar ? "مطابق" : "Matches"}
-                        </span>
-                        <button type="button" className="btn btn-quiet" style={{ height: 26, padding: "0 8px" }} onClick={() => modifyRow(row.item, row.actual_qty)}>{ar ? "تعديل" : "Edit"}</button>
-                      </div>
-                    ) : (
-                      <div className="row" style={{ gap: 6, justifyContent: "flex-end", alignItems: "center" }}>
-                        <button type="button" className="btn btn-quiet" title={ar ? "العدد مطابق للمتوقع" : "Count matches expected"} style={{ height: 26, padding: "0 8px", color: "var(--pos, #2C7C58)" }} onClick={() => confirmRow(row.item, row.actual_qty)}>
-                          <Icon name="check" size={12}/>{ar ? "مطابق" : "Correct"}
-                        </button>
-                        <button type="button" className="btn btn-quiet" title={ar ? "أدخل العدد الفعلي" : "Enter actual count"} style={{ height: 26, padding: "0 8px" }} onClick={() => modifyRow(row.item, row.actual_qty)}>
-                          {ar ? "تعديل" : "Modify"}
-                        </button>
-                      </div>
-                    )}
+                  <td className="muted">{row.uom || (ar ? "وحدة" : "Units")}</td>
+                  <td style={{ width: 150 }}>
+                    <input className="input" type="number" min={0} step={0.01}
+                      value={counts[row.item] ?? ""}
+                      onChange={(event) => setCounts((current) => ({ ...current, [row.item]: event.target.value }))}
+                      placeholder={ar ? "أدخل العدد" : "Enter count"}/>
+                  </td>
+                  <td style={{ width: 200 }}>
+                    <input className="input" type="text"
+                      value={notes[row.item] ?? ""}
+                      onChange={(event) => setNotes((current) => ({ ...current, [row.item]: event.target.value }))}
+                      placeholder={ar ? "اختياري" : "Optional"}/>
                   </td>
                 </tr>
               ))}
               {!stockRows.length && (
-                <tr><td className="muted" style={{ textAlign: "center", padding: 24 }}>{ui(ar, "noSourceKioskStock")}</td></tr>
+                <tr><td className="muted" colSpan={4} style={{ textAlign: "center", padding: 24 }}>{ui(ar, "noSourceKioskStock")}</td></tr>
               )}
             </tbody>
           </table>
+          {stockRows.length > 0 && !allCounted && (
+            <div className="t-small subtle" style={{ padding: "0 14px 12px", color: "var(--warn)" }}>
+              {ar ? "أدخل العدد المعدود لكل صنف قبل الإرسال." : "Enter a counted quantity for every item before submitting."}
+            </div>
+          )}
         </div>
-        <button className="btn btn-primary btn-xl" onClick={submitClose} disabled={busy || !actualCash || bayaan.pendingCount > 0} style={{ justifyContent: "center" }}>
+        <button className="btn btn-primary btn-xl" onClick={submitClose} disabled={busy || !actualCash || (stockRows.length > 0 && !allCounted) || bayaan.pendingCount > 0 || allocMismatch} style={{ justifyContent: "center" }}>
           <Icon name="check" size={14}/>{busy ? ui(ar, "submitting") : ui(ar, "submitClose")}
         </button>
       </div>
@@ -22116,9 +22735,9 @@ function POSPayment({ lang, total, cart, vatRatePct = 0, bootstrap, onTender, te
             </div>
             <div className="t-display" style={{ marginBottom: 6 }}>{fmtMoney(total)}</div>
             <div className="muted" style={{ marginBottom: 4 }}>{ar ? subAr : subEn}</div>
-            {tender === "cash" && cashNum >= total && !isError && (
+            {isCashPayment && cashNum >= total && !isError && (
               <div style={{ marginTop: 24, padding: 16, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, display: "inline-block" }}>
-                <div className="t-micro">{ar ? "الباقي" : "Change due"}</div>
+                <div className="t-micro">{ar ? "الباقي للعميل" : "Change to return"}</div>
                 <div className="t-num-display">{fmtMoney(Math.max(0, change))}</div>
               </div>
             )}
@@ -22184,16 +22803,38 @@ function POSPayment({ lang, total, cart, vatRatePct = 0, bootstrap, onTender, te
 
           {cashTender && (
             <div style={{ marginTop: 28, maxWidth: 640 }}>
-              <div className="t-micro" style={{ marginBottom: 10 }}>{ar ? "نقد سريع" : "Quick cash"}</div>
-              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              <div className="t-micro" style={{ marginBottom: 10 }}>{ar ? "النقد المستلم" : "Cash received"}</div>
+              <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <input className="input" type="number" min={0} inputMode="numeric" value={cashGiven}
+                  onChange={(e) => setCashGiven(e.target.value)} placeholder={String(Math.round(total))}
+                  style={{ width: 200, height: 46, fontSize: 20, fontFamily: "var(--font-mono)" }}/>
                 {(() => { const ceilTo = (t, n) => Math.ceil(t / n) * n; return [total, ceilTo(total, 1000), ceilTo(total, 5000), ceilTo(total, 10000), ceilTo(total, 25000)]; })()
                   .filter((v, i, a) => v >= total && a.indexOf(v) === i).slice(0, 5).map(amt => (
-                  <button key={amt} onClick={() => { setCashGiven(String(amt)); pickTender(cashTender.id); }}
-                    className="btn btn-ghost btn-lg" style={{ minWidth: 92 }}>
+                  <button key={amt} onClick={() => setCashGiven(String(amt))}
+                    className="btn btn-ghost" style={{ minWidth: 84 }}>
                     {fmtMoney(amt)}
                   </button>
                 ))}
               </div>
+              {/* Live change preview so the cashier never has to calculate the change by hand. */}
+              {cashNum > 0 && (
+                cashNum >= total ? (
+                  <div className="row" style={{ gap: 8, alignItems: "baseline", marginTop: 14 }}>
+                    <span className="t-micro">{ar ? "الباقي للعميل" : "Change to return"}</span>
+                    <span className="t-num-display" style={{ fontSize: 30, color: "var(--pos)" }}>{fmtMoney(Math.max(0, change))}</span>
+                  </div>
+                ) : (
+                  <div className="t-small" style={{ marginTop: 14, color: "var(--warn)" }}>
+                    {ar ? `النقد أقل من المستحق بمقدار ${fmtMoney(total - cashNum)}` : `Cash is short by ${fmtMoney(total - cashNum)}`}
+                  </div>
+                )
+              )}
+              <button onClick={() => pickTender(cashTender.id)} disabled={cashNum > 0 && cashNum < total}
+                className="btn btn-primary btn-lg" style={{ marginTop: 16 }}>
+                <Icon name="cash" size={14}/>
+                {ar ? "ادفع نقداً" : "Pay cash"}
+                {cashNum >= total ? ` · ${ar ? "الباقي" : "change"} ${fmtMoney(Math.max(0, change))}` : ""}
+              </button>
             </div>
           )}
         </div>
@@ -22220,6 +22861,146 @@ function POSPayment({ lang, total, cart, vatRatePct = 0, bootstrap, onTender, te
 }
 
 // =============== WASTE ENTRY ===============
+// #5 — order-linked wrong-order correction. Lists the cashier's last 3 completed orders;
+// the cashier picks the order + line, a reason, and an outcome (void or remake — both refund the
+// money; void also returns the stock because it was never made, remake keeps the stock consumed).
+// Routes through /order_correction (NOT waste) so a sold drink is never re-scrapped.
+function POSWrongOrder({ lang, onDone, onBack }) {
+  const ar = lang === "ar";
+  const bayaan = useBayaan();
+  const { showToast } = useToast();
+  const [orders, setOrders] = useStatePOS(null); // null=loading
+  const [orderId, setOrderId] = useStatePOS(null);
+  const [lineId, setLineId] = useStatePOS(null);
+  const [reason, setReason] = useStatePOS("wrong_item");
+  const [outcome, setOutcome] = useStatePOS("void");
+  const [note, setNote] = useStatePOS("");
+  const [busy, setBusy] = useStatePOS(false);
+
+  React.useEffect(() => {
+    let alive = true;
+    setOrders(null);
+    bayaan.recentOrders(3)
+      .then((res) => { if (alive) setOrders(Array.isArray(res?.orders) ? res.orders : []); })
+      .catch(() => { if (alive) setOrders([]); });
+    return () => { alive = false; };
+  }, [bayaan]);
+
+  const order = (orders || []).find((o) => o.id === orderId) || null;
+  const line = order ? (order.lines || []).find((l) => l.id === lineId) || null : null;
+  const reasons = [
+    { id: "wrong_item", en: "Incorrect item", ar: "صنف خاطئ" },
+    { id: "wrong_size", en: "Incorrect size", ar: "حجم خاطئ" },
+    { id: "duplicate", en: "Duplicate order", ar: "طلب مكرر" },
+    { id: "customer_rejected", en: "Customer rejection", ar: "رفض العميل" },
+  ];
+  const outcomes = [
+    { id: "void", en: "Void", ar: "إلغاء" },
+    { id: "remake", en: "Remake", ar: "إعادة التحضير" },
+  ];
+  const canSubmit = order && line && reason && outcome && !busy;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    try {
+      const res = await bayaan.submitOrderCorrection({
+        order: order.id,
+        line: line.id,
+        product: line.product_id,
+        qty: line.qty,
+        amount: line.price_subtotal_incl,
+        reason,
+        outcome,
+        note: note.trim() || undefined,
+      });
+      if (!res.ok) throw new Error(res.error);
+      showToast(ar ? "تم تسجيل تصحيح الطلب" : "Order correction recorded", "success");
+      onDone();
+    } catch (error) {
+      showToast(error?.message || "Could not record correction", "warn");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <div className="between" style={{ height: 52, padding: "0 18px", borderBottom: "1px solid var(--line)", background: "var(--surface)" }}>
+        <button className="btn btn-ghost" onClick={onBack}><Icon name="arrowLeft" size={13}/>{ar ? "عودة" : "Back"}</button>
+        <div className="t-h2">{ar ? "طلب خاطئ" : "Wrong order"}</div>
+        <span style={{ width: 52 }}/>
+      </div>
+      <div className="col" style={{ gap: 14, padding: 18, overflow: "auto" }}>
+        <div className="card card-pad">
+          <div className="t-h2" style={{ marginBottom: 2 }}>{ar ? "اختر الطلب" : "Select the order"}</div>
+          <div className="t-small subtle" style={{ marginBottom: 10 }}>{ar ? "آخر ٣ طلبات مكتملة على هذا الكشك" : "Your last 3 completed orders at this kiosk"}</div>
+          {orders === null && <div className="muted" style={{ padding: 12 }}>{ar ? "جارٍ التحميل…" : "Loading…"}</div>}
+          {orders !== null && !orders.length && <div className="muted" style={{ padding: 12 }}>{ar ? "لا توجد طلبات حديثة." : "No recent orders."}</div>}
+          <div className="col" style={{ gap: 8 }}>
+            {(orders || []).map((o) => (
+              <button key={o.id} type="button" onClick={() => { setOrderId(o.id); setLineId(null); }}
+                style={{ textAlign: "start", padding: "10px 12px", borderRadius: 8, cursor: "pointer",
+                  border: "1px solid " + (orderId === o.id ? "var(--accent)" : "var(--line)"),
+                  background: orderId === o.id ? "var(--surface-2)" : "var(--surface)", color: "var(--ink)" }}>
+                <div className="between"><span style={{ fontWeight: 500 }}>{o.name}</span><span className="t-num">{fmtMoney(o.amount_total || 0)}</span></div>
+                <div className="t-small muted">{o.date_order ? movementTimeLabel(o.date_order) : ""} · {(o.lines || []).length} {ar ? "بند" : "items"}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+        {order && (
+          <div className="card card-pad">
+            <div className="t-h2" style={{ marginBottom: 8 }}>{ar ? "اختر البند" : "Select the line"}</div>
+            <div className="col" style={{ gap: 6 }}>
+              {(order.lines || []).map((l) => (
+                <button key={l.id} type="button" onClick={() => setLineId(l.id)}
+                  style={{ textAlign: "start", padding: "8px 12px", borderRadius: 8, cursor: "pointer",
+                    border: "1px solid " + (lineId === l.id ? "var(--accent)" : "var(--line)"),
+                    background: lineId === l.id ? "var(--surface-2)" : "var(--surface)", color: "var(--ink)" }}>
+                  <div className="between"><span>{cleanDisplayName(l.product)} × {l.qty}</span><span className="t-num">{fmtMoney(l.price_subtotal_incl || 0)}</span></div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {line && (
+          <>
+            <div className="card card-pad">
+              <div className="t-micro" style={{ marginBottom: 8 }}>{ar ? "السبب" : "Reason"}</div>
+              <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                {reasons.map((r) => (
+                  <button key={r.id} type="button" className={`btn ${reason === r.id ? "btn-accent" : "btn-ghost"}`} onClick={() => setReason(r.id)} style={{ height: 30, fontSize: 12 }}>{ar ? r.ar : r.en}</button>
+                ))}
+              </div>
+              <div className="t-micro" style={{ margin: "14px 0 8px" }}>{ar ? "الإجراء" : "Outcome"}</div>
+              <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                {outcomes.map((o) => (
+                  <button key={o.id} type="button" className={`btn ${outcome === o.id ? "btn-accent" : "btn-ghost"}`} onClick={() => setOutcome(o.id)} style={{ height: 30, fontSize: 12 }}>{ar ? o.ar : o.en}</button>
+                ))}
+              </div>
+              <div className="t-small subtle" style={{ marginTop: 10 }}>
+                {outcome === "void"
+                  ? (ar ? "إلغاء: لم يُحضَّر الصنف — يُعكس الإيراد (للعميل) ويُعاد المخزون المستهلك إلى الكشك (كأن البيع لم يحدث)."
+                        : "Void: the item was NOT made — the money is reversed (to the customer) and the consumed stock is returned to the kiosk, as if the sale never happened.")
+                  : (ar ? "إعادة التحضير: حُضِّر الصنف فعلاً (يبقى المخزون مخصوماً) — يُعكس الإيراد فقط (يستردّ العميل ماله)."
+                        : "Remake: the item was already made (stock stays consumed) — only the money is reversed (the customer gets their money back).")}
+              </div>
+            </div>
+            <div className="card card-pad">
+              <label className="t-micro">{ar ? "ملاحظة" : "Note"}</label>
+              <input className="input" type="text" value={note} onChange={(e) => setNote(e.target.value)} placeholder={ar ? "اختياري" : "Optional"}/>
+            </div>
+            <button className="btn btn-primary btn-xl" onClick={submit} disabled={!canSubmit} style={{ justifyContent: "center" }}>
+              <Icon name="check" size={14}/>{busy ? (ar ? "جارٍ التسجيل…" : "Recording…") : (ar ? "تسجيل التصحيح" : "Record correction")}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function POSWaste({ lang, bootstrap, onDone, onBack }) {
   const ar = lang === "ar";
   const bayaan = useBayaan();
@@ -22227,6 +23008,7 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
   const [item, setItem] = useStatePOS(null);
   const [qty, setQty] = useStatePOS(1);
   const [reason, setReason] = useStatePOS(null);
+  const [note, setNote] = useStatePOS("");
   const [busy, setBusy] = useStatePOS(false);
 
   const liveWasteItems = React.useMemo(() => {
@@ -22243,6 +23025,10 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
         name: cleanDisplayName(product?.name || row.name || row.item),
         price: Number(product?.standard_price || row.standard_price || row.unit_cost || row.unitCost || 0),
         uom: row.uom || product?.uom || "",
+        // #8 — on-hand drives the "unusual quantity" note hint (mirrors the server rule:
+        // writing off >= half the kiosk on-hand at once needs a note).
+        onHand: Number(row.actual_qty ?? row.qty ?? row.quantity ?? row.onHand ?? 0),
+        requiresNote: Boolean(product?.bayaan_waste_requires_note),
       };
     });
     return rows;
@@ -22256,12 +23042,21 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
     { id: "menu-iced-latte", name: "Iced Latte", price: 24 },
     { id: "ing-milk-whole", name: "Milk (whole) 1L", price: 12 },
   ];
+  // "Wrong order" is intentionally NOT a waste reason — it routes through the dedicated
+  // order-correction workflow (#5) so a sold drink is never re-scrapped (double counting).
   const reasons = ar
-    ? ["انتهاء اليوم", "خطأ في الطلب", "إسقاط/سكب", "رفض جودة", "تالف"]
-    : ["End of day", "Wrong order", "Spill / drop", "Quality reject", "Spoiled"];
+    ? ["انتهاء اليوم", "إسقاط/سكب", "رفض جودة", "تالف", "أخرى"]
+    : ["End of day", "Spill / drop", "Quality reject", "Spoiled", "Other"];
 
   const cost = item ? item.price * qty : 0;
-  const canSubmit = !!item && !!reason && qty > 0 && !busy;
+  // #8 — mirror the server-side note rules so the cashier knows BEFORE submit, not just on a
+  // rejection. Client-detectable cases: uncategorized ('Other'), high-value (>50k), a
+  // manager-flagged product, and an unusually large write-off (>= half the kiosk on-hand).
+  // The server additionally enforces a repeated-pattern rule and surfaces a clear message.
+  const wasteUnusual = !!item && Number(item.onHand) > 0 && qty >= 0.5 * Number(item.onHand);
+  const wasteFlagged = !!item && !!item.requiresNote;
+  const noteRequired = !!reason && (/other|أخرى/i.test(String(reason)) || cost > 50000 || wasteUnusual || wasteFlagged);
+  const canSubmit = !!item && !!reason && qty > 0 && !busy && (!noteRequired || note.trim().length > 0);
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -22271,7 +23066,7 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
     }
     setBusy(true);
     try {
-      const result = await bayaan.submitWaste({ item, qty, reason });
+      const result = await bayaan.submitWaste({ item, qty, reason, note: note.trim() || undefined });
       if (result.ok) {
         showToast(
           ar ? `تم تسجيل الهدر — ${item.name}` : `Waste recorded — ${item.name}`,
@@ -22353,6 +23148,25 @@ function POSWaste({ lang, bootstrap, onDone, onBack }) {
                 className={"btn " + (reason === r ? "btn-primary" : "btn-ghost")}
                 style={{ height: 36, fontSize: 13 }}>{r}</button>
             ))}
+          </div>
+          <div className="t-micro" style={{ margin: "16px 0 8px" }}>
+            4 — {ar ? "ملاحظة" : "Note"}{noteRequired ? <span style={{ color: "var(--crit)" }}> *</span> : <span className="subtle"> ({ar ? "اختياري" : "optional"})</span>}
+          </div>
+          <input className="input" type="text" value={note} onChange={(e) => setNote(e.target.value)}
+            placeholder={noteRequired ? (ar ? "مطلوب لهذا الهدر" : "Required for this waste") : (ar ? "سياق إضافي" : "Extra context")}/>
+          {noteRequired && (
+            <div className="t-small" style={{ color: "var(--warn)", marginTop: 6 }}>
+              {wasteFlagged
+                ? (ar ? "صنف يتطلب ملاحظة دائماً." : "Manager-flagged item — a note is always required.")
+                : wasteUnusual
+                  ? (ar ? "كمية كبيرة مقارنة بالمخزون — ملاحظة مطلوبة." : "Large quantity vs on-hand — a note is required.")
+                  : cost > 50000
+                    ? (ar ? "هدر مرتفع القيمة — ملاحظة مطلوبة." : "High-value waste — a note is required.")
+                    : (ar ? "هدر غير مصنّف — ملاحظة مطلوبة." : "Uncategorized waste — a note is required.")}
+            </div>
+          )}
+          <div className="t-small subtle" style={{ marginTop: 6 }}>
+            {ar ? "قد تُطلب ملاحظة أيضاً للأصناف المكررة أو المُعلَّمة من الإدارة." : "A note may also be required for repeated or manager-flagged losses."}
           </div>
         </div>
 
@@ -22585,7 +23399,7 @@ const THEME_STORAGE_KEY = "bayaan-dashboard-theme";
 function getInitialTheme() {
   if (typeof window === "undefined") return "light";
   const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-  if (stored === "light" || stored === "dark") return stored;
+  if (stored === "light" || stored === "dark" || stored === "brand") return stored;
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
@@ -22594,7 +23408,7 @@ function AuthChip({ lang }) {
   const { showToast } = useToast();
   const ar = lang === "ar";
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ login: "owner@miza.iq", password: "test" });
+  const [form, setForm] = useState({ login: "owner@koub.iq", password: "test" });
   if (!bayaan.hasBackend) return null;
 
   const user = bayaan.auth.user || {};
@@ -22681,7 +23495,7 @@ function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme, scope, set
     <div className="master-top">
       <div className="brand">
         <BrandLogo className="master-brand-logo" />
-        <span style={{ color: "#6E6E68", fontWeight: 400 }}>{ar ? "- العمليات" : "- operations"}</span>
+        <span className="master-ops" style={{ fontWeight: 400 }}>{ar ? "- العمليات" : "- operations"}</span>
       </div>
       <div className="seg">
         <button className={panel === "admin" ? "on" : ""} disabled={!canAdmin} onClick={() => setPanel("admin")}>{ar ? "الإدارة" : "Admin"}</button>
@@ -22730,6 +23544,16 @@ function MasterTop({ panel, setPanel, lang, setLang, theme, setTheme, scope, set
             onClick={() => setTheme("dark")}
           >
             <Icon name="moon" size={13}/>
+          </button>
+          <button
+            type="button"
+            className={theme === "brand" ? "on" : ""}
+            aria-label="Brand theme"
+            aria-pressed={theme === "brand"}
+            title={ar ? "سمة العلامة" : "Brand theme"}
+            onClick={() => setTheme("brand")}
+          >
+            <Icon name="coffee" size={13}/>
           </button>
         </div>
         <div className="lang">

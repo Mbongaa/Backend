@@ -407,7 +407,11 @@ class BayaanKioskApi(http.Controller):
         if operation == "transfer" and self._is_bayaan_logistics():
             return
         assigned = self._user_is_assigned_to_kiosk(kiosk)
-        if operation in ("open_session", "sale", "waste", "shift_close", "stock_request"):
+        # recent_orders + order_correction are the cashier wrong-order workflow (#5): a cashier
+        # must be able to look up and correct their OWN kiosk's recent sales. Both stay
+        # kiosk-scoped (assigned) and are read-only / deterministic server-side.
+        if operation in ("open_session", "sale", "waste", "shift_close", "stock_request",
+                         "recent_orders", "order_correction"):
             if assigned and self._is_bayaan_cashier():
                 return
         elif operation in ("transfer", "review"):
@@ -704,6 +708,8 @@ class BayaanKioskApi(http.Controller):
             "image_128": image_base64,
             "image_data_url": "data:image/webp;base64,%s" % image_base64 if image_base64 else "",
             "consumption_mode": product.product_tmpl_id.bayaan_consumption_mode,
+            # #8 — manager-flag drives the waste UI's "note always required" hint.
+            "bayaan_waste_requires_note": product.product_tmpl_id.bayaan_waste_requires_note,
             "pos_options": product.product_tmpl_id.bayaan_pos_options_dict(),
             "qty_available": product.qty_available,
             "target_qty": plan["target_qty"],
@@ -1445,12 +1451,17 @@ class BayaanKioskApi(http.Controller):
                 "received_qty": 0.0,
                 "damaged_qty": 0.0,
                 "notes": [],
+                "reason": False,
             })
             row["received_qty"] += received_qty
             row["damaged_qty"] += damaged_qty
             note = line.get("note") or line.get("discrepancy_note") or line.get("discrepancyNote")
             if note:
                 row["notes"].append(str(note))
+            # #7 — structured discrepancy reason (first non-empty wins per product).
+            reason = line.get("reason") or line.get("discrepancy_reason") or line.get("discrepancyReason")
+            if reason and not row["reason"]:
+                row["reason"] = str(reason)
         return lines_by_product
 
     def _prepare_picking_done_quantities(self, picking, quantities_by_product=None):
@@ -1532,16 +1543,22 @@ class BayaanKioskApi(http.Controller):
             received_qty = inputs.get(product_id, {}).get("received_qty", 0.0)
             damaged_qty = inputs.get(product_id, {}).get("damaged_qty", 0.0)
             note = "; ".join(inputs.get(product_id, {}).get("notes", []))
+            valid_reasons = dict(
+                request.env["bayaan.stock.receipt.discrepancy"]._fields["reason"].selection
+            )
+            raw_reason = inputs.get(product_id, {}).get("reason")
+            reason = raw_reason if raw_reason in valid_reasons else False
             shortage_qty = max(expected_qty - received_qty - damaged_qty, 0.0)
             has_shortage = float_compare(shortage_qty, 0.0, precision_rounding=uom.rounding) > 0
             has_damage = float_compare(damaged_qty, 0.0, precision_rounding=uom.rounding) > 0
-            if has_shortage or has_damage or note:
+            if has_shortage or has_damage or note or reason:
                 line_commands.append((0, 0, {
                     "product_id": product_id,
                     "uom_id": uom.id,
                     "expected_qty": expected_qty,
                     "received_qty": received_qty,
                     "damaged_qty": damaged_qty,
+                    "reason": reason,
                     "note": note,
                 }))
         if line_commands:
@@ -1571,6 +1588,7 @@ class BayaanKioskApi(http.Controller):
                 "damagedQty": line.damaged_qty,
                 "shortageQty": line.shortage_qty,
                 "uom": line.uom_id.name,
+                "reason": line.reason or "",
                 "note": line.note or "",
             } for line in picking.bayaan_discrepancy_line_ids],
         }
@@ -1786,6 +1804,17 @@ class BayaanKioskApi(http.Controller):
                 "sourceRefsRequired": ["product.template", "bayaan.recipe"],
                 "explanationStyle": "brief",
             },
+            # #13 — accountant questions answered from the formal books (account.move) carried
+            # in reportPack.metrics.accounting; the AI explains/cites, never recomputes.
+            "accounting-books": {
+                "dataPacks": ["finance", "reports"],
+                "components": [
+                    {"componentId": "reports.pnl_table", "size": "full", "mode": "read-only", "dataBinding": "finance", "title": "Income statement (formal books)"},
+                    {"componentId": "reports.payment_methods_table", "size": "wide", "mode": "read-only", "dataBinding": "reports", "title": "Cash & payments"},
+                ],
+                "sourceRefsRequired": ["account.move", "report.pack"],
+                "explanationStyle": "audit",
+            },
         }
 
     def _ai_infer_intent(self, query):
@@ -1796,6 +1825,10 @@ class BayaanKioskApi(http.Controller):
             # (it only ever pre-fills a human-confirmed deterministic route), so a
             # slightly eager match degrades to "blank draft", never to a wrong write.
             ("catalog-create", ("create a", "create new", "create product", "create the product", "add a product", "add product", "add new product", "new product", "new menu item", "add menu item", "new drink", "set up a product", "register product", "create recipe", "create a recipe", "build a product", "أضف منتج", "اضف منتج", "اضافة منتج", "إضافة منتج", "منتج جديد", "أنشئ منتج", "انشئ منتج", "صنف جديد", "وصفة جديدة", "أضف صنف", "اضف صنف")),
+            # #13 — accountant questions route to the formal books (account.move), not the
+            # operational executive-summary. Matched before close-review so "expected/variance"
+            # there don't steal a balance-sheet/ledger question.
+            ("accounting-books", ("balance sheet", "trial balance", "income statement", "profit and loss", "p&l", "pnl", "general ledger", "ledger", "gross profit", "gross margin", "cogs", "cost of goods", "operating expense", "opex", "accounts payable", "accounts receivable", "aged payable", "aged receivable", "cash flow", "vat return", "tax return", "net profit", "net income", "journal entry", "the books", "accounting", "chart of accounts", "ميزانية", "ميزان المراجعة", "قائمة الدخل", "الأرباح والخسائر", "دفتر الأستاذ", "الربح الإجمالي", "هامش إجمالي", "تكلفة البضاعة", "مصروفات تشغيلية", "ذمم دائنة", "ذمم مدينة", "التدفق النقدي", "ضريبة القيمة", "صافي الربح", "قيد محاسبي", "الدفاتر", "محاسبة", "دليل الحسابات")),
             ("close-review", ("close", "closing", "variance", "approve", "approval", "counted", "expected", "drawer", "إغلاق", "اغلاق", "فرق", "فروقات", "اعتماد", "معدود", "متوقع", "درج")),
             ("waste-anomaly-review", ("waste", "loss", "spoil", "spoiled", "anomaly", "anomalies", "tossed", "هدر", "خسارة", "شذوذ", "تالف")),
             ("catalog-lookup", ("catalog", "uom", "ingredient", "ingredients", "menu", "كتالوج", "صنف", "أصناف", "مكون", "مكونات", "قائمة")),
@@ -1864,8 +1897,46 @@ class BayaanKioskApi(http.Controller):
             return "conversation"
         return "analysis"
 
+    def _ai_accounting_snapshot(self):
+        """#13 — month-to-date snapshot of the FORMAL books (account.move) for the AI report
+        pack: income statement, balance sheet, trial balance, cash flow, aged AP/AR, VAT —
+        all from the SAME deterministic /accounting_report helpers. The AI cites/explains
+        these figures; it never recomputes them. Wrapped so an accounting hiccup never breaks
+        the AI pack."""
+        try:
+            today = fields.Date.context_today(request.env.user)
+            date_from = today.replace(day=1)
+            base = self._accounting_base_lines_domain()
+            period_domain = list(base) + [("date", ">=", date_from), ("date", "<=", today)]
+            row_count = request.env["account.move.line"].sudo().search_count(period_domain)
+            pnl = self._accounting_income_statement(base, date_from, today)
+            bs = self._accounting_balance_sheet(base, today)
+            tb = self._accounting_trial_balance(base, date_from, today)
+            cash = self._accounting_cash_flow(base, date_from, today)
+            ap = self._accounting_aged_partner(base, today, "payable")
+            ar = self._accounting_aged_partner(base, today, "receivable")
+            tax = self._accounting_tax_report(base, date_from, today)
+            return {
+                "rowCount": row_count,
+                "report": "accounting_report",
+                "source": "account.move / account.move.line (posted)",
+                "dateFrom": fields.Date.to_string(date_from),
+                "dateTo": fields.Date.to_string(today),
+                "incomeStatement": pnl.get("totals", {}),
+                "balanceSheet": bs.get("totals", {}),
+                "balanceSheetNetIncome": bs.get("netIncome", 0.0),
+                "trialBalance": tb.get("totals", {}),
+                "cashFlow": {"opening": cash.get("opening", 0.0), "net": cash.get("net", 0.0), "closing": cash.get("closing", 0.0)},
+                "agedPayable": ap.get("totals", {}),
+                "agedReceivable": ar.get("totals", {}),
+                "vat": tax.get("totals", {}),
+            }
+        except Exception as exc:  # noqa: BLE001 — never let the formal-books read break the AI pack
+            return {"rowCount": 0, "error": str(exc)[:200]}
+
     def _ai_compact_report_pack(self, query, payload):
         bootstrap = self.chain_bootstrap()
+        accounting = self._ai_accounting_snapshot()
         summary = bootstrap.get("summary", {})
         today = bootstrap.get("today", {})
         source_counts = summary.get("sourceCounts", {})
@@ -1922,7 +1993,8 @@ class BayaanKioskApi(http.Controller):
             "hr.employee": source_counts.get("hrEmployeeRows", len(rows["staff"])),
             "hr.attendance": source_counts.get("hrAttendanceRows", len(row_sources["hr.attendance"])),
             "pos.session": source_counts.get("orders", len(rows["orders"])),
-            "account.move": source_counts.get("accountMoveRows", 0),
+            # #13 — real posted-ledger row count for the period (was hard-coded 0).
+            "account.move": accounting.get("rowCount", 0),
             "report.pack": 1 if summary.get("reportPeriods") else 0,
         }
         source_evidence = [{
@@ -1979,6 +2051,10 @@ class BayaanKioskApi(http.Controller):
                 "sourceCounts": source_counts,
                 "byKiosk": (summary.get("byKiosk") or [])[:25],
                 "reportPeriods": summary.get("reportPeriods", {}),
+                # #13 — deterministic formal-books figures (account.move) the AI must cite for
+                # any accounting question (revenue/COGS/margin/opex, GL/TB/IS/BS, cash flow,
+                # AP/AR, VAT). The AI explains these; it never recomputes them.
+                "accounting": accounting,
             },
             "rows": rows,
             "catalogReference": catalog_reference,
@@ -2547,6 +2623,31 @@ class BayaanKioskApi(http.Controller):
             "items",
             ["stock.quant"],
         )
+        # #13 — formal-books claims, sourced directly from account.move (the deterministic
+        # /accounting_report figures in metrics.accounting). The AI cites these for any
+        # accounting question; it never recomputes them.
+        accounting = metrics.get("accounting") or {}
+        if accounting.get("rowCount"):
+            inc = accounting.get("incomeStatement") or {}
+            bs = accounting.get("balanceSheet") or {}
+            rng = "%s..%s" % (accounting.get("dateFrom"), accounting.get("dateTo"))
+
+            def acc_claim(text, label, value, unit):
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    return
+                claims.append({
+                    "text": text,
+                    "numericValues": [{"label": label, "value": numeric, "unit": unit}],
+                    "sourceRefs": ["account.move"],
+                })
+
+            acc_claim("Net profit (%s) is read from the formal income statement (account.move)." % rng, "netProfit", inc.get("netProfit"), "currency")
+            acc_claim("Revenue (%s) is read from the formal income statement (account.move)." % rng, "revenue", inc.get("revenue"), "currency")
+            acc_claim("COGS (%s) is read from the formal income statement (account.move)." % rng, "cogs", inc.get("cogs"), "currency")
+            acc_claim("Gross profit (%s) is read from the formal income statement (account.move)." % rng, "grossProfit", inc.get("grossProfit"), "currency")
+            acc_claim("Total assets are read from the formal balance sheet (account.move).", "totalAssets", bs.get("assets"), "currency")
         if not claims:
             evidence_count = sum(int(ref.get("rowCount") or 0) for ref in report_pack.get("sourceEvidence") or [])
             append(
@@ -2558,9 +2659,45 @@ class BayaanKioskApi(http.Controller):
             )
         return claims[:4]
 
+    # #13 — formal-ledger source labels whose numeric claims must be traceable to the
+    # deterministic accounting snapshot (not merely tagged with the model name).
+    _AI_LEDGER_REFS = ("account.move", "account.move.line")
+
+    def _ai_traceable_accounting_values(self, report_pack):
+        """#13 — flatten every numeric figure in the deterministic formal-books snapshot
+        (metrics.accounting from /accounting_report) so a provider claim tagged account.move
+        can be cross-checked against real ledger-derived numbers. A value the model invented
+        and tagged account.move will not appear here and is rejected by the validator."""
+        accounting = ((report_pack.get("metrics") or {}).get("accounting") or {})
+        values = []
+
+        def walk(node):
+            if isinstance(node, bool):
+                return
+            if isinstance(node, (int, float)):
+                values.append(float(node))
+            elif isinstance(node, dict):
+                for child in node.values():
+                    walk(child)
+            elif isinstance(node, (list, tuple)):
+                for child in node:
+                    walk(child)
+
+        walk(accounting)
+        return values
+
+    def _ai_value_traceable(self, value, traceable):
+        """A claimed number is traceable if it matches a real ledger figure within a small
+        tolerance (allows the model to restate a rounded figure, e.g. 16.7M for 16,734,000)."""
+        for known in traceable:
+            if abs(value - known) <= max(1.0, abs(known) * 0.005):
+                return True
+        return False
+
     def _ai_validate_provider_claims(self, candidate_claims, report_pack, plan, fallback=True):
         allowed_refs = {ref.get("model") for ref in report_pack.get("sourceEvidence") or []}
         allowed_refs.update(plan.get("sourceRefsRequired") or [])
+        traceable_acc = self._ai_traceable_accounting_values(report_pack)
         claims = []
         for claim in candidate_claims or []:
             if not isinstance(claim, dict):
@@ -2586,6 +2723,14 @@ class BayaanKioskApi(http.Controller):
             text = str(claim.get("text") or "").strip()
             if not text or (numeric_values and not source_refs):
                 continue
+            # #13 — a claim that cites the formal ledger (account.move) must have EVERY numeric
+            # value traceable to the deterministic accounting snapshot. Otherwise the model may
+            # have invented a figure and simply tagged it account.move (the validator previously
+            # only checked the label was allow-listed, never the number). Drop such claims so an
+            # untraceable accounting number can never reach the user.
+            if numeric_values and any(ref in self._AI_LEDGER_REFS for ref in source_refs):
+                if not all(self._ai_value_traceable(nv["value"], traceable_acc) for nv in numeric_values):
+                    continue
             claims.append({
                 "text": text[:280],
                 "numericValues": numeric_values[:4],
@@ -2668,6 +2813,7 @@ class BayaanKioskApi(http.Controller):
             "When answerMode is conversation, do not summarize operational metrics unless the user specifically asks for them. "
             "Official numbers come only from the supplied deterministic reportPack. "
             "For Bayaan operational questions, ground the answer in the supplied reportPack and cite numeric claims through the claims array. "
+            "For ACCOUNTING questions (revenue, gross profit, COGS, margins, operating expenses, payroll, general ledger, trial balance, income statement, balance sheet, cash flow, accounts payable/receivable, VAT/tax, kiosk profitability), use ONLY reportPack.metrics.accounting — these are the deterministic formal books (account.move) — and cite account.move in each numeric claim's sourceRefs with the date range from metrics.accounting. Explain and investigate the figures; never recompute or invent them. If metrics.accounting.rowCount is 0, say the books have no posted entries for the period rather than estimating. "
             "You, the model, author the visualizations array. Choose only visuals that directly help the user's question; return an empty visualizations array for greetings, capability questions, or when the reportPack does not contain enough evidence. "
             "Every visualization series value must be copied or derived directly from reportPack metrics or rows, and every numeric visualization must include matching sourceRefs from reportPack.sourceEvidence. "
             "The draftPlan and components are compatibility hints only; do not force a dashboard template when the user's question needs a different focused chart, table, ranking, or no visual at all. "
@@ -6138,6 +6284,11 @@ class BayaanKioskApi(http.Controller):
             "expectedCash": close.expected_cash,
             "countedCash": close.actual_cash,
             "cashVariance": close.cash_variance,
+            # #4 cash accountability (drawer allocation + opening-float discrepancy).
+            "openingCash": close.opening_cash,
+            "safeDeposit": close.safe_deposit,
+            "retainedFloat": close.retained_float,
+            "openingDiscrepancy": close.opening_discrepancy,
             "cashPayments": payment_totals.get("cash", 0.0),
             "digitalPayments": payment_totals.get("digital", 0.0),
             "expectedCard": close.expected_card or payment_totals.get("card", payment_totals.get("digital", 0.0)),
@@ -6160,7 +6311,13 @@ class BayaanKioskApi(http.Controller):
                 "expected": line.expected_qty,
                 "actual": line.actual_qty,
                 "variance": line.variance_qty,
-                "value": line.variance_qty * line.product_id.standard_price,
+                # #6 — frozen close-time value (variance_qty × unit_cost stored AT close).
+                # Always the stored figure, never the product's live standard_price, so
+                # re-opening a historical close after a cost change never re-prices it. (A
+                # zero is a valid frozen cost — e.g. a finished SKU whose cost lives in its
+                # recipe ingredients; the meaningful money is in the ingredient variance lines.)
+                "value": line.variance_value,
+                "unitCost": line.unit_cost,
             } for line in close.stock_count_line_ids],
             # The authoritative variance-loop inputs for THIS close's window
             # (opening + received - consumed - waste = expected), computed at
@@ -6208,6 +6365,7 @@ class BayaanKioskApi(http.Controller):
         Adjustment = request.env["bayaan.payroll.adjustment"].sudo()
         Expense = request.env["bayaan.operating.expense"].sudo()
         FinanceAdjustment = request.env["bayaan.finance.adjustment"].sudo()
+        OrderCorrection = request.env["bayaan.order.correction"].sudo()
         Employee = request.env["bayaan.employee"].sudo()
         can_read_chain = self._is_chain_read_user()
 
@@ -6667,6 +6825,19 @@ class BayaanKioskApi(http.Controller):
         consumption_cost = read_group_sum(Consumption, consumption_domain, "total_cost")
         waste_cost = read_group_sum(Waste, waste_domain, "estimated_cost")
         revenue_total = read_group_sum(PosOrder, sale_domain, "amount_total")
+        # #5b: void/remake wrong-order corrections reverse revenue in the real ledger
+        # (account.move); the operational gross revenue must drop by the same amount so the
+        # dashboard ties to the formal books. Scoped to the visible kiosks + today's window.
+        correction_domain = [
+            ("company_id", "=", company.id),
+            ("state", "=", "posted"),
+            ("outcome", "in", ("void", "refund")),
+            ("create_date", ">=", today_start),
+            ("create_date", "<", today_end),
+        ]
+        if not can_read_chain:
+            correction_domain.append(("kiosk_id", "in", kiosks.ids))
+        revenue_total = round(revenue_total - read_group_sum(OrderCorrection, correction_domain, "amount"), 2)
         order_count = PosOrder.search_count(sale_domain)
         # Today's revenue bucketed by local hour (0-23) for the overview hourly view.
         # Uses the same sale_domain as salesToday so the buckets reconcile to the daily total.
@@ -6697,6 +6868,33 @@ class BayaanKioskApi(http.Controller):
             ("reason", "in", ["unknown_loss", "missing_stock"]),
             ("estimated_cost", ">", 50000),
         ])
+
+        # Per-kiosk CURRENT stock health (period-independent: it is a live on-hand snapshot).
+        # Computed once with the same priority-weighted logic the daily byKiosk summary uses,
+        # then attached to BOTH the period byKiosk rows and the daily summary so the kiosk-card
+        # "Inventory" bar shows the same % (and colour) across Daily/Weekly/Monthly. #11
+        stock_by_kiosk = {
+            kiosk.id: {"stockItems": 0, "lowStockItems": 0, "zeroStockItems": 0, "_w": 0.0, "_wt": 0.0}
+            for kiosk in kiosks
+        }
+        for quant in quants:
+            kiosk = kiosk_by_location.get(quant.location_id.id)
+            rec = stock_by_kiosk.get(kiosk.id if kiosk else False)
+            if not rec:
+                continue
+            stock_plan = self._product_stock_plan(quant.product_id, quant.quantity)
+            rec["stockItems"] += 1
+            if stock_plan["target_qty"] > 0:
+                rec["_wt"] += stock_plan["stock_percent"] * stock_plan["priority_weight"]
+                rec["_w"] += stock_plan["priority_weight"]
+            if stock_plan["status"] in ("empty", "critical", "low"):
+                rec["lowStockItems"] += 1
+            if stock_plan["target_qty"] > 0 and quant.quantity <= 0:
+                rec["zeroStockItems"] += 1
+        for rec in stock_by_kiosk.values():
+            w = rec.pop("_w", 0.0)
+            wt = rec.pop("_wt", 0.0)
+            rec["stockHealth"] = round(wt / w) if w else 0
 
         def report_period_summary(start_date, end_inclusive):
             # start_date / end_inclusive are Baghdad-local dates; convert to the matching
@@ -6765,7 +6963,27 @@ class BayaanKioskApi(http.Controller):
                 Payment._read_group(period_payment_domain, ["payment_method_id"], ["amount:sum"])
             )
             period_revenue = read_group_sum(PosOrder, period_sale_domain, "amount_total")
-            period_cogs = read_group_sum(Consumption, period_consumption_domain, "total_cost")
+            # #5b: subtract void/remake corrections so operational revenue ties to the ledger
+            # (which now carries a real reversing account.move for each correction).
+            period_correction_domain = [
+                ("company_id", "=", company.id),
+                ("state", "=", "posted"),
+                ("outcome", "in", ("void", "remake")),
+                ("create_date", ">=", start),
+                ("create_date", "<", end),
+            ]
+            if not can_read_chain:
+                period_correction_domain.append(("kiosk_id", "in", kiosks.ids))
+            period_revenue = round(
+                period_revenue - read_group_sum(OrderCorrection, period_correction_domain, "amount"), 2
+            )
+            # #5 void: a voided line never produced the good, so exclude its recipe consumption
+            # (and net its finished qty below) so the operational COGS matches the ledger.
+            voided_qty = OrderCorrection._bayaan_voided_qty_map(company)
+            voided_line_ids = list(voided_qty.keys())
+            period_consumption_domain_eff = period_consumption_domain + (
+                [("pos_order_line_id", "not in", voided_line_ids)] if voided_line_ids else [])
+            period_cogs = read_group_sum(Consumption, period_consumption_domain_eff, "total_cost")
             # Finished/hybrid goods carry std-cost COGS that the recipe consumption ledger
             # does NOT capture (e.g. a cake slice). The GL poster (_bayaan_post_cogs) adds it
             # on top, so the operational COGS must too — otherwise the Finance overview
@@ -6780,7 +6998,8 @@ class BayaanKioskApi(http.Controller):
                 ("product_id.product_tmpl_id.bayaan_consumption_mode", "in", ["finished", "hybrid"]),
                 ("qty", ">", 0),
             ]):
-                cost = (fline.qty or 0.0) * (fline.product_id.standard_price or 0.0)
+                eff_qty = max(0.0, (fline.qty or 0.0) - voided_qty.get(fline.id, 0.0))
+                cost = eff_qty * (fline.product_id.standard_price or 0.0)
                 kid = fline.order_id.bayaan_kiosk_id.id if fline.order_id.bayaan_kiosk_id else False
                 finished_cogs_by_kiosk[kid] = finished_cogs_by_kiosk.get(kid, 0.0) + cost
                 finished_cogs_total += cost
@@ -6815,7 +7034,7 @@ class BayaanKioskApi(http.Controller):
                 period_orders_by_kiosk[kid] = row_count or 0
             period_cogs_by_kiosk = {
                 (g[0].id if g[0] else False): (g[1] or 0.0)
-                for g in Consumption._read_group(period_consumption_domain, ["kiosk_id"], ["total_cost:sum"])
+                for g in Consumption._read_group(period_consumption_domain_eff, ["kiosk_id"], ["total_cost:sum"])
             }
             for _kid, _fc in finished_cogs_by_kiosk.items():
                 period_cogs_by_kiosk[_kid] = period_cogs_by_kiosk.get(_kid, 0.0) + _fc
@@ -6839,6 +7058,7 @@ class BayaanKioskApi(http.Controller):
                 k_waste = period_waste_by_kiosk.get(kiosk.id, 0.0)
                 k_staff = period_staff_by_kiosk.get(kiosk.id, 0.0)
                 k_profit = k_sales - k_cogs - k_waste - k_staff
+                k_stock = stock_by_kiosk.get(kiosk.id, {})
                 period_by_kiosk.append({
                     "kioskId": kiosk.kiosk_code,
                     "name": kiosk.name,
@@ -6851,6 +7071,12 @@ class BayaanKioskApi(http.Controller):
                     "grossProfit": round(k_sales - k_cogs, 2),
                     "approxProfit": round(k_profit, 2),
                     "margin": round((k_profit / k_sales) * 100, 1) if k_sales else 0.0,
+                    # Current stock (period-independent) so the kiosk-card inventory bar stays
+                    # constant across periods. #11
+                    "stockHealth": k_stock.get("stockHealth", 0),
+                    "stockItems": k_stock.get("stockItems", 0),
+                    "lowStockItems": k_stock.get("lowStockItems", 0),
+                    "zeroStockItems": k_stock.get("zeroStockItems", 0),
                 })
             period_by_kiosk.sort(key=lambda row: (-row["sales"], row["kioskId"]))
             # Manual P&L adjustments (real practice deviates from the calculation).
@@ -7139,6 +7365,9 @@ class BayaanKioskApi(http.Controller):
                 "warehouse": kiosk.stock_location_id.complete_name,
                 "manager": kiosk.manager_user_id.name,
                 "supervisor": kiosk.supervisor_user_id.name,
+                "defaultCashFloat": kiosk.default_cash_float,  # #4 standard drawer float
+                "retainedFloat": kiosk.last_retained_float,    # #4 float carried from last close
+                "expectedOpening": kiosk.bayaan_expected_opening(),  # #4 carried float (0-safe) or std float
             } for kiosk in kiosks],
             "pos_configs": [{
                 "id": config.id,
@@ -7385,6 +7614,162 @@ class BayaanKioskApi(http.Controller):
             "closings": [
                 self._serialize_shift_close(close, waste_cost=waste_by_close.get(close.id, 0.0))
                 for close in closes
+            ],
+            "from": self._bayaan_local_datetime(start),
+            "to": self._bayaan_local_datetime(end),
+        }
+
+    def _serialize_pos_session(self, session, config_to_kiosk, close=None, detail=False):
+        """One pos.session row for the kiosk POS Sessions tab. Cash/card/customer-account
+        split is derived from the order payments; expected vs counted cash and variance come
+        straight off pos.session; the journal entry is the session's Z-report move; manager
+        approval + stock counts come from the linked bayaan.shift.close."""
+        kiosk = config_to_kiosk.get(session.config_id.id)
+        orders = session.order_ids
+        split = {"cash": 0.0, "card": 0.0, "digital": 0.0, "customerAccount": 0.0}
+        for order in orders:
+            for pmt in order.payment_ids:
+                cat = self._payment_gateway_info(pmt.payment_method_id).get("category")
+                name = (pmt.payment_method_id.name or "").lower()
+                if "account" in name or "receivable" in name or "آجل" in name or "حساب" in name:
+                    split["customerAccount"] += pmt.amount
+                elif cat == "cash":
+                    split["cash"] += pmt.amount
+                elif cat == "card":
+                    split["card"] += pmt.amount
+                else:
+                    split["digital"] += pmt.amount
+        move = session.move_id
+        # A closed session occasionally has no stop_at (closed via the Bayaan finalize / seed
+        # path rather than the native close button); fall back to the linked close's timestamp,
+        # then the latest order time, so the Sessions list never shows a blank "--:--" close for a
+        # session that is in fact closed.
+        close_time = session.stop_at or (close.closed_at if close else False)
+        if not close_time and session.state == "closed":
+            order_dates = [o.date_order for o in orders if o.date_order]
+            # last order time if any; else the open time (an empty closed session that recorded
+            # nothing) — anything but a blank "--:--" for a session that is in fact closed.
+            close_time = (max(order_dates) if order_dates else False) or session.start_at
+        row = {
+            "id": session.id,
+            "name": session.name,
+            "kiosk": (kiosk.kiosk_code if kiosk else None) or session.config_id.name,
+            "cashier": session.user_id.name or "-",
+            "open": self._bayaan_local_datetime(session.start_at),
+            "close": self._bayaan_local_datetime(close_time),
+            "openingFloat": session.cash_register_balance_start,
+            "countedCash": session.cash_register_balance_end_real,
+            "expectedCash": session.cash_register_balance_end,
+            "cashVariance": session.cash_register_difference,
+            "cashSales": round(split["cash"], 2),
+            "cardSales": round(split["card"], 2),
+            "digitalSales": round(split["digital"], 2),
+            "customerAccountSales": round(split["customerAccount"], 2),
+            "orders": session.order_count,
+            "totalSales": round(sum(orders.mapped("amount_total")), 2),
+            "status": session.state,
+            "journalEntry": move.name or None,
+            "journalEntryId": move.id or None,
+            "safeDeposit": (close.safe_deposit if (close and "safe_deposit" in close._fields) else None),
+            "managerApproval": (close.manager_review_state if close else None),
+            "shiftClose": (close.name if close else None),
+        }
+        if detail:
+            row["orderRows"] = [self._bayaan_pos_order_payload(o) for o in orders]
+            row["stockLines"] = [{
+                "product": line.product_id.display_name,
+                "uom": line.uom_id.name,
+                "expected": line.expected_qty,
+                "counted": line.actual_qty,
+                "variance": line.variance_qty,
+                "note": line.note or "",
+            } for line in close.stock_count_line_ids] if close else []
+            row["ingredientLines"] = [{
+                "ingredient": line.ingredient_id.display_name,
+                "expected": line.expected_qty,
+                "counted": line.actual_qty,
+                "variance": line.variance_qty,
+                "value": line.variance_value,
+            } for line in close.ingredient_variance_line_ids] if close else []
+            row["accounting"] = {
+                "move": move.name or None,
+                "state": move.state,
+                "lines": [{
+                    "account": ml.account_id.display_name,
+                    "debit": ml.debit,
+                    "credit": ml.credit,
+                } for ml in move.line_ids],
+            } if move else None
+        return row
+
+    @http.route("/bayaan/api/pos_session_history", type="jsonrpc", auth="user")
+    def pos_session_history(self, **kwargs):
+        """Read-only POS session history per kiosk. chain_bootstrap is today-scoped and ships
+        no pos.session rows, so the kiosk "POS Sessions" tab was always empty. This surfaces
+        the real pos.session records Odoo already owns (number, cashier, open/close, opening
+        float, cash/card/customer-account split, expected vs counted cash, variance, status,
+        the linked Z-report journal entry, and manager approval from the matching
+        bayaan.shift.close). action:"detail" drills one session into its orders, payments,
+        stock counts, variances, and accounting entry. Odoo stays the single source of truth;
+        role/kiosk scoping mirrors chain_bootstrap (non-chain users see only their kiosks)."""
+        payload = self._payload(kwargs)
+        company = request.env.company
+        Session = request.env["pos.session"].sudo()
+        Kiosk = request.env["bayaan.kiosk"].sudo()
+        ShiftClose = request.env["bayaan.shift.close"].sudo()
+
+        kiosk_domain = [("active", "=", True), ("company_id", "=", company.id)]
+        if not self._is_chain_read_user():
+            user = request.env.user
+            kiosk_domain += [
+                "|", "|",
+                ("manager_user_id", "=", user.id),
+                ("supervisor_user_id", "=", user.id),
+                ("cashier_user_ids", "in", [user.id]),
+            ]
+        allowed = Kiosk.search(kiosk_domain)
+        kiosk_code = payload.get("kiosk")
+        if kiosk_code:
+            allowed = allowed.filtered(lambda k: k.kiosk_code == kiosk_code)
+        config_to_kiosk = {k.pos_config_id.id: k for k in allowed if k.pos_config_id}
+        config_ids = list(config_to_kiosk.keys())
+
+        action = str(payload.get("action") or "list").lower()
+        if action == "detail":
+            session = Session.browse(int(payload.get("session") or 0)).exists()
+            if not session or session.config_id.id not in config_ids:
+                return {"error": "Session not found or not in scope"}
+            close = ShiftClose.search([("pos_order_ids.session_id", "=", session.id)], limit=1)
+            return {"session": self._serialize_pos_session(session, config_to_kiosk, close=close, detail=True)}
+
+        today = fields.Date.context_today(request.env.user)
+
+        def _bound(value, end_of_day, fallback):
+            if value:
+                try:
+                    return self._report_datetime(fields.Date.from_string(value), None, end_of_day=end_of_day)
+                except (ValueError, TypeError):
+                    pass
+            return fallback
+
+        end = _bound(payload.get("date_to") or payload.get("dateTo"), True, self._report_datetime(today, None, end_of_day=True))
+        start = _bound(payload.get("date_from") or payload.get("dateFrom"), False, self._report_datetime(today, None) - timedelta(days=30))
+
+        domain = [("config_id", "in", config_ids or [0]), ("start_at", ">=", start), ("start_at", "<", end)]
+        sessions = Session.search(domain, order="start_at desc, id desc", limit=500)
+        closes_by_session = {}
+        if sessions:
+            closes = ShiftClose.search([
+                ("company_id", "=", company.id),
+                ("pos_order_ids.session_id", "in", sessions.ids),
+            ])
+            for close in closes:
+                for sid in close.pos_order_ids.mapped("session_id").ids:
+                    closes_by_session.setdefault(sid, close)
+        return {
+            "sessions": [
+                self._serialize_pos_session(s, config_to_kiosk, close=closes_by_session.get(s.id))
+                for s in sessions
             ],
             "from": self._bayaan_local_datetime(start),
             "to": self._bayaan_local_datetime(end),
@@ -7773,6 +8158,13 @@ class BayaanKioskApi(http.Controller):
         cashier = request.env.user
         opening_cash = self._float_value(payload.get("opening_cash"), 0.0)
         session = self._open_kiosk_session(kiosk, cashier, opening_cash)
+        # #4 cash accountability: the opening discrepancy is DERIVED server-side from the counted
+        # opening_cash vs the EXPECTED opening — the float carried forward from the last close
+        # (kiosk.last_retained_float), or the standard float for the very first shift. Recorded at
+        # OPEN time on the audit trail so an abandoned shift still has an auditable record, and so
+        # an overnight cash shortage surfaces immediately. Never trusted from the client.
+        expected_opening = kiosk.bayaan_expected_opening()
+        opening_discrepancy = round(opening_cash - expected_opening, 2)
         # The shared-tablet pick-your-name screen may select a colleague; the
         # official pos.session stays under the authenticated user, but the
         # operating cashier is recorded on the audit trail.
@@ -7782,6 +8174,9 @@ class BayaanKioskApi(http.Controller):
             if picked_cashier and picked_cashier != cashier.name
             else "Cashier %s" % cashier.name
         )
+        cashier_detail += " — opening cash %s vs expected float %s (discrepancy %s)" % (
+            opening_cash, expected_opening, opening_discrepancy,
+        )
         self._audit_event(
             "pos",
             "session.opened",
@@ -7789,7 +8184,7 @@ class BayaanKioskApi(http.Controller):
             cashier_detail,
             record=session,
             kiosk=kiosk,
-            severity="success",
+            severity="warning" if opening_discrepancy else "success",
             payload=payload,
         )
         return {
@@ -7798,6 +8193,8 @@ class BayaanKioskApi(http.Controller):
             "state": session.state,
             "kiosk": kiosk.kiosk_code,
             "config_id": session.config_id.id,
+            "opening_cash": opening_cash,
+            "opening_discrepancy": opening_discrepancy,
         }
 
     @http.route("/bayaan/api/kiosk_sale", type="jsonrpc", auth="user")
@@ -8040,6 +8437,42 @@ class BayaanKioskApi(http.Controller):
             "idempotent": idempotent,
         }
 
+    # #8 — waste-note enforcement thresholds (server-side; tunable in one place).
+    _WASTE_HIGH_VALUE = 50000.0       # IQD — a costly single loss needs investigation context
+    _WASTE_UNUSUAL_FRACTION = 0.5     # writing off >= half the kiosk on-hand at once is unusual
+    _WASTE_REPEAT_TODAY = 3           # the 4th same-item waste today needs a note
+
+    def _waste_note_trigger(self, product, kiosk, qty, reason, estimated_cost):
+        """#8 — return a human reason string when a waste/loss entry MUST carry an investigation
+        note, else None. A note is mandatory for uncategorized ('Other'), high-value,
+        manager-flagged products, an unusually large single write-off (a big fraction of the
+        kiosk on-hand), or a repeated same-item waste pattern on the day. Server-enforced so the
+        accountant's note control cannot be bypassed by calling the route directly."""
+        reason_key = str(reason or "").strip().lower()
+        if reason_key in ("other", "أخرى", "unknown", "unknown_loss", "", "waste"):
+            return "uncategorized ('Other') waste"
+        if estimated_cost and estimated_cost > self._WASTE_HIGH_VALUE:
+            return "high-value waste"
+        if product.product_tmpl_id.bayaan_waste_requires_note:
+            return "a manager-flagged product"
+        # Unusual quantity — relative to the current on-hand at this kiosk.
+        try:
+            on_hand = product.with_context(location=kiosk.stock_location_id.id).qty_available
+        except Exception:  # noqa: BLE001 — a stock read must never block the note check
+            on_hand = 0.0
+        if on_hand > 0 and qty >= self._WASTE_UNUSUAL_FRACTION * on_hand:
+            return "an unusually large quantity"
+        # Repeated pattern — same product+kiosk already wasted several times today.
+        today = fields.Date.context_today(request.env.user)
+        prior_today = request.env["bayaan.waste.entry"].sudo().search_count([
+            ("kiosk_id", "=", kiosk.id),
+            ("product_id", "=", product.id),
+            ("create_date", ">=", "%s 00:00:00" % today),
+        ])
+        if prior_today >= self._WASTE_REPEAT_TODAY:
+            return "a repeated waste pattern today"
+        return None
+
     @http.route("/bayaan/api/waste", type="jsonrpc", auth="user")
     def waste(self, **kwargs):
         payload = self._payload(kwargs)
@@ -8047,6 +8480,16 @@ class BayaanKioskApi(http.Controller):
         self._require_kiosk_scope(kiosk, "waste")
         product = self._sale_product(payload.get("item"), payload.get("name"))
         qty = self._float_value(payload.get("qty"), 1.0)
+        reason = payload.get("reason") or "Waste"
+        note = (payload.get("note") or "").strip()
+        estimated_cost = self._waste_estimated_cost(product, qty)
+        # #8 — a note is mandatory (server-side, not just UI) for uncategorized ('Other'),
+        # high-value, manager-flagged, unusually-large, or repeated-pattern waste so the manager
+        # always has investigation context for the loss.
+        if not note:
+            trigger = self._waste_note_trigger(product, kiosk, qty, reason, estimated_cost)
+            if trigger:
+                return {"error": "A note is required for %s." % trigger}
         WasteEntry = request.env["bayaan.waste.entry"].sudo()
         # Idempotency: a queued waste that is auto-retried (network blip after the
         # server already committed) must not scrap the ingredient twice. Mirror the
@@ -8062,8 +8505,9 @@ class BayaanKioskApi(http.Controller):
             "kiosk_id": kiosk.id,
             "product_id": product.id,
             "qty": qty,
-            "reason": payload.get("reason") or "Waste",
-            "estimated_cost": self._waste_estimated_cost(product, qty),
+            "reason": reason,
+            "note": note or False,
+            "estimated_cost": estimated_cost,
             "external_id": external_id or False,
         })
         entry.action_post()
@@ -8078,6 +8522,131 @@ class BayaanKioskApi(http.Controller):
             payload=payload,
         )
         return {"id": entry.id, "state": entry.state, "scrap_ids": entry.scrap_ids.ids}
+
+    @http.route("/bayaan/api/recent_orders", type="jsonrpc", auth="user")
+    def recent_orders(self, **kwargs):
+        """The cashier's OWN most recent completed POS orders for a kiosk, for the wrong-order
+        picker (#5). Read-only; kiosk-scoped. A cashier sees only the orders they rang (not a
+        colleague's or the seed admin's) — "your last N orders"; managers/accountants who oversee
+        the kiosk see all of it."""
+        payload = self._payload(kwargs)
+        kiosk = self._require_kiosk(payload.get("kiosk"))
+        self._require_kiosk_scope(kiosk, "recent_orders")
+        limit = max(1, min(int(payload.get("limit") or 3), 20))
+        domain = [
+            ("config_id", "=", kiosk.pos_config_id.id),
+            ("state", "in", ("paid", "done", "invoiced")),
+            ("amount_total", ">", 0),
+        ]
+        if not self._is_chain_read_user():
+            domain.append(("user_id", "=", request.env.user.id))
+        orders = request.env["pos.order"].sudo().search(
+            domain, order="date_order desc, id desc", limit=limit)
+        return {"orders": [{
+            "id": order.id,
+            "name": order.name,
+            "date_order": self._bayaan_local_datetime(order.date_order),
+            "cashier": order.user_id.name,
+            "amount_total": order.amount_total,
+            "lines": [{
+                "id": pol.id,
+                "product_id": pol.product_id.id,
+                "product_code": pol.product_id.default_code,
+                "product": pol.product_id.display_name,
+                "qty": pol.qty,
+                "price_subtotal_incl": pol.price_subtotal_incl,
+            } for pol in order.lines],
+        } for order in orders]}
+
+    @http.route("/bayaan/api/order_correction", type="jsonrpc", auth="user")
+    def order_correction(self, **kwargs):
+        """Record an order-linked 'wrong order' correction and apply its deterministic effect
+        (remake/discard/refund/void) — #5. Separate from waste so a sold drink is never
+        re-scrapped through the waste workflow (which would double-count the loss). Kiosk-scoped."""
+        payload = self._payload(kwargs)
+        kiosk = self._require_kiosk(payload.get("kiosk"))
+        self._require_kiosk_scope(kiosk, "order_correction")
+        order = request.env["pos.order"].sudo().browse(int(payload.get("order") or 0)).exists()
+        if not order or order.config_id.id != kiosk.pos_config_id.id:
+            return {"error": "Order not found for this kiosk"}
+        # A cashier may only correct an order they rang themselves (managers/accountants who
+        # oversee the kiosk may correct any). Mirrors the recent_orders self-scope. #5
+        if not self._is_chain_read_user() and order.user_id.id != request.env.user.id:
+            return {"error": "You can only correct your own orders."}
+        line = request.env["pos.order.line"].sudo().browse(int(payload.get("line") or 0)).exists()
+        if line and line.order_id.id != order.id:
+            line = request.env["pos.order.line"]
+        product = line.product_id if line else self._product(payload.get("product"))
+        # #5c determinism: qty + amount are derived SERVER-SIDE from the real pos.order.line,
+        # never trusted from the client. A client may request a SUBSET of the line (e.g. correct
+        # 1 of 2), which is clamped to (0, line.qty]; the affected revenue is then the line's own
+        # tax-incl unit price times that clamped qty. No client-supplied money is ever used.
+        if line:
+            line_qty = line.qty or 0.0
+            requested_qty = self._float_value(payload.get("qty"), line_qty)
+            qty = max(0.0, min(requested_qty, line_qty)) or line_qty
+            # Anti-double-correction: a line can be corrected at most up to its sold quantity in
+            # TOTAL across all prior posted corrections, so the same sale cannot be refunded /
+            # remade / voided repeatedly. Reject when nothing is left, else clamp to the remainder.
+            already_corrected = sum(request.env["bayaan.order.correction"].sudo().search([
+                ("pos_order_line_id", "=", line.id),
+                ("state", "=", "posted"),
+            ]).mapped("qty"))
+            remaining = round(line_qty - already_corrected, 6)
+            if remaining <= 0:
+                return {"error": "This order line has already been fully corrected (%g of %g)." % (already_corrected, line_qty)}
+            qty = min(qty, remaining)
+            unit_incl = (line.price_subtotal_incl / line_qty) if line_qty else line.price_subtotal_incl
+            amount = round(unit_incl * qty, 2)
+        else:
+            # No specific line: cap order-level corrections at one (the whole order) total.
+            already = request.env["bayaan.order.correction"].sudo().search_count([
+                ("pos_order_id", "=", order.id),
+                ("pos_order_line_id", "=", False),
+                ("state", "=", "posted"),
+            ])
+            if already:
+                return {"error": "This order has already been corrected."}
+            qty = 1.0
+            amount = order.amount_total
+        correction = request.env["bayaan.order.correction"].sudo().create({
+            "kiosk_id": kiosk.id,
+            "cashier_id": request.env.user.id,
+            "pos_order_id": order.id,
+            "pos_order_line_id": line.id if line else False,
+            "product_id": product.id if product else False,
+            "qty": qty,
+            "amount": amount,
+            "reason": payload.get("reason") or "wrong_item",
+            "outcome": payload.get("outcome") or "remake",
+            "note": payload.get("note") or "",
+        })
+        correction.action_post()
+        self._audit_event(
+            "stock",
+            "order_correction.posted",
+            "Wrong-order correction: %s (%s)" % (order.name, correction.outcome),
+            "%s · %s · %s" % (
+                product.display_name if product else "-",
+                correction.reason,
+                kiosk.kiosk_code,
+            ),
+            record=correction,
+            kiosk=kiosk,
+            severity="warning",
+            payload=payload,
+        )
+        return {
+            "id": correction.id,
+            "name": correction.name,
+            "state": correction.state,
+            "outcome": correction.outcome,
+            "qty": correction.qty,
+            "amount": correction.amount,
+            "scrap_ids": correction.scrap_ids.ids,
+            # #5b: void/remake reverse revenue in the REAL ledger (account.move), not a side table.
+            "reversal_move_id": correction.reversal_move_id.id or None,
+        }
 
     @http.route("/bayaan/api/stock_transfer", type="jsonrpc", auth="user")
     def stock_transfer(self, **kwargs):
@@ -8141,7 +8710,23 @@ class BayaanKioskApi(http.Controller):
         if not warehouse or not warehouse.int_type_id:
             raise UserError("No internal transfer operation type is configured for this company.")
         picking_type = warehouse.int_type_id
-        source_location = warehouse.lot_stock_id or picking_type.default_location_src_id
+        # #3 — a transfer may originate from ANOTHER kiosk (e.g. K-02 supplies oranges to K-01
+        # when the central warehouse is empty), not only the central warehouse. When a source
+        # kiosk is given, use its audited stock location as the source; otherwise the warehouse.
+        source_kiosk = False
+        source_kiosk_code = payload.get("from_kiosk") or payload.get("source_kiosk") or payload.get("sourceKiosk")
+        if source_kiosk_code:
+            skc = str(source_kiosk_code)
+            source_kiosk = request.env["bayaan.kiosk"].sudo().search(
+                [("company_id", "=", request.env.company.id)]
+                + ([("id", "=", int(skc))] if skc.isdigit() else [("kiosk_code", "=", skc)]),
+                limit=1,
+            )
+            if not source_kiosk:
+                raise UserError("Source kiosk not found: %s" % source_kiosk_code)
+            if source_kiosk.id == kiosk.id:
+                raise UserError("Source and destination kiosk cannot be the same.")
+        source_location = source_kiosk.stock_location_id if source_kiosk else (warehouse.lot_stock_id or picking_type.default_location_src_id)
 
         move_commands = []
         for line in transfer_items:
@@ -8187,6 +8772,18 @@ class BayaanKioskApi(http.Controller):
             severity="warning" if requested else "success",
             payload=payload,
         )
+        if source_kiosk:
+            # #3 — both kiosks keep an audit trail of a kiosk->kiosk transfer.
+            self._audit_event(
+                "stock",
+                "transfer.created",
+                "Transfer out: %s" % picking.name,
+                "%s to %s" % (source_kiosk.kiosk_code, kiosk.kiosk_code),
+                record=picking,
+                kiosk=source_kiosk,
+                severity="success",
+                payload=payload,
+            )
         result = self._serialize_picking_action(picking)
         if isinstance(result, dict):
             result["requested"] = requested
@@ -8197,12 +8794,19 @@ class BayaanKioskApi(http.Controller):
         payload = self._payload(kwargs)
         picking = self._picking(payload.get("transfer") or payload.get("picking"))
         if picking.picking_type_id.code != "internal":
-            raise UserError("%s is not an internal warehouse-to-kiosk transfer." % picking.name)
+            raise UserError("%s is not an internal stock transfer." % picking.name)
         action = (payload.get("action") or "").lower()
-        kiosk = self._kiosk_for_picking(picking)
-        if kiosk:
-            receive_action = action in ("receive", "received", "done", "complete")
-            self._require_kiosk_scope(kiosk, "transfer_receive" if receive_action else "transfer")
+        # #3 — a transfer may be kiosk->kiosk. Resolve BOTH ends so scoping authorizes the
+        # destination kiosk on receive and the source kiosk on dispatch/approve/pick.
+        dest_kiosk = self._kiosk_for_picking(picking)
+        source_kiosk = request.env["bayaan.kiosk"].sudo().search([
+            ("stock_location_id", "=", picking.location_id.id),
+            ("company_id", "=", request.env.company.id),
+        ], limit=1)
+        receive_action = action in ("receive", "received", "done", "complete")
+        scope_kiosk = dest_kiosk if receive_action else (source_kiosk or dest_kiosk)
+        if scope_kiosk:
+            self._require_kiosk_scope(scope_kiosk, "transfer_receive" if receive_action else "transfer")
             if receive_action and picking.bayaan_transfer_state != "dispatched":
                 raise UserError("Kiosk users can only receive dispatched transfers.")
 
@@ -8222,7 +8826,23 @@ class BayaanKioskApi(http.Controller):
                 move.picked = True
             picking.bayaan_transfer_state = "dispatched" if action in ("dispatch", "dispatched") else "picked"
         elif action in ("receive", "received", "done", "complete"):
-            self._validate_picking(picking, payload.get("items"))
+            # #7 — when the receiver enters per-line quantities, a note is mandatory on any
+            # line where received + damaged != dispatched (short/damaged delivery), so a
+            # discrepancy is never recorded without an explanation.
+            items = payload.get("items")
+            if items:
+                expected_by_product, _uom = self._picking_expected_quantities(picking)
+                inputs = self._picking_discrepancy_inputs(items)
+                for product_id, row in inputs.items():
+                    expected = expected_by_product.get(product_id, 0.0)
+                    accounted = row["received_qty"] + row["damaged_qty"]
+                    if abs(accounted - expected) > 0.001 and not row["notes"]:
+                        product = request.env["product.product"].sudo().browse(product_id)
+                        raise UserError(
+                            "A note is required when received/damaged quantities differ from "
+                            "the dispatched quantity for %s." % product.display_name
+                        )
+            self._validate_picking(picking, items)
             picking.bayaan_transfer_state = "received"
         elif action == "cancel":
             picking.action_cancel()
@@ -8238,7 +8858,7 @@ class BayaanKioskApi(http.Controller):
             "Transfer %s: %s" % (status_label, picking.name),
             "%s to %s" % (picking.location_id.complete_name, picking.location_dest_id.complete_name),
             record=picking,
-            kiosk=kiosk,
+            kiosk=(dest_kiosk or source_kiosk),
             severity="success" if status_label not in ("cancelled", "cancel") else "warning",
             payload=payload,
         )
@@ -8672,36 +9292,106 @@ class BayaanKioskApi(http.Controller):
         payload = self._payload(kwargs)
         kiosk = self._require_kiosk(payload.get("kiosk"))
         self._require_kiosk_scope(kiosk, "shift_close")
+        ShiftClose = request.env["bayaan.shift.close"].sudo()
         orders = request.env["pos.order"].sudo().search([("name", "in", payload.get("pos_invoices", []))])
+        # #4c determinism: expected cash/card are DERIVED server-side from the linked sessions'
+        # opening balance + the native POS payments, never trusted from the client (a tampered
+        # client could otherwise forge a "perfect" reconciliation). #4a: the opening discrepancy
+        # is likewise re-derived from the session's recorded opening float vs the standard float.
+        close_orders = orders.filtered(lambda o: o.state in ("paid", "done", "invoiced"))
+        close_sessions = close_orders.mapped("session_id")
+        close_payments = close_orders.mapped("payment_ids")
+        # #2 anti-fraud freeze: a close is frozen at submission — the same SHIFT (pos.session)
+        # cannot be closed twice, so a cashier cannot resubmit a blind count after the fact. A
+        # kiosk legitimately has several closes per day (one per shift/session); the guard keys
+        # on the session, not the day. A manager-rejected close releases the lock for a redo.
+        # (The blind submit response below means the cashier never even learns the variance.)
+        if close_sessions:
+            clashing = ShiftClose.search([
+                ("kiosk_id", "=", kiosk.id),
+                ("manager_review_state", "!=", "rejected"),
+            ]).filtered(lambda c: c.pos_order_ids.mapped("session_id") & close_sessions)
+            if clashing:
+                raise UserError(
+                    "This shift (%s) has already been closed (%s) and is awaiting manager review. "
+                    "A manager must review or reject that close before it can be re-submitted."
+                    % (", ".join(close_sessions.mapped("name")), clashing[0].name)
+                )
+        session_opening = sum(close_sessions.mapped("cash_register_balance_start")) if close_sessions else None
+        opening_for_expected = (
+            session_opening if session_opening is not None
+            else self._float_value(payload.get("opening_cash"), 0.0)
+        )
+        expected_cash_srv = round(opening_for_expected + sum(
+            close_payments.filtered(lambda p: p.payment_method_id.type == "cash").mapped("amount")
+        ), 2)
+        expected_card_srv = round(sum(
+            close_payments.filtered(lambda p: p.payment_method_id.type != "cash").mapped("amount")
+        ), 2)
+        # Discrepancy vs the EXPECTED opening = the float carried from the prior close
+        # (last_retained_float — may legitimately be 0), or the standard float for the first shift.
+        # Computed BEFORE last_retained_float / last_daily_close_at are overwritten below.
+        expected_opening_baseline = kiosk.bayaan_expected_opening()
+        opening_discrepancy_srv = round(opening_for_expected - expected_opening_baseline, 2)
+        # #4b cash-allocation integrity: every counted note must be accounted for — placed in the
+        # safe or kept as the next shift's float. A mismatch is a hard error (the UI also hard-
+        # blocks submit). Enforced only when the client actually sends an allocation, so the
+        # operator path is validated while programmatic/legacy closes (no allocation) still work;
+        # the cash VARIANCE itself is always computed + manager-reviewed regardless.
+        actual_cash_val = self._float_value(payload.get("actual_cash"), 0.0)
+        safe_deposit_val = self._float_value(payload.get("safe_deposit"), 0.0)
+        retained_float_val = self._float_value(payload.get("retained_float"), 0.0)
+        has_allocation = ("safe_deposit" in payload) or ("retained_float" in payload)
+        # Validate whenever an allocation is supplied — including a 0 counted drawer (so depositing
+        # cash that isn't there, e.g. safe 5,000 from a 0 drawer, is still caught). #4
+        if has_allocation and abs(actual_cash_val - (safe_deposit_val + retained_float_val)) > 1.0:
+            raise UserError(
+                "Cash allocation does not balance: counted %s, but safe deposit %s + retained float %s = %s. "
+                "Allocate every counted note to the safe or the retained float before submitting."
+                % (actual_cash_val, safe_deposit_val, retained_float_val, safe_deposit_val + retained_float_val)
+            )
         stock_counts = payload.get("stock_counts", [])
         line_commands = []
         for count in stock_counts:
             product = self._require_product(count.get("item") or count.get("itemId"))
-            expected_qty = count.get("expected_qty")
-            if expected_qty is None:
-                expected_qty = product.with_context(location=kiosk.stock_location_id.id).qty_available
-            else:
-                expected_qty = self._float_value(expected_qty)
+            # Blind count (#2 anti-fraud): expected is ALWAYS derived server-side from the
+            # current on-hand at the kiosk stock location, frozen at close time. Any client
+            # expected_qty is ignored so a cashier cannot submit a perfect close by echoing
+            # the expected figure.
+            expected_qty = product.with_context(location=kiosk.stock_location_id.id).qty_available
+            line_uom = self._uom(count.get("uom"), product.uom_id)
+            # #6 — freeze the unit cost AT close time, normalized to this line's UoM, so the
+            # variance value never re-prices against the product's live standard_price later.
+            unit_cost = product.standard_price or 0.0
+            if line_uom and product.uom_id and line_uom.id != product.uom_id.id:
+                unit_cost = product.uom_id._compute_price(unit_cost, line_uom)
             line_commands.append((0, 0, {
                 "product_id": product.id,
-                "uom_id": self._uom(count.get("uom"), product.uom_id).id,
+                "uom_id": line_uom.id,
                 "expected_qty": expected_qty,
                 "actual_qty": self._float_value(
                     count.get("actual_qty") if count.get("actual_qty") is not None else count.get("actualQty"),
                     0.0,
                 ),
+                "unit_cost": unit_cost,
                 "note": count.get("note"),
             }))
 
-        record = request.env["bayaan.shift.close"].sudo().create({
+        record = ShiftClose.create({
             "kiosk_id": kiosk.id,
             "cashier_id": request.env.user.id,
             "opened_at": self._client_datetime(payload.get("opened_at")) or fields.Datetime.now(),
-            "opening_cash": payload.get("opening_cash") or 0,
-            "expected_cash": payload.get("expected_cash") or 0,
-            "actual_cash": payload.get("actual_cash") or 0,
-            "expected_card": self._float_value(payload.get("expected_card"), 0.0),
+            # #4a/#4c: opening, expected cash, expected card + opening discrepancy are all
+            # server-derived above (session balance + native payments), NOT client values.
+            "opening_cash": round(opening_for_expected, 2),
+            "expected_cash": expected_cash_srv,
+            "actual_cash": actual_cash_val,
+            "expected_card": expected_card_srv,
             "actual_card": self._float_value(payload.get("actual_card"), 0.0),
+            # #4 cash accountability: drawer allocation + confirmed-opening discrepancy.
+            "safe_deposit": safe_deposit_val,
+            "retained_float": retained_float_val,
+            "opening_discrepancy": opening_discrepancy_srv,
             "pos_order_ids": [(6, 0, orders.ids)],
             "stock_count_json": stock_counts,
             "stock_count_line_ids": line_commands,
@@ -8744,6 +9434,14 @@ class BayaanKioskApi(http.Controller):
         dt = fields.Date.to_date(record.closed_at) if record.closed_at else fields.Date.context_today(request.env.user)
         gl._bayaan_post_cogs(request.env.company, kiosk=kiosk, date_from=df, date_to=dt)
         gl._bayaan_post_waste(request.env.company, kiosk=kiosk, date_from=df, date_to=dt)
+        # #4 — post the safe deposit as a real Dr Cash-in-Safe / Cr Cash-on-hand ledger transfer,
+        # and carry the retained float forward as the next shift's expected opening balance.
+        if safe_deposit_val > 0:
+            gl._bayaan_post_safe_deposit(record)
+        kiosk.last_retained_float = retained_float_val
+        # #2 — freeze the counted cash + blind stock counts now that submission is complete; from
+        # here they are immutable to everyone until a controlled manager reject/recount.
+        record.counts_locked = True
 
         self._audit_event(
             "closing",
@@ -8759,31 +9457,16 @@ class BayaanKioskApi(http.Controller):
             severity="warning" if record.cash_variance or record.ingredient_variance_value else "success",
             payload=payload,
         )
+        # #2 blind close: the submit response deliberately does NOT return the variance,
+        # expected quantities, or per-line figures. The cashier counts blind and submits; only
+        # the manager sees the variance at review (/shift_close_review + /shift_close_history).
+        # Echoing the variance here would let a cashier learn the expected figure and re-count.
         return {
             "id": record.id,
             "name": record.name,
-            "cash_variance": record.cash_variance,
-            "ingredient_variance_value": record.ingredient_variance_value,
-            "stock_lines": [{
-                "item": line.product_id.display_name,
-                "expected_qty": line.expected_qty,
-                "actual_qty": line.actual_qty,
-                "variance_qty": line.variance_qty,
-            } for line in record.stock_count_line_ids],
-            "ingredient_lines": [{
-                "ingredient": line.ingredient_id.display_name,
-                "ingredient_id": line.ingredient_id.id,
-                "uom": line.uom_id.name,
-                "opening_qty": line.opening_qty,
-                "received_qty": line.received_qty,
-                "consumed_qty": line.consumed_qty,
-                "waste_qty": line.waste_qty,
-                "expected_qty": line.expected_qty,
-                "actual_qty": line.actual_qty,
-                "variance_qty": line.variance_qty,
-                "unit_cost": line.unit_cost,
-                "variance_value": line.variance_value,
-            } for line in record.ingredient_variance_line_ids],
+            "state": "pending",
+            "submitted": True,
+            "counted_lines": len(record.stock_count_line_ids),
         }
 
     @http.route("/bayaan/api/shift_close_review", type="jsonrpc", auth="user")

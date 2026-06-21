@@ -8,13 +8,13 @@ const milk = (b) => { const r = (b?.kiosk_stock_rows || []).find((x) => x.kiosk 
 const log = (m) => console.log("  " + m);
 
 const browser = await launch();
-const { cookie } = await odooLogin("owner@miza.iq");
+const { cookie } = await odooLogin("owner@koub.iq");
 
 // ---------- STEP 0: with NO real transfers, the POS must show NONE (mock TR-2040 gone) ----------
 console.log("\nSTEP 0 — cashier POS with zero real transfers (the old bug showed a fake TR-2040):");
 {
   const page = await makePage(browser);
-  await adminLogin(page, "zainab@miza.iq");
+  await adminLogin(page, "zainab@koub.iq");
   await page.getByRole("button", { name: /^POS$/ }).first().click().catch(() => {});
   await page.waitForTimeout(1200);
   await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(() => {});
@@ -45,7 +45,7 @@ for (const action of ["approve", "dispatch"]) {
 {
   // screenshot the admin dashboard showing the dispatched transfer
   const page = await makePage(browser);
-  await adminLogin(page, "owner@miza.iq");
+  await adminLogin(page, "owner@koub.iq");
   await gotoAdmin(page, "Stock & Allocation");
   await page.waitForTimeout(2000);
   await shot(page, "trace-1-admin-dispatched");
@@ -58,7 +58,7 @@ let receiveResp = null;
 {
   const page = await makePage(browser);
   page.on("response", async (r) => { if (r.url().includes("stock_transfer_action")) { try { receiveResp = (await r.json())?.result ?? (await r.json())?.error; } catch {} } });
-  await adminLogin(page, "zainab@miza.iq");
+  await adminLogin(page, "zainab@koub.iq");
   await page.getByRole("button", { name: /^POS$/ }).first().click().catch(() => {});
   await page.waitForTimeout(1200);
   await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(() => {});

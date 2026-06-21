@@ -1,3 +1,4 @@
+from odoo.exceptions import AccessError
 from odoo.tests.common import HttpCase, tagged
 
 from .common import BayaanTestBase
@@ -98,6 +99,97 @@ class TestApiSecurityScope(BayaanTestBase, HttpCase):
         if "error" in response:
             self.fail("assigned cashier sale errored: %s" % response["error"])
         self.assertEqual(response["result"]["state"], "paid")
+
+    def test_cashier_wrong_order_workflow_and_real_ledger_reversal(self):
+        """#5 regression — the exact blocker the demo gate missed: an assigned cashier must be
+        able to call /recent_orders and /order_correction (both were excluded from the cashier
+        whitelist). Also locks in determinism: a remake/void reverses revenue in the REAL ledger
+        (account.move), and the corrected amount is DERIVED server-side (an inflated client
+        amount/qty is ignored)."""
+        self.authenticate("bayaan_cashier_scope", "test")
+        sale = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-WRONG-ORDER",
+            "items": [{"product": "MENU-OJ", "name": "Orange Juice", "qty": 1, "price_unit": 5500.0}],
+            "payments": [{"method": "cash", "amount": 5500.0}],
+        })
+        if "error" in sale:
+            self.fail("cashier sale errored: %s" % sale["error"])
+        order = self.env["pos.order"].sudo().search([("pos_reference", "=", "EXT-WRONG-ORDER")], limit=1)
+        self.assertTrue(order, "sale must create the order to correct")
+        line = order.lines[:1]
+
+        # /recent_orders — was rejected for cashiers before the whitelist fix.
+        recent = self._jsonrpc("/bayaan/api/recent_orders", {"kiosk": "K-TEST", "limit": 5})
+        if "error" in recent:
+            self.fail("assigned cashier recent_orders errored (whitelist regression): %s" % recent["error"])
+        self.assertIn(order.id, [o["id"] for o in recent["result"]["orders"]])
+
+        # /order_correction remake — was rejected for cashiers; also feeds a forged amount/qty
+        # that the server must ignore in favour of the real line value.
+        correction = self._jsonrpc("/bayaan/api/order_correction", {
+            "kiosk": "K-TEST",
+            "order": order.id,
+            "line": line.id,
+            "outcome": "remake",
+            "reason": "customer_rejected",
+            "qty": 99,            # forged — server clamps to the line qty (1)
+            "amount": 999999.0,   # forged — server derives from the line (5500)
+            "note": "wrong drink",
+        })
+        if "error" in correction:
+            self.fail("assigned cashier order_correction errored (whitelist regression): %s" % correction["error"])
+        result = correction["result"]
+        self.assertEqual(result["state"], "posted")
+        self.assertAlmostEqual(result["qty"], 1.0, msg="qty must be clamped to the line, not the forged 99")
+        self.assertAlmostEqual(result["amount"], 5500.0, msg="amount must be derived from the line, not the forged 999999")
+        self.assertTrue(result["reversal_move_id"], "remake/void must post a REAL reversing account.move")
+
+        move = self.env["account.move"].sudo().browse(result["reversal_move_id"])
+        self.assertEqual(move.state, "posted")
+        self.assertAlmostEqual(sum(move.line_ids.mapped("debit")), 5500.0, places=2)
+        self.assertAlmostEqual(sum(move.line_ids.mapped("credit")), 5500.0, places=2)
+        income = self.env["bayaan.gl"].sudo()._bayaan_gl_account("400000", "Product Sales", "income", self.company)
+        income_debit = sum(move.line_ids.filtered(lambda l: l.account_id == income).mapped("debit"))
+        self.assertAlmostEqual(income_debit, 5500.0, places=2, msg="revenue (Product Sales) must be reversed in the ledger")
+        # #3a — the money reversal must CREDIT the ORIGINAL payment channel (cash), not generic bank.
+        cash_account = order.payment_ids[:1].payment_method_id.journal_id.default_account_id
+        self.assertTrue(cash_account, "the cash payment method must have a settlement account")
+        channel_credit = sum(move.line_ids.filtered(lambda l: l.account_id == cash_account).mapped("credit"))
+        self.assertAlmostEqual(channel_credit, 5500.0, places=2,
+                               msg="the reversal must credit the cash channel that was actually paid")
+
+        # A SECOND correction on the same (now fully-corrected) line must be rejected — no double reversal.
+        repeat = self._jsonrpc("/bayaan/api/order_correction", {
+            "kiosk": "K-TEST", "order": order.id, "line": line.id,
+            "outcome": "remake", "reason": "duplicate",
+        })
+        # A returned {"error": ...} dict rides under result; a raised UserError is top-level.
+        repeat_err = (repeat.get("result") or {}).get("error") or repeat.get("error")
+        self.assertTrue(repeat_err, "a second correction on a fully-corrected line must be rejected")
+        self.assertIn("already", str(repeat_err).lower())
+
+    def test_cashier_cannot_write_submitted_close(self):
+        """#2 — once a close is submitted the cashier cannot alter the (blind) counts or cash:
+        the cashier's model WRITE permission on bayaan.shift.close is revoked, so a direct write
+        is denied. The submission itself still works because the route runs via sudo."""
+        close = self.env["bayaan.shift.close"].sudo().create({
+            "kiosk_id": self.kiosk.id,
+            "cashier_id": self.cashier.id,
+            "opened_at": "2026-05-12 08:00:00",
+            "actual_cash": 100.0,
+        })
+        self.authenticate("bayaan_cashier_scope", "test")
+        with self.assertRaises(AccessError):
+            close.with_user(self.cashier).write({"actual_cash": 0.0})
+
+    def test_cashier_cannot_correct_order_for_unassigned_kiosk(self):
+        """The wrong-order whitelist must not have widened cross-kiosk scope: a cashier may only
+        correct orders for a kiosk they are assigned to."""
+        self.authenticate("bayaan_cashier_scope", "test")
+        blocked = self._jsonrpc("/bayaan/api/recent_orders", {"kiosk": "K-OTHER", "limit": 5})
+        self.assertIn("error", blocked)
+        self.assertIn("not allowed", str(blocked["error"]).lower())
 
     def test_cashier_cannot_apply_pos_discount(self):
         self.authenticate("bayaan_cashier_scope", "test")

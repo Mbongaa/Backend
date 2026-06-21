@@ -7,13 +7,13 @@ import { launch, makePage, adminLogin, gotoAdmin, bodyText, shot, api, odooLogin
 const log = (m) => console.log("  " + m);
 
 const browser = await launch();
-const { cookie } = await odooLogin("owner@miza.iq");
+const { cookie } = await odooLogin("owner@koub.iq");
 
 // ---------- DB0: quick-cash buttons ----------
 console.log("\nDB0 — POS payment quick-cash buttons (cash sale of one Cappuccino = 4000):");
 {
   const page = await makePage(browser);
-  await adminLogin(page, "zainab@miza.iq");
+  await adminLogin(page, "zainab@koub.iq");
   await page.getByRole("button", { name: /^POS$/ }).first().click().catch(() => {});
   await page.waitForTimeout(1200);
   await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(() => {});
@@ -71,7 +71,7 @@ console.log("\nDB2 — admin transfer card: dispatched row must NOT show a Recei
   log(`created draft ${draft.name || draft.id} + dispatched ${disp.name || disp.id}`);
 
   const page = await makePage(browser);
-  await adminLogin(page, "hassan@miza.iq"); // logistics — the persona that previously hit the error
+  await adminLogin(page, "hassan@koub.iq"); // logistics — the persona that previously hit the error
   await gotoAdmin(page, "Stock & Allocation");
   await page.waitForTimeout(2500);
   await shot(page, "fix-db2-admin-transfers");

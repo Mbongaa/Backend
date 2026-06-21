@@ -9,7 +9,7 @@ const page = await makePage(browser);
 const rec = makeRecorder();
 
 try {
-  await adminLogin(page, "owner@miza.iq");
+  await adminLogin(page, "owner@koub.iq");
   await gotoAdmin(page, "Products");
   await page.waitForTimeout(1500);
 

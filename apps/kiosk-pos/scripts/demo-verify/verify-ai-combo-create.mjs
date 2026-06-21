@@ -20,7 +20,7 @@ async function run() {
   let ok = true;
   try {
     log("1) owner login + open AI Assistant…");
-    await adminLogin(page, "owner@miza.iq", "test");
+    await adminLogin(page, "owner@koub.iq", "test");
     await gotoAdmin(page, "AI Assistant");
     await page.waitForTimeout(1500);
 
@@ -53,7 +53,7 @@ async function run() {
     }
 
     log("4) confirm & create…");
-    const { cookie } = await odooLogin("owner@miza.iq", "test");
+    const { cookie } = await odooLogin("owner@koub.iq", "test");
     await confirmBtn.first().click();
     const created = page.getByText(/Product created|تم إنشاء المنتج/);
     const outcome = await Promise.race([

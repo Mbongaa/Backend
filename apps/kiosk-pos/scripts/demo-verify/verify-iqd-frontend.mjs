@@ -3,7 +3,7 @@ import { launch, makePage, adminLogin, bodyText, shot } from "./lib.mjs";
 const browser = await launch();
 const page = await makePage(browser);
 try {
-  await adminLogin(page, "owner@miza.iq");
+  await adminLogin(page, "owner@koub.iq");
   await page.waitForTimeout(3500);
   const text = await bodyText(page);
   await shot(page, "iqd-frontend-dashboard");

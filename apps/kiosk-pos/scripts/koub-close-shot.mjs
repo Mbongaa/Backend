@@ -8,14 +8,14 @@ await page.goto(URL,{waitUntil:"networkidle"});
 await page.waitForTimeout(1200);
 await page.getByRole("button",{name:/Sign in|دخول/}).first().click();
 const dlg=page.locator("[role='dialog']"); await dlg.waitFor({state:"visible"});
-await dlg.locator("input").nth(0).fill("owner@miza.iq");
+await dlg.locator("input").nth(0).fill("owner@koub.iq");
 await dlg.locator("input").nth(1).fill("test");
 await dlg.locator("button[type='submit']").click();
 await page.waitForTimeout(6000);
 for (const label of ["Daily Close","Closing","Close"]) {
   try { await page.getByRole("button",{name:new RegExp("^"+label,"i")}).first().click({timeout:3500});
     await page.waitForTimeout(3000);
-    await page.screenshot({path:"verification/miza-06-daily-close.png",fullPage:false});
+    await page.screenshot({path:"verification/koub-06-daily-close.png",fullPage:false});
     console.log("CAPTURED",label); break;
   } catch(e){ console.log("skip",label); }
 }

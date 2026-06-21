@@ -8,7 +8,7 @@ page.on("response", async (r)=>{ if(r.url().includes("kiosk_sale")){ try{ const 
 await page.goto(URL,{waitUntil:"networkidle"}); await page.waitForTimeout(1200);
 await page.getByRole("button",{name:/Sign in|دخول/}).first().click();
 const dlg=page.locator("[role='dialog']"); await dlg.waitFor({state:"visible"});
-await dlg.locator("input").nth(0).fill("zainab@miza.iq"); await dlg.locator("input").nth(1).fill("test");
+await dlg.locator("input").nth(0).fill("zainab@koub.iq"); await dlg.locator("input").nth(1).fill("test");
 await dlg.locator("button[type='submit']").click(); await page.waitForTimeout(5000);
 await page.getByRole("button",{name:/^POS$/}).first().click().catch(()=>{}); await page.waitForTimeout(3000);
 await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(()=>{});
@@ -19,7 +19,7 @@ await page.getByRole("button",{name:/Charge/}).first().click().catch(()=>{}); aw
 // click the Cash payment-method card -> triggers submitSale
 await page.locator("[class*='card']").filter({ hasText: /configured POS method/ }).filter({ hasText: /Cash/ }).first().click().catch((e)=>logs.push("cash-click:"+String(e).slice(0,60)));
 await page.waitForTimeout(6000);
-await page.screenshot({path:"verification/miza-11-paid.png",fullPage:false});
+await page.screenshot({path:"verification/koub-11-paid.png",fullPage:false});
 const body = await page.locator("body").innerText();
 logs.push("RESULT_TEXT: "+(body.includes("Payment complete")?"Payment complete ✓":body.includes("Sale failed")?"Sale failed ✗":"(unknown)"));
 console.log(logs.join("\n"));

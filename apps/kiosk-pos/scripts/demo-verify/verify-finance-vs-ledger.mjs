@@ -6,7 +6,7 @@ import { odooLogin, api } from "./lib.mjs";
 const money = (n) => Number(n || 0).toLocaleString("en-US");
 const num = (n) => Number(n || 0);
 
-const { cookie } = await odooLogin("noor@miza.iq");
+const { cookie } = await odooLogin("noor@koub.iq");
 
 // Operational finance — exactly what the Finance overview renders (odooReportMetrics → summary.reportPeriods)
 const boot = await api("/bayaan/api/chain_bootstrap", cookie, {});

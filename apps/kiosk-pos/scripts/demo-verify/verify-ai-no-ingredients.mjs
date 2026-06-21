@@ -13,7 +13,7 @@ async function run() {
   });
   const log = (m) => console.log(m);
   try {
-    await adminLogin(page, "owner@miza.iq", "test");
+    await adminLogin(page, "owner@koub.iq", "test");
     await gotoAdmin(page, "AI Assistant"); await page.waitForTimeout(1500);
     const composer = page.locator(".assistant-thread-input, .aui-composer-input, textarea").first();
     await composer.waitFor({ state: "visible", timeout: 15000 });

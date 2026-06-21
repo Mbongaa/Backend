@@ -1,4 +1,4 @@
-# Miza Demo — Live Dashboard & Flow Test Plan
+# Koub Demo — Live Dashboard & Flow Test Plan
 
 **Purpose:** Verify every live-view dashboard function, every role's scope, and the
 cashier / manager / staff flows behave and **calculate** correctly before the demo.
@@ -9,8 +9,8 @@ exactly as an admin, cashier, or manager would.
 - Backend: native WSL Odoo 19 on `:8069`, DB `bayaan` (the live source of truth).
 - Frontend: Vite on `http://127.0.0.1:5174` (proxies `/odoo` → `:8069`), runtime
   `src/exact-design/ExactKioskApp.jsx`, **Live only** mode.
-- Logins (all password `test`): `owner@miza.iq` (superadmin), `layla@miza.iq` (manager),
-  `hassan@miza.iq` (logistics), `noor@miza.iq` (accountant), `zainab@miza.iq` (cashier).
+- Logins (all password `test`): `owner@koub.iq` (superadmin), `layla@koub.iq` (manager),
+  `hassan@koub.iq` (logistics), `noor@koub.iq` (accountant), `zainab@koub.iq` (cashier).
 
 **How to run**
 ```bash
@@ -177,7 +177,7 @@ rounds (H, I) found zero new product bugs. The suite self-derives ground truth f
 
 2. **Demo polish (fixed): AI Insights starter prompt named a nonexistent kiosk.** The chip
    "Why is Zayouna Plaza 12% behind?" referenced a mock-chain kiosk absent from the live
-   Miza data (only Karrada / Mansour / Erbil Mall exist). Changed to the tenant-agnostic
+   Koub data (only Karrada / Mansour / Erbil Mall exist). Changed to the tenant-agnostic
    "Which kiosk is behind today and why?" (`ExactKioskApp.jsx` `SUGGESTED[0]`).
 
 3. **Bug (fixed): cashier POS daily close crashed with a server error.** Submitting the close

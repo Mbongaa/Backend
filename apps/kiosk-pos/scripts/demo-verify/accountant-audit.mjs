@@ -33,7 +33,7 @@ async function main() {
 
   // ---------------- Part 1: engine ground truth (no browser) ----------------
   console.log("\n========== ENGINE GROUND TRUTH (as accountant noor) ==========");
-  const { cookie, uid } = await odooLogin("noor@miza.iq");
+  const { cookie, uid } = await odooLogin("noor@koub.iq");
   note("accountant uid", uid);
 
   const auth = await api("/bayaan/api/auth_status", cookie, {});
@@ -148,7 +148,7 @@ async function main() {
   const page = await makePage(browser);
   const shots = [];
   try {
-    await adminLogin(page, "noor@miza.iq");
+    await adminLogin(page, "noor@koub.iq");
     const labels = await navLabels(page);
     note("accountant nav labels", labels.join(" | "));
 

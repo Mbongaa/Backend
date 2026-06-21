@@ -13,14 +13,14 @@ async function main() {
   const page = await makePage(browser);
 
   // Backend ground truth (so UI numbers can be checked against the source).
-  const { cookie } = await odooLogin("owner@miza.iq");
+  const { cookie } = await odooLogin("owner@koub.iq");
   const tb = await api("/bayaan/api/accounting_report", cookie, { payload: { report: "trial_balance" } });
   const bs = await api("/bayaan/api/accounting_report", cookie, { payload: { report: "balance_sheet" } });
   const truthDebit = Math.round(tb?.totals?.debit || 0);
   const truthAssets = Math.round(bs?.totals?.assets || 0);
 
   try {
-    await adminLogin(page, "owner@miza.iq");
+    await adminLogin(page, "owner@koub.iq");
     const labels = await navLabels(page);
     const navOk = ACCT_NAV.every((l) => labels.some((x) => x.includes(l)));
     rec.add("ACC-1", "Owner sees the Finance & Accounting nav category", navOk, navOk ? ACCT_NAV.join(", ") : `got: ${labels.join(", ")}`, await shot(page, "acc-01-nav"));
@@ -105,7 +105,7 @@ async function main() {
   // Accountant role sees the read-only books.
   try {
     const acc = await makePage(browser);
-    await adminLogin(acc, "noor@miza.iq");
+    await adminLogin(acc, "noor@koub.iq");
     const labels = await navLabels(acc);
     const seesBooks = ["General ledger", "Trial balance", "Chart of accounts"].every((l) => labels.some((x) => x.includes(l)));
     rec.add("ACC-11", "Accountant role sees the formal books", seesBooks, seesBooks ? "" : `got: ${labels.join(", ")}`, await shot(acc, "acc-11-accountant-nav"));

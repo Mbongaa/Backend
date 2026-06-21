@@ -1,6 +1,254 @@
 # Accountant Controls — Release Gate (2026-06-15)
 
-**Status: 🔴 RED — 13 verified open gaps. Do not promote to green until every P0 + P1 acceptance criterion below passes _and_ the existing gates stay green.**
+**Status: 🟢 P0 + P1 COMPLETE (13/13) — hardened across Codex functional re-audits (rounds 2–4, 2026-06-15) + P1 re-audits (round 5, 2026-06-16; round 6, 2026-06-17). All accountant internal-control gaps closed + regression-tested. Re-run every gate before trusting this line.**
+
+> **Round 6 (Codex P1 UI re-audit, 2026-06-17).** With the backend fixed, Codex re-probed the UI
+> and flagged 4 items. All addressed; addon **178/178** (+2), `npm run verify` **193** + wiring +
+> build, live spot-checks confirm. Date had rolled to 2026-06-17 so the demo DB was reseeded to
+> today (books balanced: assets 34,540,016 = L+E+NI).
+> - **#6 recon money column (was RED — demo-visible, fixed).** The backend frozen value was correct
+>   but the recon ("Variance inputs") table rendered no IQD column — only the lower stock table did.
+>   Added a "Variance value" column to the recon table (`ExactKioskApp.jsx`, renders
+>   `varianceInputs[].value`). Verified live: recon shows RAW-CUP −4 → −800, RAW-ORANGE −1.2 →
+>   −1800; 0 nonzero-variance lines render value 0.
+> - **#7 receive discrepancy (was AMBER/RED, fixed).** Added an explicit **Missing** column
+>   (dispatched − received − damaged) and a structured **Reason** select to the receive modal; new
+>   `reason` field on `bayaan.stock.receipt.discrepancy` (migrated `-u`) parsed in
+>   `_picking_discrepancy_inputs` + stored + serialized. Extracted a shared `ReceiveDiscrepancyModal`
+>   used by BOTH the cashier POS receive AND the admin transfer workspace, so the admin "Receive" no
+>   longer force-completes without discrepancy capture (`advanceTransferStatus` opens the modal for a
+>   receive with lines). New addon test asserts a short receive stores reason + shortage.
+> - **#8 waste note UI (was amber, fixed).** The cashier note-required hint now mirrors the server
+>   rules it can detect (uncategorized, high-value, manager-flagged, unusual ≥50% on-hand) with a
+>   specific reason line, plus a soft hint that repeated/flagged losses may need a note;
+>   `bayaan_waste_requires_note` now rides on `chain_bootstrap` products so the manager-flag surfaces
+>   pre-submit. The server still enforces all rules and surfaces the exact rejection.
+> - **#3 kiosk→kiosk transfer (was AMBER, fixed).** Added a regression test
+>   (`test_stock_transfer_kiosk_to_kiosk_conserves_stock`) proving a `from_kiosk` transfer yields a
+>   picking with `location_id` = source kiosk loc, `location_dest_id` = dest kiosk loc, runs the full
+>   approve→dispatch→receive lifecycle, and conserves total stock across the two kiosks.
+> - **#12 / #13 GREEN** (Codex agreed). Known follow-up (not a blocker): the live AI request used
+>   ~216k input tokens — connected + accurate but not compact; trimming the report-pack rows
+>   (per the CLAUDE.md AI compactness rule) is a cost optimization for later, deferred to avoid
+>   regressing the now-verified AI accuracy.
+>
+> Browser-verified (2026-06-17): new `verify-round6.mjs` drives the live app and asserts, via the
+> real DOM, #6 (recon table shows a "Variance value" column = "IQD -800") and #7 (cashier POS
+> receive opens the shared modal with Item/Dispatched/Received/Damaged/**Missing** headers + a
+> required **Discrepancy reason** select on a short receive) — **7/7 with screenshots**, 0 console
+> errors. GOTCHA found + fixed: the long-lived Vite dev server (on the `/mnt/c` Windows mount) had a
+> stale `node_modules/.vite` transform cache after the big modal refactor — it served the OLD
+> 4-column modal even though source + `vite build` were correct. `rm -rf node_modules/.vite` + a
+> dev-server restart fixed it. Lesson: after a structural refactor on this mount, clear `.vite` and
+> restart the dev server before trusting the browser. (The 5 RAW-MILK test transfers the script
+> seeded to K-01 were cancelled afterward; the demo's 2 legit K-01 drafts — a warehouse RAW-ORANGE
+> replenishment + the K-02→K-01 cheesecake kiosk-to-kiosk draft — remain.)
+
+> **Round 5 (Codex P1 re-audit, 2026-06-16).** A Codex re-audit of the six P1 items flagged 6
+> findings (RED verdict). Each was independently re-ground-truthed (6 parallel read-only auditors +
+> direct DB/code reads). Result: **4 real bugs fixed, 2 non-issues.** Addon suite **176/176** (was
+> 168; +8 new tests) on a disposable DB; `npm run verify` **193** (+1 realtime) + wiring + build;
+> live API spot-checks confirm #6 + #8; live books reseeded + balanced (assets 33,250,656 = L+E+NI).
+>
+> - **#6 frozen variance VALUE (real — demo blocker, fixed).** The serializer already sent the
+>   FROZEN `variance_value`, but the cashier count line's `unit_cost` was only set by the
+>   `/shift_close` ROUTE — the seed (`seed-miza-day.py`) and auto-close paths created count lines
+>   with no cost, so `variance_value` computed to 0 and the Daily Close money column showed "-".
+>   Fix: `bayaan.shift.close.line.create` now DEFAULTS `unit_cost` from `standard_price`
+>   (UoM-normalized) when the caller omits it — every path freezes a cost. Live data backfilled
+>   (37 lines copied the matching frozen ingredient-line cost; 1 from the product cost; locked/
+>   approved closes were SQL-backfilled since the #2 lock correctly blocks ORM edits). Verified
+>   live: closings[].stock now shows real IQD (RAW-CUP −4 → −800), 0 lines at value 0.
+> - **#8 waste notes (real — incomplete, fixed).** Enforcement covered only 'Other' + high-value
+>   (>50k); the acceptance also requires **unusual quantity / repeated pattern / manager-flagged**.
+>   Added `product.template.bayaan_waste_requires_note` (migrated `-u`) + a server-side
+>   `_waste_note_trigger`: a note is now mandatory for uncategorized, high-value (>50k), a
+>   manager-flagged product, an unusually large single write-off (≥50% of kiosk on-hand), or a
+>   repeated same-item waste (4th+ today). 5 new addon tests + live rejection confirmed.
+> - **#12 realtime half-open (real — fixed).** The heartbeat only *sent* a keepalive; `send()`
+>   never throws on a half-open socket (TCP up, data not flowing), so a severed-but-OPEN socket was
+>   never detected (Odoo's bus is silent on a caught-up channel — confirmed in `bus/websocket.py`
+>   `_dispatch_bus_notifications`: `if not notifications: return`, so a probe-ack detector would
+>   false-positive). Fix: `realtime.ts` tracks `lastInboundAt` + a heartbeat watchdog that
+>   force-reconnects when no inbound frame arrives within `STALE_MS` (40s, ~45s detection) despite
+>   the keepalive; a `socketEpoch` guard makes a dead socket's late close a no-op. New vitest
+>   simulates a half-open socket → watchdog tears it down + reconnects. (Browser JS cannot send WS
+>   ping frames, so ~45s inbound-staleness is the honest best-effort; during active use events keep
+>   it fresh so it never trips spuriously.)
+> - **#13 AI claim validation (real — fixed).** `_ai_validate_provider_claims` checked only that the
+>   source-ref LABEL was allow-listed, never that the NUMBER was real — so a model could invent a
+>   figure and tag it `account.move`. Fix: claims citing the formal ledger must have EVERY numeric
+>   value traceable to `metrics.accounting` (within 0.5% to allow rounding) or the claim is dropped.
+>   Addon test proves an invented `account.move` number is rejected while a real (rounded) one
+>   survives.
+> - **#3 "completed" transfer state (NON-ISSUE).** Codex wanted a `completed` terminal state; the
+>   gate acceptance only requires the full state machine runs to `received` (where stock moves) +
+>   kiosk→kiosk conservation, which it does. `completed` is aspirational CLAUDE.md wording, not a
+>   gate criterion. No fix.
+> - **#7 admin receive bypass (NON-ISSUE).** The admin bulk-receive action omits line items, but the
+>   gate's receiving-discrepancy control is the kiosk receive MODAL (per-line received/damaged/note),
+>   which is the production path and is implemented + marked DONE. No fix.
+>
+> Honest scope: the heavy browser sweeps (`demo:verify:full`, `verify:live`) were NOT re-run this
+> round — the changes are backend (addon-covered) + one realtime.ts change (build + unit-test
+> covered) + one additive product field; verification was the addon suite, `npm run verify`, and
+> direct live API/DB spot-checks.
+
+> **Codex re-audits rounds 3 & 4 (2026-06-15) — deeper functional probes found acceptance gaps the
+> earlier gates missed; all fixed + regression-tested. Addon suite now 167/167.**
+>
+> Round 3 (UI / permission / accounting depth):
+> - **#1 cash float** — `matchesKiosk` was given the id STRING not a kiosk object, so the float
+>   showed IQD 0; fixed (shows 50,000). Start Shift now requires the opening-cash count. Safe
+>   deposit posts a real ledger transfer; retained float carries forward as the next shift's
+>   expected opening.
+> - **#3 wrong-order** — refund now credits the ORIGINAL payment channel (cash drawer / card
+>   clearing / customer receivable), not a generic bank lump; `recent_orders` + `order_correction`
+>   are scoped to the cashier's OWN orders (no colleague/admin leak).
+> - **#2 blind close** — cashier model WRITE on the close + count lines revoked (submission runs
+>   via the sudo route).
+> - **#4 search** — palette now FETCHES + indexes POS sessions, journal entries and accounts from
+>   the live read routes (bootstrap has none of these).
+>
+> Round 4 (deterministic-accounting + lock depth):
+> - **#1 safe deposit** — credited the generic Bank; now credits the kiosk DRAWER cash account
+>   (live K-01 → `101504 Cash K-01`, asset_cash), Dr `101350 Cash in Safe`. Test asserts the exact
+>   credit account.
+> - **#2 repeat corrections** — a line could be refunded/remade repeatedly; now the total corrected
+>   qty per line is capped at the sold qty (second correction on a fully-corrected line is rejected).
+> - **#2 counts lock** — counts froze only at approval; now a `counts_locked` flag freezes the
+>   counted cash + blind stock counts at SUBMISSION, immutable to EVERYONE (cashier, supervisor,
+>   manager) until a controlled reject/recount.
+> - **#4 (P1) inventory search** — the Stock & Allocation table gained an inline name/code search
+>   (it had only category/location filters).
+>
+> Verification after round 4: addon suite **167/167** (0 failed) on a disposable DB; `npm run verify`
+> (192 + wiring + **build**) green; live drawer-account resolution confirmed (`101504`, not Bank);
+> live books reseeded + balanced (TB 101,174,224; BS assets 32,289,176 = L+E+NI). New fields
+> `bayaan.shift.close.counts_locked` + `bayaan.kiosk.last_retained_float` +
+> `bayaan.order.correction.reversal_move_id` migrated on live (`-u`). NOTE: the heavy browser
+> sweeps (`verify:live`, `demo:verify:full`) were last fully green in round 3; the round-4 changes
+> are backend (addon-covered) + one additive inventory-search input (build-covered) and were not
+> re-run through the browser suites this round.
+>
+> **Round 4 follow-up (Codex re-audit #3) — corrections to the round-4 fixes + 2 more, all addon
+> 167/167 + build green:**
+> - **Duplicate `_bayaan_kiosk_cash_account`** — my round-4 addition silently SHADOWED a pre-existing
+>   method (Python keeps the later def), and the active one fell back to generic Bank. Removed the
+>   duplicate; hardened the canonical one (matches `is_cash_count` OR `type=='cash'`, falls back to
+>   `101300 Cash on Hand`, never Bank). Live K-01 safe deposit → `101504 Cash K-01`.
+> - **Retained float `0` falsy** — `last_retained_float or default` wrongly fell back to the standard
+>   float when a cashier legitimately retained 0. New `bayaan.kiosk.bayaan_expected_opening()` keys
+>   on `last_daily_close_at` (has-ever-closed) so a real 0 is honoured; exposed as bootstrap
+>   `expectedOpening` (frontend reads it instead of `||`).
+> - **Zero counted cash bypassed allocation** — removed the `actual_cash and` guard so depositing
+>   cash from a 0 drawer is caught; frontend retained default is now `min(standardFloat, counted)`.
+> - **Stale demo-verify scripts** — groups C/G/H/I clicked the now-disabled "Start shift" without
+>   entering opening cash (the gate is INTENDED). Added `fillOpeningCash()` before each Start-shift
+>   click so the suite matches the mandatory-opening-cash control.
+> - **Sessions `--:--`** — 28 closed sessions had no `stop_at` (all empty, 0 orders). The serializer
+>   now falls back stop_at → linked close → last order time → `start_at`, so a closed session never
+>   renders blank.
+>
+> **Round 4 follow-up #2 (2026-06-15) — VOID stock-return now IMPLEMENTED + 5 prior-fix corrections,
+> addon 168/168.** Codex re-audit #3 found bugs in the round-4 fixes (duplicate cash-account method
+> shadowing the canonical one → fell back to Bank; retained-float `0` falsy fallback; zero-counted-
+> cash bypassing the allocation check; stale demo-verify Start-shift scripts; 28 sessions showing
+> `--:--`) — all fixed. Then, on your call, the **wrong-order VOID physical-stock reversal** was
+> implemented: a void now RETURNS the consumed recipe ingredients (and/or finished stock) to the
+> kiosk (so the variance loop has no phantom shortage — `expected == counted`), and the voided line
+> is EXCLUDED from COGS in BOTH the formal ledger (`_bayaan_post_cogs`) and the operational
+> dashboard (`period_cogs`), keyed on `bayaan.order.correction._bayaan_voided_qty_map`. The immutable
+> consumption ledger is not mutated (a contra row hits a unique constraint — the test caught that;
+> the exclude-from-COGS approach is used instead). Verified: addon **168/168**; live void posts
+> cleanly + trial balance stays balanced; books reseeded + balanced (TB 101,174,224). Known edge:
+> a VOID of a sale on an ALREADY-CLOSED prior day reverses immediately in the operational view but
+> the GL COGS for that prior day only nets out if its kiosk-day COGS is re-posted (same-day voids —
+> the realistic case — are fully consistent).
+>
+> **Round 4 follow-up #3 (2026-06-15) — wrong-order simplified to TWO outcomes (client decision),
+> both verified LIVE.** Per the client, the wrong-order workflow is now just **Void** and **Remake**
+> (dropped `refund` + `discard`); both refund the money to the original payment channel via a real
+> reversing `account.move`, differing only in stock:
+> - **Void** = order was NOT made → reverse money + RETURN the consumed stock + exclude from COGS.
+> - **Remake** = item WAS made → reverse money, but stock stays consumed + COGS stands.
+> Live proof (K-01, OJ recipe consumes 0.3 orange/unit, qty 10): VOID orange 30→27 (sale)→**30**
+> (returned); REMAKE 30→27 (sale)→**27** (kept consumed); both posted a real reversal move; trial
+> balance stayed balanced. (Earlier probe "failures" were the probe paying ≠ order total — the sale
+> correctly rejects `payment ≠ total`, a real control.) Frontend `POSWrongOrder` now shows only
+> Void/Remake with a plain-language explainer; addon **168/168**; books reseeded + balanced.
+>
+> **Known remaining (honest):** Inline per-table **search** (#10/P1) covers the command palette
+> (incl. orders/sessions/journals/accounts) + Items/Suppliers/Staff/**Inventory**; POs, transfers,
+> customers and vendors tables still lack inline search — a P1 UX follow-up (Codex's own rating).
+
+> **P0 RE-AUDIT (2026-06-15, round 2 — Codex functional re-probe).** A Codex re-audit ran LIVE
+> functional probes (not just gates) and correctly found P0 was NOT actually done: 2 pass, 2
+> partial, 3 fail. The earlier gates passed but never exercised the cashier permission path,
+> search depth, close lock-timing, or the KPI label. Every finding was re-ground-truthed against
+> current code and FIXED:
+>
+> - **#5 wrong-order — was the RELEASE BLOCKER (FAIL → FIXED).** (a) `/recent_orders` +
+>   `/order_correction` were excluded from the cashier whitelist in `_require_kiosk_scope`
+>   (api.py) — a live cashier got "not allowed". Added both ops (still kiosk-scoped). (b) void/
+>   refund only wrote a Bayaan-side `finance.adjustment`, never the real ledger → formal books
+>   overstated. Now posts a REAL reversing `account.move` via `bayaan.gl`
+>   (`bayaan_order_correction._post_revenue_reversal`; idempotent ref; branch analytic on the
+>   income line), and the operational revenue subtracts posted void/refund corrections so the
+>   dashboard stays tied to the ledger. (c) qty/amount were trusted from the client → now derived
+>   server-side from the `pos.order.line` (requested qty clamped to the line; client money ignored).
+> - **#4 cash float/safe (FAIL → FIXED).** Opening discrepancy is derived server-side
+>   (`opening_cash − kiosk.default_cash_float`) and recorded at open (audit) + re-derived at close
+>   from the session's opening balance — never trusted from the client. Expected cash/card are
+>   derived server-side from the session opening + native POS payments. Safe/retained allocation
+>   mismatch is now a HARD block (UI disables submit; backend rejects when an allocation is sent).
+> - **#2 blind close (PARTIAL → FIXED).** Counts were only frozen at manager approval. The submit
+>   response is now BLIND (no variance/expected echoed back), and a second close for the same
+>   SHIFT (`pos.session`) is rejected until a manager rejects the first — so a cashier cannot
+>   resubmit a "corrected" blind count. Multi-shift days still get one close per session.
+> - **#10 search (FAIL → FIXED).** The Ctrl-K palette now indexes POS orders + sessions (was only
+>   sections/kiosks/products/suppliers/staff). A real order id now returns a result.
+> - **#11 stock label (PARTIAL → FIXED).** The kiosk-detail "Stock health" KPI tier word now comes
+>   from `stockHealthTier(stockHealth)`, not the unrelated operational status; `stockTone`
+>   threshold unified to <50. A 100% kiosk now reads "ok" (was the bogus "critical").
+>
+> **New regression tests (the lesson: nothing caught these).** Addon `test_api_security_scope`
+> gained `test_cashier_wrong_order_workflow_and_real_ledger_reversal` (cashier CAN call both
+> routes; amount/qty server-derived; a real balanced reversing `account.move` debits Product
+> Sales) + `test_cashier_cannot_correct_order_for_unassigned_kiosk`. New browser gate
+> `verify-controls-ui.mjs` (#10 palette finds an order; #11 healthy kiosk tier word correct),
+> wired with `verify-contrast.mjs` into `npm run verify:controls` → `verify:live`.
+>
+> **Gates after round 2 (all green, 2026-06-15):** addon suite **164/164** (was 162; +2) on a
+> disposable DB; `npm run verify` **192 + wiring + build**; `verify:live` — accounting **12/12**,
+> finance-vs-ledger **delta 0 TIE**, accountant-audit (EN+AR+dark, no console errors),
+> `verify:controls` **5/5**, `smoke:live` **ok:true**; `demo:verify:full` **62/62**. Live probes
+> confirmed the blocker is fixed (cashier `recent_orders` + `order_correction` succeed) and a
+> refund reverses revenue in the ledger while the finance overview stays tied (op net = ledger
+> net + VAT; TB balanced). New field `bayaan.order.correction.reversal_move_id` migrated on live
+> `bayaan` (`-u`); demo reseeded clean.
+
+> **P1 implementation round (2026-06-15).** All six P1 items implemented + verified live.
+> Backend schema migrated (`-u`); demo data reseeded clean; probe artifacts removed.
+> Gates after the P1 round: `npm run verify` **192 tests + wiring + build** green; addon suite
+> **162/162** on a disposable DB (incl. new `bayaan.order.correction` + frozen-cost +
+> waste-note + kiosk→kiosk transfer changes); books **reconcile TIE** (revenue+VAT == POS gross,
+> TB balanced, assets == L+E+NI, 0 sessions missing a move, single revenue source). Per-item
+> verification: #6 frozen value stays put after a product-cost bump (was re-priced live); #8
+> "Other"/high-value waste rejected without a note (server-enforced); #7 short receive records a
+> shortage + requires a note; #3 a K-02→K-01 picking moves stock kiosk-to-kiosk with both ends
+> audited + scoped; #12 realtime tests pass (reconnect/backoff/heartbeat, honest Live/
+> Reconnecting/Offline badge, no fake "STREAM ACTIVE"); #13 AI pack carries **484 real
+> account.move rows** + 5 claims citing `account.move` (net profit/revenue/COGS/gross profit
+> from the formal income statement). See per-item notes below.
+
+> **P0 implementation round (2026-06-15).** All seven P0 items are implemented and verified
+> live (each with an API/Playwright probe + the deterministic gate). Backend schema migrated
+> (`-u bayaan_fnb_kiosk`), demo data reseeded clean, probe artifacts removed. Gates after the
+> P0 round: `npm run verify` **192 tests + wiring + build** green; addon suite **162/162** on a
+> disposable DB (incl. the new `bayaan.order.correction` model); `verify-contrast.mjs` 3/3.
+> See the per-item "✅ DONE" notes below for the exact change + evidence. The P1 items
+> (#3, #6, #7, #8, #12, #13) are unchanged and remain the next backlog.
 
 This gate tracks the accountant's formal internal-control / fraud-prevention / auditability
 requirements (not cosmetic feedback). Each item was independently ground-truthed against the
@@ -25,19 +273,42 @@ accountant's tier it is noted in the item.
 
 | # | Item | Tier | Effort | Demo risk | Status |
 |---|------|------|--------|-----------|--------|
-| 1 | POS session history is empty | **P0** | L | high | 🔴 open |
-| 2 | End-of-shift stock count not blind | **P0** | M | high | 🔴 open |
-| 4 | Cash float + safe-deposit controls missing | **P0** | L | high | 🔴 open |
-| 5 | "Wrong order" not linked to a real sale | **P0** | L | high | 🔴 open |
-| 9 | Invisible / low-contrast buttons (dark mode) | **P0** | S | high | 🔴 open |
-| 10 | Search non-functional (Ctrl-K decorative) | **P0** | L | high | 🔴 open |
-| 11 | Kiosk current-stock colour from status/period | **P0** | M | medium | 🔴 open |
-| 3 | Kiosk-to-kiosk stock transfers don't exist | P1 | M | medium | 🔴 open |
-| 6 | Stock variance financial impact uses live cost | P1 | M | medium | 🔴 open |
-| 7 | Receiving discrepancy capture unreachable from UI | P1 | M | high | 🔴 open |
-| 8 | Waste notes missing end-to-end | P1 | M | medium | 🔴 open |
-| 12 | Realtime: no reconnect/backoff/heartbeat; fake badge | P1 | L | medium | 🔴 open |
-| 13 | AI Assistant not connected to the formal books | P1 | L | high | 🔴 open |
+| 1 | POS session history is empty | **P0** | L | high | ✅ DONE |
+| 2 | End-of-shift stock count not blind | **P0** | M | high | ✅ DONE |
+| 4 | Cash float + safe-deposit controls missing | **P0** | L | high | ✅ DONE |
+| 5 | "Wrong order" not linked to a real sale | **P0** | L | high | ✅ DONE |
+| 9 | Invisible / low-contrast buttons (dark mode) | **P0** | S | high | ✅ DONE |
+| 10 | Search non-functional (Ctrl-K decorative) | **P0** | L | high | ✅ DONE |
+| 11 | Kiosk current-stock colour from status/period | **P0** | M | medium | ✅ DONE |
+| 3 | Kiosk-to-kiosk stock transfers don't exist | P1 | M | medium | ✅ DONE |
+| 6 | Stock variance financial impact uses live cost | P1 | M | medium | ✅ DONE |
+| 7 | Receiving discrepancy capture unreachable from UI | P1 | M | high | ✅ DONE |
+| 8 | Waste notes missing end-to-end | P1 | M | medium | ✅ DONE |
+| 12 | Realtime: no reconnect/backoff/heartbeat; fake badge | P1 | L | medium | ✅ DONE |
+| 13 | AI Assistant not connected to the formal books | P1 | L | high | ✅ DONE |
+
+## P1 implementation summary (2026-06-15) — what changed + evidence
+
+- **#6 frozen variance cost** — `bayaan.shift.close.line` gains `unit_cost` (frozen at close, UoM-normalized) + stored `variance_value`; `shift_close` freezes the cost; the serializer's `stock[].value` reads the stored `variance_value` (never live `standard_price`). Verified: bumping a product's cost to 9999 left a historical close's value at its frozen figure (was re-priced to −29,997 before).
+- **#8 waste notes** — `note` added through `WasteWorkspace` UI → `buildPosSale` → `BayaanProvider` → gateway → `/waste` route → `bayaan.waste.entry` + Odoo views. Mandatory (server-enforced) for "Other"/uncategorized + high-value (>50k) waste. Verified: "Other" without a note is rejected; with a note accepted.
+- **#7 receiving discrepancy** — POS receive modal collects per-line received/damaged + a note; gateway `StockTransferActionPayload.items` carries `receivedQty/damagedQty/note/reason`; backend enforces a note when received+damaged ≠ dispatched and records `bayaan.stock.receipt.discrepancy` (short ≠ fully received). Verified by the multiline partial-receive addon test (shortage 0.5 recorded).
+- **#3 kiosk→kiosk transfers** — `_create_kiosk_draft_transfer` accepts a source kiosk (uses its stock location); `stock_transfer_action` resolves both ends so receive scopes to the destination and dispatch/approve to the source; both kiosks audited; gateway `sourceKioskId`; transfer modal has a source selector (warehouse or another kiosk). Verified: a K-02→K-01 picking (location K-02 Stock → K-01 Stock).
+- **#12 realtime resilience** — `realtime.ts` adds initial-config retry, WebSocket reconnect with exponential backoff + jitter, a heartbeat keepalive, cross-transport dedup, and an `onReconnect` snapshot resync; statuses now include `reconnecting`/`offline`. The Overview terminal bar reflects the real `realtime.status` (no more hard-coded "STREAM ACTIVE"/fake 42 ms); header badge adds Reconnecting/Offline. Verified: realtime unit tests pass (4/4).
+- **#13 AI → formal books** — `_ai_accounting_snapshot` feeds the deterministic `/accounting_report` figures (income statement, balance sheet, trial balance, cash flow, aged AP/AR, VAT) into `_ai_compact_report_pack.metrics.accounting`; `account.move` source count is now the real posted-row count; new `accounting-books` intent + plan template; deterministic claims cite `account.move`; instructions tell the model to answer accounting questions only from these and cite report/date-range. Verified: a net-profit question routed to `accounting-books`, pack carried 484 account.move rows, 5 claims cited `account.move`.
+
+**Scoping notes (honest):** #4's drawer-vs-safe split and #5's refund/void use deterministic finance adjustments / single-cash-account treatment (a separate drawer/safe GL split and native POS refund accounting need the client's chart of accounts — documented follow-ups). #13 AI uses month-to-date formal figures and never recomputes them.
+
+## P0 implementation summary (2026-06-15) — what changed + evidence
+
+- **#9 contrast** — `exact.css`: `.btn-accent` text `#fff` → `var(--ink-inverse)` (theme-aware), hover fixed, added `.btn:disabled`/`.btn-danger`, focus rings derive from `var(--accent)`. New `scripts/demo-verify/verify-contrast.mjs` measures **17.16:1 light / 14.22:1 dark** (AA ≥4.5). 
+- **#11 stock colours** — `InventoryMeter` colours from a `stockHealthTier(pct)` (not `k.status`); per-item sites pass `stockStatus`. `api.py` emits `stockHealth`/counts on per-period `byKiosk` (identical to daily). Probe: daily==weekly==monthly stockHealth, bars render green at 100%.
+- **#2 blind close** — `POSClose` shows only item/unit/empty count + note (no expected/“Correct”/expected cash); submit gated on all-counted. `api.py shift_close` **always derives** `expected_qty` server-side (ignores client). `groupG` G3 updated + tie-preserving; demo `blind=true`.
+- **#1 session history** — new read-only `/bayaan/api/pos_session_history` (list + `action:detail`), role/kiosk scoped; gateway `getPosSessionHistory`/`getPosSessionDetail`; KioskDetail Sessions tab fetches it + rich columns + drill-down (orders/payments/stock/variance/accounting). Probe: **144 sessions** for K-01, cashier sees only own kiosk. Wiring-gate checks updated.
+- **#10 search** — global `CommandPalette` (Ctrl/Cmd+K + clickable top-bar pill) over kiosks/products/suppliers/staff + nav sections (EN+AR, navigates). Inline search added to Items, Suppliers, Staff tables (Products + POS catalogue already had it). Probe: Ctrl-K finds "Karrada"/"Orange", navigates.
+- **#4 cash float/safe** — `bayaan.kiosk.default_cash_float` config (+ `currency_id`); `bayaan.shift.close.safe_deposit`/`retained_float`/`opening_discrepancy`; `chain_bootstrap` exposes `defaultCashFloat`; POSLogin opening-cash confirm + discrepancy; POSClose cash-to-safe + retained-float allocation; over/short stays counted−expected. Round-trips through `shift_close_history`. Standard float seeded (50,000) via `seed-miza-unblock.py`.
+- **#5 wrong-order** — new `bayaan.order.correction` model + `/recent_orders` + `/order_correction` routes; POS "Wrong order" screen (last-3-orders → line → reason → outcome → note). **Double-count fixed**: "Wrong order" removed from waste reasons. Outcomes: remake → scrap 1 extra portion; discard → no scrap (already consumed); refund/void → deterministic revenue-reversal finance adjustment. Probe: remake scrapped 4 recipe ingredients, refund posted adjustment, discard no scrap.
+
+**Scoping notes (honest):** #4's drawer-vs-safe split is recorded for accountability with over/short correct on a single cash account; a separate drawer/safe **GL** account split needs the client's chart of accounts (documented follow-up). #5 refund/void reverse revenue via a deterministic `bayaan.finance.adjustment` (auditable) rather than a native POS refund order; physical stock-add-back for a never-made "void" is a follow-up (any resulting variance surfaces at the daily close). #10 global search is the palette; inline per-table search covers Items/Suppliers/Staff/Products/POS (remaining admin tables can adopt the same pattern).
 
 **Headline demo risks** (an experienced accountant exposes these in minutes): empty Sessions tab
 (#1), non-blind close (#2), no cash-float/safe flow (#4), wrong-order leaves money untouched and

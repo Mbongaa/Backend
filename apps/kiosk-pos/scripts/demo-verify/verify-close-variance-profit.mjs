@@ -12,13 +12,13 @@ const rec = makeRecorder();
 
 try {
   // Backend ground truth for the profit tile, fetched through the same API.
-  const { cookie } = await odooLogin("owner@miza.iq");
+  const { cookie } = await odooLogin("owner@koub.iq");
   const boot = await api("/bayaan/api/chain_bootstrap", cookie, {});
   const periods = boot?.summary?.reportPeriods || {};
   const dailyNet = Math.round(Number(periods.daily?.netProfitAfterPayroll ?? 0));
   const weeklyNet = Math.round(Number(periods.weekly?.netProfitAfterPayroll ?? 0));
 
-  await adminLogin(page, "owner@miza.iq");
+  await adminLogin(page, "owner@koub.iq");
 
   // ---- #1: close drill-down variance inputs ----
   await gotoAdmin(page, "Daily Close");

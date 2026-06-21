@@ -381,6 +381,95 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
         self.assertAlmostEqual(self._qty(self.ingredient_orange, self.warehouse.lot_stock_id), warehouse_before - 4.0)
         self.assertAlmostEqual(self._qty(self.ingredient_orange, self.kiosk_location), kiosk_before + 4.0)
 
+    def _create_second_kiosk(self):
+        loc = self.env["stock.location"].sudo().create({
+            "name": "Kiosk K-TEST2 Location", "usage": "internal",
+            "location_id": self.warehouse.view_location_id.id, "company_id": self.company.id,
+        })
+        pos_config = self.env["pos.config"].sudo().create({
+            "name": "K-TEST2 POS", "company_id": self.company.id,
+            "journal_id": self.pos_journal.id, "invoice_journal_id": self.invoice_journal.id,
+            "payment_method_ids": [(6, 0, [self.test_payment_method.id])],
+        })
+        pos_config.picking_type_id.default_location_src_id = loc
+        kiosk = self.env["bayaan.kiosk"].sudo().create({
+            "name": "Mansour Test Kiosk", "kiosk_code": "K-TEST2",
+            "pos_config_id": pos_config.id, "stock_location_id": loc.id,
+            "stock_deduction_policy": "warning", "company_id": self.company.id,
+        })
+        return kiosk, loc
+
+    def test_stock_transfer_kiosk_to_kiosk_conserves_stock(self):
+        # #3 — a kiosk→kiosk transfer must move stock from the SOURCE kiosk location to the DEST
+        # kiosk location (not a warehouse), run the full lifecycle, and conserve total stock.
+        Quant = self.env["stock.quant"].sudo()
+        _dest_kiosk, dest_loc = self._create_second_kiosk()
+        Quant._update_available_quantity(self.ingredient_orange, self.kiosk_location, 20.0)
+        src_before = self._qty(self.ingredient_orange, self.kiosk_location)
+        dest_before = self._qty(self.ingredient_orange, dest_loc)
+
+        created = self._jsonrpc("/bayaan/api/stock_transfer", {
+            "kiosk": "K-TEST2",       # destination kiosk
+            "from_kiosk": "K-TEST",   # SOURCE kiosk (not a warehouse)
+            "item": "ING-ORANGE",
+            "qty": 5.0,
+        })
+        if "error" in created:
+            self.fail("kiosk->kiosk stock_transfer errored: %s" % created["error"])
+        transfer_name = created["result"]["name"]
+
+        picking = self.env["stock.picking"].sudo().search([("name", "=", transfer_name)], limit=1)
+        self.assertEqual(picking.location_id, self.kiosk_location,
+            "source leg must be the SOURCE kiosk location")
+        self.assertEqual(picking.location_dest_id, dest_loc,
+            "dest leg must be the DEST kiosk location (no warehouse)")
+
+        for action in ("approve", "dispatch", "receive"):
+            resp = self._jsonrpc("/bayaan/api/stock_transfer_action", {
+                "transfer": transfer_name, "action": action,
+            })
+            if "error" in resp:
+                self.fail("kiosk->kiosk %s errored: %s" % (action, resp["error"]))
+
+        self.assertEqual(self.env["stock.picking"].sudo().browse(picking.id).state, "done")
+        src_after = self._qty(self.ingredient_orange, self.kiosk_location)
+        dest_after = self._qty(self.ingredient_orange, dest_loc)
+        self.assertAlmostEqual(src_after, src_before - 5.0)
+        self.assertAlmostEqual(dest_after, dest_before + 5.0)
+        self.assertAlmostEqual(src_after + dest_after, src_before + dest_before,
+            msg="kiosk→kiosk transfer must conserve total stock")
+
+    def test_stock_transfer_receive_records_discrepancy_reason(self):
+        # #7 — a short receive with a structured reason stores both the shortage and the reason.
+        Quant = self.env["stock.quant"].sudo()
+        Quant._update_available_quantity(self.ingredient_orange, self.warehouse.lot_stock_id, 10.0)
+        created = self._jsonrpc("/bayaan/api/stock_transfer", {
+            "kiosk": "K-TEST", "item": "ING-ORANGE", "qty": 6.0, "from_warehouse": self.warehouse.name,
+        })
+        if "error" in created:
+            self.fail("stock_transfer errored: %s" % created["error"])
+        transfer_name = created["result"]["name"]
+        for action in ("approve", "dispatch"):
+            resp = self._jsonrpc("/bayaan/api/stock_transfer_action", {"transfer": transfer_name, "action": action})
+            if "error" in resp:
+                self.fail("%s errored: %s" % (action, resp["error"]))
+        received = self._jsonrpc("/bayaan/api/stock_transfer_action", {
+            "transfer": transfer_name, "action": "receive",
+            "items": [{
+                "itemId": "ING-ORANGE", "receivedQty": 4.0, "damagedQty": 0.0,
+                "reason": "short_delivery", "note": "Driver shorted us 2 units",
+            }],
+        })
+        if "error" in received:
+            self.fail("receive errored: %s" % received["error"])
+        picking = self.env["stock.picking"].sudo().search([("name", "=", transfer_name)], limit=1)
+        disc = picking.bayaan_discrepancy_line_ids.filtered(
+            lambda d: d.product_id == self.ingredient_orange)
+        self.assertTrue(disc, "a short receive must record a discrepancy line")
+        self.assertEqual(disc.reason, "short_delivery")
+        self.assertAlmostEqual(disc.shortage_qty, 2.0)
+        self.assertIn("Driver shorted", disc.note or "")
+
     def test_stock_transfer_persists_external_origin_reference(self):
         Quant = self.env["stock.quant"].sudo()
         Quant._update_available_quantity(self.ingredient_orange, self.warehouse.lot_stock_id, 2.0)
@@ -690,24 +779,32 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
         if "error" in close:
             self.fail("shift_close errored: %s" % close["error"])
 
-        by_ingredient = {line["ingredient_id"]: line for line in close["result"]["ingredient_lines"]}
+        # #2 blind close: the cashier submit response deliberately omits the variance/expected
+        # figures. The variance math is read from the record (manager-visible) instead.
+        record = self.env["bayaan.shift.close"].sudo().browse(close["result"]["id"])
+        by_ingredient = {line.ingredient_id.id: line for line in record.ingredient_variance_line_ids}
         orange_line = by_ingredient[self.ingredient_orange.id]
-        self.assertAlmostEqual(orange_line["received_qty"], 5.0)
-        self.assertAlmostEqual(orange_line["consumed_qty"], 1.2)
-        self.assertAlmostEqual(orange_line["waste_qty"], 0.5)
-        self.assertAlmostEqual(orange_line["expected_qty"], orange_actual)
-        self.assertAlmostEqual(orange_line["variance_qty"], 0.0)
-        self.assertAlmostEqual(by_ingredient[self.ingredient_sugar.id]["consumed_qty"], 0.08)
-        self.assertAlmostEqual(by_ingredient[self.ingredient_cup.id]["consumed_qty"], 4.0)
+        self.assertAlmostEqual(orange_line.received_qty, 5.0)
+        self.assertAlmostEqual(orange_line.consumed_qty, 1.2)
+        self.assertAlmostEqual(orange_line.waste_qty, 0.5)
+        self.assertAlmostEqual(orange_line.expected_qty, orange_actual)
+        self.assertAlmostEqual(orange_line.variance_qty, 0.0)
+        self.assertAlmostEqual(by_ingredient[self.ingredient_sugar.id].consumed_qty, 0.08)
+        self.assertAlmostEqual(by_ingredient[self.ingredient_cup.id].consumed_qty, 4.0)
 
     def test_shift_close_approval_locks_record(self):
         # opened_at = now (not now-30min): this close must land in TODAY's daily period
         # for the chain_bootstrap cashVariance assertion below. A 30-minutes-ago stamp
         # crosses the day boundary when the suite runs just after midnight, dropping the
         # close out of "today" so the daily aggregate read returns no rows.
+        # #4c: expected_cash is now derived SERVER-side, never trusted from the client. With no
+        # linked orders the server uses the opening float as the expected drawer, so opening_cash
+        # 100 + 0 sales = expected 100; counted 85 => -15 variance (the client expected_cash is
+        # ignored). This exercises the server-derivation rather than echoing a client figure.
         close = self._jsonrpc("/bayaan/api/shift_close", {
             "kiosk": "K-TEST",
             "opened_at": fields.Datetime.to_string(datetime.now()),
+            "opening_cash": 100.0,
             "expected_cash": 100.0,
             "actual_cash": 85.0,
         })
@@ -806,3 +903,127 @@ class TestProcurementFlowApi(BayaanTestBase, HttpCase):
         self.assertNotEqual(
             session.state, "closed",
             "a close with no linked orders must not batch-close the open session on the config")
+
+    def test_shift_close_safe_deposit_posts_transfer_and_carries_float(self):
+        """#4 — the safe deposit posts a real Dr Cash-in-Safe / Cr Cash ledger transfer, and the
+        retained float is carried onto the kiosk as the next shift's expected opening balance."""
+        sale = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-SAFE-DEPOSIT",
+            "items": [{"product": "MENU-OJ", "name": "Orange Juice", "qty": 1, "price_unit": 5500.0}],
+            "payments": [{"method": "cash", "amount": 5500.0}],
+        })
+        if "error" in sale:
+            self.fail("kiosk_sale errored: %s" % sale["error"])
+        close = self._jsonrpc("/bayaan/api/shift_close", {
+            "kiosk": "K-TEST",
+            "opened_at": fields.Datetime.to_string(datetime.now()),
+            "actual_cash": 5500.0,        # counted drawer (opening 0 + 5500 cash sales)
+            "safe_deposit": 4000.0,       # banked to the safe
+            "retained_float": 1500.0,     # kept in the drawer for the next shift
+            "pos_invoices": [sale["result"]["name"]],
+        })
+        if "error" in close:
+            self.fail("shift_close errored: %s" % close["error"])
+
+        kiosk = self.env["bayaan.kiosk"].sudo().search([("kiosk_code", "=", "K-TEST")], limit=1)
+        self.assertAlmostEqual(kiosk.last_retained_float, 1500.0,
+                               msg="retained float must carry forward to the next shift")
+        safe = self.env["bayaan.gl"].sudo()._bayaan_safe_account(self.company)
+        move = self.env["account.move"].sudo().search([
+            ("ref", "=like", "Bayaan Safe Deposit%"),
+            ("company_id", "=", self.company.id),
+        ], limit=1)
+        self.assertTrue(move, "safe deposit must post a real ledger transfer")
+        self.assertEqual(move.state, "posted")
+        self.assertAlmostEqual(sum(move.line_ids.mapped("debit")), 4000.0, places=2)
+        self.assertAlmostEqual(sum(move.line_ids.mapped("credit")), 4000.0, places=2)
+        safe_debit = sum(move.line_ids.filtered(lambda ml: ml.account_id == safe).mapped("debit"))
+        self.assertAlmostEqual(safe_debit, 4000.0, places=2, msg="Cash-in-Safe must be debited by the deposit")
+        # The credit must come OUT of the kiosk DRAWER cash account (the POS cash settlement
+        # account), not the generic bank — otherwise the deposit reconciles against the wrong asset.
+        drawer = self.env["bayaan.gl"].sudo()._bayaan_kiosk_cash_account(kiosk)
+        bank = self.env["bayaan.gl"].sudo()._bayaan_bank_account(self.company)
+        drawer_credit = sum(move.line_ids.filtered(lambda ml: ml.account_id == drawer).mapped("credit"))
+        self.assertAlmostEqual(drawer_credit, 4000.0, places=2, msg="cash must be credited out of the kiosk drawer account")
+        if bank != drawer:
+            bank_credit = sum(move.line_ids.filtered(lambda ml: ml.account_id == bank).mapped("credit"))
+            self.assertEqual(bank_credit, 0.0, "safe deposit must NOT credit the generic bank account")
+
+    def test_submitted_close_counts_frozen_at_submission(self):
+        """#2 — counted cash + blind stock counts are frozen the moment the close is SUBMITTED
+        (pending review), immutable to EVERYONE including a manager/sudo writer; a recount only
+        happens through a controlled reject. (The cashier ACL also blocks them; this proves the
+        freeze holds even for elevated roles.)"""
+        sale = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-FREEZE",
+            "items": [{"product": "MENU-OJ", "name": "Orange Juice", "qty": 1, "price_unit": 5500.0}],
+            "payments": [{"method": "cash", "amount": 5500.0}],
+        })
+        if "error" in sale:
+            self.fail("kiosk_sale errored: %s" % sale["error"])
+        close = self._jsonrpc("/bayaan/api/shift_close", {
+            "kiosk": "K-TEST",
+            "opened_at": fields.Datetime.to_string(datetime.now()),
+            "actual_cash": 5500.0,
+            "safe_deposit": 5500.0,
+            "retained_float": 0.0,
+            "pos_invoices": [sale["result"]["name"]],
+            "stock_counts": [{"item": "ING-ORANGE", "actual_qty": 3.0}],
+        })
+        if "error" in close:
+            self.fail("shift_close errored: %s" % close["error"])
+        record = self.env["bayaan.shift.close"].sudo().browse(close["result"]["id"])
+        self.assertTrue(record.counts_locked, "counts must be frozen at submission")
+        self.assertEqual(record.manager_review_state, "pending", "freeze happens BEFORE approval")
+        # Counted cash is frozen even for a sudo/manager write.
+        with self.assertRaisesRegex(UserError, "frozen"):
+            record.write({"actual_cash": 1.0})
+        # The blind stock count line is frozen too.
+        if record.stock_count_line_ids:
+            with self.assertRaisesRegex(UserError, "frozen"):
+                record.stock_count_line_ids[0].write({"actual_qty": 999.0})
+
+    def test_order_correction_void_returns_recipe_stock(self):
+        """#5 void — a voided recipe line RETURNS the consumed ingredients to the kiosk (so the
+        variance loop has no phantom shortage) and appends a contra consumption-ledger row that
+        reverses the recipe COGS. refund/discard/remake are unchanged."""
+        Quant = self.env["stock.quant"].sudo()
+        Quant._update_available_quantity(self.ingredient_orange, self.kiosk_location, 50.0)
+        before = self._qty(self.ingredient_orange, self.kiosk_location)
+        sale = self._jsonrpc("/bayaan/api/kiosk_sale", {
+            "kiosk": "K-TEST",
+            "external_id": "EXT-VOID-STOCK",
+            "items": [{"product": "MENU-OJ", "name": "Orange Juice", "qty": 1, "price_unit": 5500.0}],
+            "payments": [{"method": "cash", "amount": 5500.0}],
+        })
+        if "error" in sale:
+            self.fail("kiosk_sale errored: %s" % sale["error"])
+        after_sale = self._qty(self.ingredient_orange, self.kiosk_location)
+        self.assertLess(after_sale, before, "the sale must consume orange from the kiosk")
+
+        order = self.env["pos.order"].sudo().search([("pos_reference", "=", "EXT-VOID-STOCK")], limit=1)
+        line = order.lines[:1]
+        corr = self._jsonrpc("/bayaan/api/order_correction", {
+            "kiosk": "K-TEST", "order": order.id, "line": line.id,
+            "outcome": "void", "reason": "duplicate",
+        })
+        if "error" in corr:
+            self.fail("void order_correction errored: %s" % corr["error"])
+
+        after_void = self._qty(self.ingredient_orange, self.kiosk_location)
+        self.assertAlmostEqual(after_void, before, places=2,
+                               msg="void must return the consumed orange to the kiosk (no phantom shortage)")
+        # The voided line is tracked so COGS excludes it (recipe rows skipped; finished qty netted)
+        # in both the GL poster (_bayaan_post_cogs) and the operational dashboard.
+        voided = self.env["bayaan.order.correction"].sudo()._bayaan_voided_qty_map(self.company)
+        self.assertIn(line.id, voided, "the voided line must be tracked so COGS excludes it")
+        # A voided-only kiosk-day posts no net COGS (the void excludes its recipe consumption).
+        gl = self.env["bayaan.gl"].sudo()
+        day = order.date_order.date()
+        gl._bayaan_post_cogs(self.company, kiosk=order.bayaan_kiosk_id, date_from=day, date_to=day)
+        base_ref = "Bayaan COGS · %s · %s" % (order.bayaan_kiosk_id.kiosk_code, day)
+        posted_cogs = gl._bayaan_posted_net(base_ref, self.company, account=gl._bayaan_cogs_account(self.company))
+        self.assertAlmostEqual(posted_cogs, 0.0, places=2,
+                               msg="a voided-only day must post no net COGS")

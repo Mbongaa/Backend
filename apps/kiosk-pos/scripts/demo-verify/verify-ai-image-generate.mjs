@@ -18,8 +18,8 @@ async function run() {
     if (!pass) ok = false;
   };
   try {
-    log("1) Login as owner@miza.iq…");
-    await adminLogin(page, "owner@miza.iq", "test");
+    log("1) Login as owner@koub.iq…");
+    await adminLogin(page, "owner@koub.iq", "test");
 
     log("2) Open the Insights (AI assistant) screen…");
     const opened = await gotoAdmin(page, "AI Assistant");

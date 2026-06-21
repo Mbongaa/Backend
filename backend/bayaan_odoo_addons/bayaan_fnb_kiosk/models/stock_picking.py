@@ -66,6 +66,18 @@ class BayaanStockReceiptDiscrepancy(models.Model):
     received_qty = fields.Float(required=True)
     damaged_qty = fields.Float(default=0.0)
     shortage_qty = fields.Float(compute="_compute_shortage_qty", store=True)
+    # #7 — structured reason for the receiving discrepancy (alongside the free-text note), so the
+    # manager can triage short/damaged receipts by cause, not just read prose.
+    reason = fields.Selection(
+        [
+            ("short_delivery", "Short delivery (missing)"),
+            ("damaged_in_transit", "Damaged in transit"),
+            ("miscount", "Miscount / counting error"),
+            ("quality_reject", "Quality rejected"),
+            ("other", "Other"),
+        ],
+        string="Discrepancy Reason",
+    )
     note = fields.Char()
     company_id = fields.Many2one(related="picking_id.company_id", store=True)
 

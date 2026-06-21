@@ -319,4 +319,90 @@ describe("subscribeBayaanRealtime", () => {
 
     subscription.close();
   });
+
+  it("detects a half-open socket via the heartbeat watchdog and reconnects", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: FakeWebSocket[] = [];
+      class FakeWebSocket {
+        static OPEN = 1;
+        url: string;
+        readyState = 0;
+        sent: string[] = [];
+        private listeners: Record<string, Array<(event?: { data?: string }) => void>> = {};
+
+        constructor(url: string) {
+          this.url = url;
+          sockets.push(this);
+        }
+
+        addEventListener(type: string, listener: (event?: { data?: string }) => void) {
+          this.listeners[type] = [...(this.listeners[type] || []), listener];
+        }
+
+        send(message: string) {
+          this.sent.push(message);
+        }
+
+        close() {
+          this.readyState = 3;
+          this.dispatch("close");
+        }
+
+        open() {
+          this.readyState = FakeWebSocket.OPEN;
+          this.dispatch("open");
+        }
+
+        private dispatch(type: string, event?: { data?: string }) {
+          for (const listener of this.listeners[type] || []) {
+            listener(event);
+          }
+        }
+      }
+
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+      const statuses: string[] = [];
+      const json = vi.fn(async (route: string) => {
+        if (route === "/bayaan/api/realtime_config") {
+          return {
+            channels: ["bayaan.realtime.1.13.signed"],
+            last: 5,
+            notificationType: "bayaan.realtime",
+            websocketVersion: "19.0-2",
+            pollIntervalMs: 2000,
+          };
+        }
+        if (route === "/websocket/peek_notifications") {
+          return { notifications: [] };
+        }
+        throw new Error(`Unexpected route: ${route}`);
+      }) as OdooClient["json"];
+
+      const subscription = subscribeBayaanRealtime(fakeClient(json), {
+        onEvent: () => {},
+        onStatus: (status) => statuses.push(status),
+      });
+
+      // Flush start() so the socket is created, then open it (heartbeat watchdog arms).
+      await vi.advanceTimersByTimeAsync(5);
+      expect(sockets).toHaveLength(1);
+      sockets[0].open();
+      expect(statuses).toContain("live");
+
+      // No inbound frame ever arrives (half-open). Past STALE_MS the watchdog must tear the
+      // dead socket down and flip to reconnecting — without any close/error event firing.
+      await vi.advanceTimersByTimeAsync(46000);
+      expect(sockets[0].readyState).toBe(3); // watchdog force-closed the dead socket
+      expect(statuses).toContain("reconnecting");
+
+      // The backoff reconnect opens a fresh socket (recovery, no manual refresh).
+      await vi.advanceTimersByTimeAsync(31000);
+      expect(sockets.length).toBeGreaterThanOrEqual(2);
+
+      subscription.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

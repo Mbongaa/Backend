@@ -6,7 +6,7 @@ const log = (m) => console.log("  " + m);
 
 const browser = await launch();
 const page = await makePage(browser);
-await adminLogin(page, "zainab@miza.iq");
+await adminLogin(page, "zainab@koub.iq");
 await page.getByRole("button", { name: /^POS$/ }).first().click().catch(() => {});
 await page.waitForTimeout(1200);
 await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(() => {});

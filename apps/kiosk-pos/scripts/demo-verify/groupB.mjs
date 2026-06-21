@@ -6,13 +6,13 @@ const ALL = ["Today Command", "AI Assistant", "Kiosks", "Warehouses", "Stock inv
   "Purchases & Suppliers", "Stock & Allocation", "Staff", "Finance", "Reports"];
 
 const ROLES = [
-  { id: "B1", email: "layla@miza.iq", role: "manager",
+  { id: "B1", email: "layla@koub.iq", role: "manager",
     expect: ALL, forbid: [], posDisabled: true },
-  { id: "B2", email: "hassan@miza.iq", role: "logistics",
+  { id: "B2", email: "hassan@koub.iq", role: "logistics",
     expect: ["Today Command", "Warehouses", "Stock inventory", "Purchases & Suppliers", "Stock & Allocation", "Reports"],
     forbid: ["Daily Close", "Finance", "Staff", "AI Assistant", "Sales & POS", "Kiosks", "Waste & Loss", "Products & Recipes"],
     posDisabled: true },
-  { id: "B3", email: "noor@miza.iq", role: "accountant",
+  { id: "B3", email: "noor@koub.iq", role: "accountant",
     expect: ["Today Command", "AI Assistant", "Sales & POS", "Daily Close", "Purchases & Suppliers", "Staff", "Finance", "Reports"],
     forbid: ["Kiosks", "Warehouses", "Stock inventory", "Waste & Loss", "Products & Recipes", "Stock & Allocation"],
     posDisabled: true },
@@ -51,7 +51,7 @@ export async function runGroupB(browser, rec) {
   // B4 — cashier: no admin nav, lands on POS panel, Admin toggle disabled.
   const page = await makePage(browser);
   try {
-    await adminLogin(page, "zainab@miza.iq");
+    await adminLogin(page, "zainab@koub.iq");
     await page.waitForTimeout(1500);
     const labels = await navLabels(page);
     const text = await bodyText(page);

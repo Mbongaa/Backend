@@ -26,6 +26,31 @@ class BayaanKiosk(models.Model):
     manager_user_id = fields.Many2one("res.users", string="Manager")
     supervisor_user_id = fields.Many2one("res.users", string="Supervisor")
     cashier_user_ids = fields.Many2many("res.users", string="Allowed Cashiers")
+    # #4 — the permanent cash float the drawer always keeps for change (e.g. IQD 50,000).
+    # Shown at shift open for the cashier to confirm; carried forward as the retained float.
+    currency_id = fields.Many2one(related="company_id.currency_id")
+    default_cash_float = fields.Monetary(
+        currency_field="currency_id",
+        string="Standard Cash Float",
+        help="Permanent change float the drawer always holds (e.g. 50,000). Shown at shift open to confirm.",
+    )
+    # #4 — informational: the cash physically left in the drawer at the last close (the rest went
+    # to the safe). Recorded for the close history; it is NOT the next shift's expected opening
+    # (see bayaan_expected_opening) — the drawer should always be replenished to the STANDARD
+    # float each morning, so a short overnight drawer surfaces as an opening discrepancy.
+    last_retained_float = fields.Monetary(
+        currency_field="currency_id",
+        string="Retained Float (last close)",
+        help="Cash left in the drawer at the last close (informational).",
+    )
+
+    def bayaan_expected_opening(self):
+        """The expected opening drawer balance for the next shift = the kiosk's STANDARD cash float.
+        The drawer is replenished to the standard float every morning, so this is the control
+        baseline: a drawer counted below it is a real opening discrepancy (carrying the prior
+        retained float forward instead would MASK an overnight shortage)."""
+        self.ensure_one()
+        return self.default_cash_float or 0.0
     analytic_account_id = fields.Many2one(
         "account.analytic.account",
         string="Branch Cost Center",

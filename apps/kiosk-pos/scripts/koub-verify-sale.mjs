@@ -6,7 +6,7 @@ page.on("response", async r=>{ if(r.url().includes("kiosk_sale")){ try{const j=a
 await page.goto(URL,{waitUntil:"networkidle"}); await page.waitForTimeout(1200);
 await page.getByRole("button",{name:/Sign in|دخول/}).first().click();
 const dlg=page.locator("[role='dialog']"); await dlg.waitFor({state:"visible"});
-await dlg.locator("input").nth(0).fill("zainab@miza.iq"); await dlg.locator("input").nth(1).fill("test");
+await dlg.locator("input").nth(0).fill("zainab@koub.iq"); await dlg.locator("input").nth(1).fill("test");
 await dlg.locator("button[type='submit']").click(); await page.waitForTimeout(5000);
 await page.getByRole("button",{name:/^POS$/}).first().click().catch(()=>{}); await page.waitForTimeout(3000);
 await page.locator("div").filter({hasText:/^Zainab Hassancashier$/}).first().click().catch(()=>{}); await page.waitForTimeout(1200);

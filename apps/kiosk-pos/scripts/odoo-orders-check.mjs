@@ -3,7 +3,7 @@ import { chromium } from 'playwright';
 const BASE = 'http://127.0.0.1:8069';
 const CREDS = [
   ['admin', 'admin'],
-  ['owner@miza.iq', 'test'],
+  ['owner@koub.iq', 'test'],
   ['admin', 'test'],
 ];
 const OUT = 'verification';

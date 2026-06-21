@@ -1,5 +1,5 @@
-const CACHE_NAME = "bayaan-pos-shell-v1";
-const CORE_ASSETS = ["/", "/index.html", "/brand/miza-logo.png"];
+const CACHE_NAME = "bayaan-pos-shell-v2";
+const CORE_ASSETS = ["/", "/index.html", "/brand/koub-logo.svg", "/favicon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

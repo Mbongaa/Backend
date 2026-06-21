@@ -23,11 +23,19 @@ const odooDatetime = (value?: string): string | undefined =>
 export type ShiftCloseDraft = {
   actualCash: number;
   actualCard?: number;
+  // #4 cash accountability: how the counted drawer is allocated + opening-float discrepancy.
+  safeDeposit?: number;
+  retainedFloat?: number;
+  openingDiscrepancy?: number;
   stockCounts: Array<{
     item: string;
     uom: string;
-    expected_qty: number;
+    // Blind count: the live cashier path never sends expected_qty — the server derives
+    // expected + variance from its own records (#2). Kept optional for the archived
+    // simulation path only.
+    expected_qty?: number;
     actual_qty: number;
+    note?: string;
   }>;
   ingredientCounts?: Array<{
     ingredient: string;
@@ -46,6 +54,7 @@ export type ShiftClosePayload = {
 export type StockTransferPayload = {
   kioskId: string;
   fromWarehouse?: string;
+  sourceKioskId?: string; // #3 — source kiosk for a kiosk->kiosk transfer
   items?: Array<{
     itemId: string;
     qty: number;
@@ -56,12 +65,30 @@ export type StockTransferPayload = {
   uom?: string;
 };
 
+// #5 — an order-linked wrong-order correction (separate from waste).
+export type OrderCorrectionPayload = {
+  kioskId?: string;
+  order: string | number;
+  line?: string | number;
+  product?: string;
+  qty?: number;
+  amount?: number;
+  reason: "wrong_item" | "wrong_size" | "duplicate" | "customer_rejected";
+  outcome: "remake" | "void" | "refund" | "discard";
+  note?: string;
+};
+
 export type StockTransferActionPayload = {
   transfer: string | number;
   action: "approve" | "pick" | "dispatch" | "receive" | "cancel";
   items?: Array<{
     itemId: string;
     qty: number;
+    // #7 — per-line receive discrepancy capture.
+    receivedQty?: number;
+    damagedQty?: number;
+    note?: string;
+    reason?: string;
   }>;
 };
 
@@ -491,6 +518,7 @@ export type KioskWastePayload = {
   name: string;
   qty: number;
   reason: string;
+  note?: string;
   estimated_cost: number;
   recorded_at: string;
 };
@@ -586,7 +614,11 @@ export type SourceOfTruthGateway = {
   submitShiftClose: (payload: ShiftClosePayload) => Promise<unknown>;
   reviewShiftClose: (payload: ShiftCloseReviewPayload) => Promise<unknown>;
   getShiftCloseHistory: (payload?: { kiosk?: string; dateFrom?: string; dateTo?: string }) => Promise<unknown>;
+  getPosSessionHistory: (payload?: { kiosk?: string; dateFrom?: string; dateTo?: string }) => Promise<unknown>;
+  getPosSessionDetail: (sessionId: string | number, kiosk?: string) => Promise<unknown>;
   getPosOrdersHistory: (payload?: { scope?: string; kiosk?: string; dateFrom?: string; dateTo?: string }) => Promise<unknown>;
+  getRecentOrders: (payload?: { kiosk?: string; limit?: number }) => Promise<unknown>;
+  submitOrderCorrection: (payload: OrderCorrectionPayload) => Promise<unknown>;
   getHrSnapshot: () => Promise<unknown>;
   getHrSchedule: (payload?: HrSchedulePayload) => Promise<unknown>;
   createHrEmployee: (payload: HrEmployeePayload) => Promise<unknown>;
@@ -883,6 +915,7 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
             uom: item.uom,
           })),
           from_warehouse: payload.fromWarehouse,
+          from_kiosk: payload.sourceKioskId,
         },
       });
     },
@@ -894,6 +927,11 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
           items: payload.items?.map((item) => ({
             item: item.itemId,
             qty: item.qty,
+            // #7 — per-line receive discrepancy.
+            received_qty: item.receivedQty,
+            damaged_qty: item.damagedQty,
+            note: item.note,
+            reason: item.reason,
           })),
         },
       });
@@ -1090,6 +1128,9 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
           actual_cash: draft.actualCash,
           expected_card: cardSales,
           actual_card: draft.actualCard ?? cardSales,
+          safe_deposit: draft.safeDeposit,
+          retained_float: draft.retainedFloat,
+          opening_discrepancy: draft.openingDiscrepancy,
           stock_counts: draft.stockCounts,
           ingredient_counts: draft.ingredientCounts,
           pos_invoices: posOrders,
@@ -1114,6 +1155,21 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
         },
       });
     },
+    async getPosSessionHistory(payload: { kiosk?: string; dateFrom?: string; dateTo?: string } = {}) {
+      return client.json("/bayaan/api/pos_session_history", {
+        payload: {
+          action: "list",
+          kiosk: payload.kiosk,
+          date_from: payload.dateFrom,
+          date_to: payload.dateTo,
+        },
+      });
+    },
+    async getPosSessionDetail(sessionId: string | number, kiosk?: string) {
+      return client.json("/bayaan/api/pos_session_history", {
+        payload: { action: "detail", session: sessionId, kiosk },
+      });
+    },
     async getPosOrdersHistory(payload: { scope?: string; kiosk?: string; dateFrom?: string; dateTo?: string } = {}) {
       return client.json("/bayaan/api/pos_orders_history", {
         payload: {
@@ -1121,6 +1177,26 @@ export function createSourceOfTruthGateway(): SourceOfTruthGateway {
           kiosk: payload.kiosk,
           date_from: payload.dateFrom,
           date_to: payload.dateTo,
+        },
+      });
+    },
+    async getRecentOrders(payload: { kiosk?: string; limit?: number } = {}) {
+      return client.json("/bayaan/api/recent_orders", {
+        payload: { kiosk: payload.kiosk, limit: payload.limit ?? 3 },
+      });
+    },
+    async submitOrderCorrection(payload: OrderCorrectionPayload) {
+      return client.json("/bayaan/api/order_correction", {
+        payload: {
+          kiosk: payload.kioskId,
+          order: payload.order,
+          line: payload.line,
+          product: payload.product,
+          qty: payload.qty,
+          amount: payload.amount,
+          reason: payload.reason,
+          outcome: payload.outcome,
+          note: payload.note,
         },
       });
     },
@@ -5016,10 +5092,22 @@ function createSimulationGateway(): SourceOfTruthGateway {
       ));
       return { simulation: true, closings: rows };
     },
+    async getPosSessionHistory(_payload: { kiosk?: string; dateFrom?: string; dateTo?: string } = {}) {
+      return { simulation: true, sessions: [] };
+    },
+    async getPosSessionDetail(_sessionId: string | number, _kiosk?: string) {
+      return { simulation: true, session: null };
+    },
     async getPosOrdersHistory(_payload: { scope?: string; kiosk?: string; dateFrom?: string; dateTo?: string } = {}) {
       const current = snapshot() as Record<string, unknown>;
       const today = current.today as Record<string, unknown> | undefined;
       return { simulation: true, orders: (today?.orders as unknown[]) || [] };
+    },
+    async getRecentOrders(_payload: { kiosk?: string; limit?: number } = {}) {
+      return { simulation: true, orders: [] };
+    },
+    async submitOrderCorrection(_payload: OrderCorrectionPayload) {
+      return { simulation: true, skipped: true };
     },
     async getHrSnapshot() {
       return snapshot().hr;
@@ -5673,8 +5761,20 @@ function createNoopGateway() {
     async getShiftCloseHistory(_payload?: { kiosk?: string; dateFrom?: string; dateTo?: string }) {
       return { skipped: true, closings: [] };
     },
+    async getPosSessionHistory(_payload?: { kiosk?: string; dateFrom?: string; dateTo?: string }) {
+      return { skipped: true, sessions: [] };
+    },
+    async getPosSessionDetail(_sessionId: string | number, _kiosk?: string) {
+      return { skipped: true, session: null };
+    },
     async getPosOrdersHistory(_payload?: { scope?: string; kiosk?: string; dateFrom?: string; dateTo?: string }) {
       return { skipped: true, orders: [] };
+    },
+    async getRecentOrders(_payload?: { kiosk?: string; limit?: number }) {
+      return { skipped: true, orders: [] };
+    },
+    async submitOrderCorrection(_payload: OrderCorrectionPayload) {
+      return { skipped: true };
     },
     async getHrSnapshot() {
       return { skipped: true, employees: [], attendance: [], adjustments: [], payrollRuns: [], expenses: [] };

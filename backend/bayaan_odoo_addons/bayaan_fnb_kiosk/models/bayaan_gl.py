@@ -107,6 +107,12 @@ class BayaanGL(models.AbstractModel):
         return self._bayaan_gl_account("101400", "Bank", "asset_cash", company)
 
     @api.model
+    def _bayaan_safe_account(self, company=None):
+        """The safe/vault cash holding account (distinct from the drawer/bank cash) so a
+        drawer-to-safe deposit is an auditable asset transfer, not an unexplained cash drop. #4"""
+        return self._bayaan_gl_account("101350", "Cash in Safe", "asset_cash", company)
+
+    @api.model
     def _bayaan_payable_account(self, partner, company=None):
         company = company or self.env.company
         if partner and partner.property_account_payable_id:
@@ -282,9 +288,15 @@ class BayaanGL(models.AbstractModel):
             ledger_domain.append(("consumed_at", "<=", end))
             order_domain.append(("date_order", "<=", end))
 
+        # A VOIDED line never produced the good, so it must not carry COGS: exclude its recipe
+        # consumption rows here, and net its finished/hybrid qty out below. #5 void
+        voided_qty = self.env["bayaan.order.correction"]._bayaan_voided_qty_map(company)
+        voided_line_ids = set(voided_qty.keys())
         by_kiosk_day = {}
         for row in Ledger.search(ledger_domain):
             if not row.kiosk_id or not row.consumed_at:
+                continue
+            if row.pos_order_line_id.id in voided_line_ids:
                 continue
             day = fields.Date.to_date(row.consumed_at)
             by_kiosk_day[(row.kiosk_id.id, day)] = by_kiosk_day.get((row.kiosk_id.id, day), 0.0) + (row.total_cost or 0.0)
@@ -299,7 +311,8 @@ class BayaanGL(models.AbstractModel):
             for line in order.lines:
                 mode = line.product_id.product_tmpl_id.bayaan_consumption_mode
                 if mode in ("finished", "hybrid") and line.qty > 0:
-                    cost = line.qty * (line.product_id.standard_price or 0.0)
+                    eff_qty = max(0.0, line.qty - voided_qty.get(line.id, 0.0))
+                    cost = eff_qty * (line.product_id.standard_price or 0.0)
                     if cost:
                         by_kiosk_day[(kiosk.id, day)] = by_kiosk_day.get((kiosk.id, day), 0.0) + cost
 
@@ -337,10 +350,16 @@ class BayaanGL(models.AbstractModel):
     # ==================================================================
     @api.model
     def _bayaan_kiosk_cash_account(self, kiosk):
-        pm = kiosk.pos_config_id.payment_method_ids.filtered(lambda m: m.is_cash_count)[:1]
+        """The DRAWER cash account for a kiosk — where the POS cash payment method settles (where
+        counted cash actually sits). A safe deposit moves cash OUT of this into the safe, so it
+        must be a CASH account, never the generic bank. Falls back to a dedicated Cash-on-Hand
+        account (101300) rather than Bank when a kiosk has no cash method configured. #4"""
+        config = kiosk.pos_config_id
+        methods = config.payment_method_ids if config else self.env["pos.payment.method"]
+        pm = methods.filtered(lambda m: m.is_cash_count or m.type == "cash")[:1]
         if pm and pm.journal_id and pm.journal_id.default_account_id:
             return pm.journal_id.default_account_id
-        return self._bayaan_bank_account(kiosk.company_id)
+        return self._bayaan_gl_account("101300", "Cash on Hand", "asset_cash", kiosk.company_id)
 
     @api.model
     def _bayaan_post_pos_revenue(self, company=None, kiosk=None, date_from=None, date_to=None):
@@ -642,6 +661,31 @@ class BayaanGL(models.AbstractModel):
             if move:
                 posted += 1
         return posted
+
+    # ==================================================================
+    # Safe deposit — Dr Cash in Safe / Cr Cash on hand (drawer) at shift close.
+    # An asset-to-asset transfer recording the physical move of counted cash to the
+    # safe, so the drawer reconciliation is auditable in the real ledger. #4
+    # ==================================================================
+    @api.model
+    def _bayaan_post_safe_deposit(self, close):
+        company = close.company_id
+        amount = round(close.safe_deposit or 0.0, 2)
+        if amount <= 0:
+            return False
+        safe = self._bayaan_safe_account(company)
+        drawer = self._bayaan_kiosk_cash_account(close.kiosk_id)
+        code = close.kiosk_id.kiosk_code or ""
+        # Both legs are balance-sheet (asset_cash) accounts, so no branch analytic is required.
+        return self._bayaan_gl_post(
+            ref="Bayaan Safe Deposit · %s" % close.name,
+            date=fields.Date.to_date(close.closed_at) or fields.Date.context_today(self.env.user),
+            company=company,
+            lines=[
+                {"name": "Cash to safe — %s" % code, "account": safe, "debit": amount},
+                {"name": "Cash out of drawer — %s" % code, "account": drawer, "credit": amount},
+            ],
+        )
 
     # ==================================================================
     # Per-kiosk daily posting — the live close hook posts revenue + COGS +

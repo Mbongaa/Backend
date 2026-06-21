@@ -1,5 +1,5 @@
 // Group C — Cashier POS flow (login: zainab, kiosk K-01). MUTATES the live demo DB.
-import { makePage, adminLogin, bodyText, shot, api, odooLogin, closeKioskSession } from "./lib.mjs";
+import { makePage, adminLogin, bodyText, shot, api, odooLogin, closeKioskSession, fillOpeningCash } from "./lib.mjs";
 
 const sum = (a) => a.reduce((s, x) => s + x, 0);
 
@@ -17,7 +17,7 @@ async function snapshot(cookie) {
 }
 
 export async function runGroupC(browser, rec) {
-  const { cookie } = await odooLogin("owner@miza.iq");
+  const { cookie } = await odooLogin("owner@koub.iq");
   const before = await snapshot(cookie);
 
   const page = await makePage(browser);
@@ -31,13 +31,14 @@ export async function runGroupC(browser, rec) {
   });
 
   try {
-    await adminLogin(page, "zainab@miza.iq");
+    await adminLogin(page, "zainab@koub.iq");
     await page.getByRole("button", { name: /^POS$/ }).first().click().catch(() => {});
     await page.waitForTimeout(1500);
 
     // --- C1: start shift ---
     await page.locator("div").filter({ hasText: /^Zainab Hassancashier$/ }).first().click().catch(() => {});
     await page.waitForTimeout(1000);
+    await fillOpeningCash(page);
     const openP = page.waitForResponse((r) => r.url().includes("open_session"), { timeout: 20000 }).catch(() => null);
     await page.getByRole("button", { name: /Start shift|ابدأ الوردية/ }).first().click().catch(() => {});
     await openP;

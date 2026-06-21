@@ -13,24 +13,24 @@ await page.getByRole("button", { name: /Sign in|دخول/ }).first().click();
 const dlg = page.locator("[role='dialog']");
 await dlg.waitFor({ state: "visible" });
 const inputs = dlg.locator("input");
-await inputs.nth(0).fill("owner@miza.iq");
+await inputs.nth(0).fill("owner@koub.iq");
 await inputs.nth(1).fill("test");
 await dlg.locator("button[type='submit']").click().catch(async () => {
   await dlg.getByRole("button", { name: /^Sign in$/ }).click();
 });
 await page.waitForTimeout(7000);  // let auth_status + chain_bootstrap load
-await page.screenshot({ path: "verification/miza-01-overview.png", fullPage: false });
+await page.screenshot({ path: "verification/koub-01-overview.png", fullPage: false });
 console.log("CAPTURED overview");
 
 // Try to capture a few more sections by common nav labels (best effort)
 const sections = [
-  ["Inventory", "miza-02-inventory"],
-  ["Items", "miza-02-items"],
-  ["Sales", "miza-03-sales"],
-  ["Staff", "miza-04-staff"],
-  ["Products", "miza-05-products"],
-  ["Closing", "miza-06-closing"],
-  ["Kiosks", "miza-07-kiosks"],
+  ["Inventory", "koub-02-inventory"],
+  ["Items", "koub-02-items"],
+  ["Sales", "koub-03-sales"],
+  ["Staff", "koub-04-staff"],
+  ["Products", "koub-05-products"],
+  ["Closing", "koub-06-closing"],
+  ["Kiosks", "koub-07-kiosks"],
 ];
 for (const [label, file] of sections) {
   try {
